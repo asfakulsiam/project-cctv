@@ -1,0 +1,6 @@
+{
+  "name": "Smart Classroom Exam Monitoring System",
+  "description": "Live computer vision and behavioral analysis monitoring platform for exam halls with multi-camera tracking, unified student identity, and real-time behavioral alerts.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
