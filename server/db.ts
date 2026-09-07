@@ -76,11 +76,12 @@ const DEFAULT_SETTINGS: AppSettings = {
  * Connect to MongoDB or activate fallback in-memory store
  */
 export async function initDatabase(): Promise<void> {
-  const uri = process.env.MONGODB_URI;
+  let uri = process.env.MONGODB_URI;
   if (uri && uri.trim().length > 0) {
+    const cleanUri = uri.trim().replace(/\s+/g, '');
     try {
-      console.log('[Database] Connecting to MongoDB instance at:', uri.replace(/:([^:@]{1,})@/, ':****@'));
-      mongoClient = new MongoClient(uri, { serverSelectionTimeoutMS: 3000 });
+      console.log('[Database] Connecting to MongoDB instance at:', cleanUri.replace(/:([^:@]{1,})@/, ':****@'));
+      mongoClient = new MongoClient(cleanUri, { serverSelectionTimeoutMS: 3000 });
       await mongoClient.connect();
       mongoDb = mongoClient.db();
       isUsingFallback = false;
