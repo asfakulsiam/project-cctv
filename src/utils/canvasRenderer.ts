@@ -21,6 +21,7 @@ interface RenderOptions {
   panOffset: { x: number; y: number };
   selectedTrackId: string | null;
   highSuspicionThreshold: number;
+  videoSource?: CanvasImageSource | null;
 }
 
 export function drawCameraFeed(
@@ -28,7 +29,7 @@ export function drawCameraFeed(
   options: RenderOptions,
   now: number
 ) {
-  const { width, height, cameraName, cameraId, tracks, students, zoomLevel, panOffset, selectedTrackId, highSuspicionThreshold } = options;
+  const { width, height, cameraName, cameraId, tracks, students, zoomLevel, panOffset, selectedTrackId, highSuspicionThreshold, videoSource } = options;
 
   ctx.save();
   ctx.clearRect(0, 0, width, height);
@@ -38,25 +39,55 @@ export function drawCameraFeed(
   ctx.scale(zoomLevel, zoomLevel);
 
   // -------------------------------------------------------------
-  // 1. Draw Simulated Classroom Environment (Desks, Floor, Lighting)
+  // 1. Draw Real Video Feed OR Ambient Classroom Fallback
   // -------------------------------------------------------------
-  // Ambient floor tone
-  const gradFloor = ctx.createLinearGradient(0, 0, 0, height);
-  gradFloor.addColorStop(0, '#0f172a'); // slate-900
-  gradFloor.addColorStop(1, '#020617'); // slate-950
-  ctx.fillStyle = gradFloor;
-  ctx.fillRect(0, 0, width, height);
+  let hasDrawnRealVideo = false;
 
-  // Perspective floor tiles / grid
-  ctx.strokeStyle = 'rgba(51, 65, 85, 0.25)'; // slate-700
-  ctx.lineWidth = 1;
-  const numGridLines = 12;
-  for (let i = 0; i <= numGridLines; i++) {
-    const y = (height * 0.25) + (i * (height * 0.75) / numGridLines);
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-    ctx.stroke();
+  if (videoSource) {
+    if (videoSource instanceof HTMLVideoElement) {
+      if (videoSource.readyState >= 2 && !videoSource.paused && videoSource.videoWidth > 0) {
+        try {
+          ctx.drawImage(videoSource, 0, 0, width, height);
+          hasDrawnRealVideo = true;
+        } catch {
+          hasDrawnRealVideo = false;
+        }
+      }
+    } else if (videoSource instanceof HTMLImageElement) {
+      if (videoSource.complete && videoSource.naturalWidth > 0) {
+        try {
+          ctx.drawImage(videoSource, 0, 0, width, height);
+          hasDrawnRealVideo = true;
+        } catch {
+          hasDrawnRealVideo = false;
+        }
+      }
+    }
+  }
+
+  if (!hasDrawnRealVideo) {
+    // Ambient floor tone
+    const gradFloor = ctx.createLinearGradient(0, 0, 0, height);
+    gradFloor.addColorStop(0, '#0f172a'); // slate-900
+    gradFloor.addColorStop(1, '#020617'); // slate-950
+    ctx.fillStyle = gradFloor;
+    ctx.fillRect(0, 0, width, height);
+
+    // Perspective floor tiles / grid
+    ctx.strokeStyle = 'rgba(51, 65, 85, 0.25)'; // slate-700
+    ctx.lineWidth = 1;
+    const numGridLines = 12;
+    for (let i = 0; i <= numGridLines; i++) {
+      const y = (height * 0.25) + (i * (height * 0.75) / numGridLines);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+  } else {
+    // High-tech optical tint layer to integrate HUD overlays seamlessly
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.08)';
+    ctx.fillRect(0, 0, width, height);
   }
 
   // Center optical crosshair reticle
@@ -127,28 +158,30 @@ export function drawCameraFeed(
     const pw = track.bbox.width * width;
     const ph = track.bbox.height * height;
 
-    // Student Body Silhouette
     const centerX = px + pw / 2;
     const headRadius = pw * 0.28;
     const headCenterY = py + headRadius + 4;
 
-    // Torso
-    ctx.fillStyle = 'rgba(30, 58, 138, 0.65)'; // deep academic navy shirt
-    ctx.beginPath();
-    ctx.ellipse(centerX, py + ph * 0.65, pw * 0.38, ph * 0.32, 0, 0, Math.PI * 2);
-    ctx.fill();
+    // Student Body Silhouette (Only in synthetic fallback mode)
+    if (!hasDrawnRealVideo) {
+      // Torso
+      ctx.fillStyle = 'rgba(30, 58, 138, 0.65)'; // deep academic navy shirt
+      ctx.beginPath();
+      ctx.ellipse(centerX, py + ph * 0.65, pw * 0.38, ph * 0.32, 0, 0, Math.PI * 2);
+      ctx.fill();
 
-    // Head / Face
-    ctx.fillStyle = track.face_visible ? 'rgba(226, 232, 240, 0.9)' : 'rgba(100, 116, 139, 0.7)';
-    ctx.beginPath();
-    ctx.arc(centerX, headCenterY, headRadius, 0, Math.PI * 2);
-    ctx.fill();
+      // Head / Face
+      ctx.fillStyle = track.face_visible ? 'rgba(226, 232, 240, 0.9)' : 'rgba(100, 116, 139, 0.7)';
+      ctx.beginPath();
+      ctx.arc(centerX, headCenterY, headRadius, 0, Math.PI * 2);
+      ctx.fill();
 
-    // Hair
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-    ctx.beginPath();
-    ctx.arc(centerX, headCenterY - 2, headRadius * 0.95, Math.PI, Math.PI * 2);
-    ctx.fill();
+      // Hair
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.beginPath();
+      ctx.arc(centerX, headCenterY - 2, headRadius * 0.95, Math.PI, Math.PI * 2);
+      ctx.fill();
+    }
 
     // Head orientation vector (visual gaze ray)
     const gazeLength = headRadius * 1.8;

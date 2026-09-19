@@ -4,7 +4,7 @@
  */
 
 export type CameraStatus = 'online' | 'offline' | 'connecting' | 'error';
-export type CameraSourceType = 'rtsp' | 'usb' | 'http' | 'demo' | 'webcam' | 'stream' | 'file';
+export type CameraSourceType = 'rtsp' | 'usb' | 'http' | 'demo' | 'webcam' | 'stream' | 'file' | 'ip_webcam';
 
 export interface CameraConfig {
   camera_id: string;

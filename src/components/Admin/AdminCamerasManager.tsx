@@ -89,6 +89,8 @@ export function AdminCamerasManager() {
     monitored_seats: []
   });
 
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
   const showFeedback = (type: 'success' | 'error' | 'info', message: string) => {
     setFeedback({ type, message });
     setTimeout(() => setFeedback(null), 4000);
@@ -111,7 +113,7 @@ export function AdminCamerasManager() {
       const res = await testCameraConnection(cameraId);
       setTestResult(res);
       if (res.success) {
-        showFeedback('success', `RTSP handshake verified (${res.latency_ms}ms latency).`);
+        showFeedback('success', `Stream handshake verified (${res.latency_ms}ms latency).`);
       } else {
         showFeedback('error', res.message || 'Stream connection test failed.');
       }
@@ -122,18 +124,28 @@ export function AdminCamerasManager() {
     }
   };
 
-  const handleDelete = async (camera: CameraConfig) => {
-    if (camera.is_primary) {
-      showFeedback('error', 'Cannot delete the Primary Camera. Assign another camera as primary first.');
-      return;
-    }
-    if (window.confirm(`Are you sure you want to remove "${camera.name}" (${camera.camera_id}) from MongoDB?`)) {
+  const handleDelete = (camera: CameraConfig) => {
+    setConfirmDeleteId(camera.camera_id);
+  };
+
+  const executeDelete = async (camera: CameraConfig) => {
+    try {
+      if (camera.is_primary) {
+        const remaining = cameras.filter(c => c.camera_id !== camera.camera_id);
+        if (remaining.length > 0) {
+          await setPrimaryCamera(remaining[0].camera_id);
+        }
+      }
       const ok = await deleteCamera(camera.camera_id);
       if (ok) {
-        showFeedback('success', `Camera ${camera.camera_id.toUpperCase()} removed from fleet.`);
+        showFeedback('success', `Camera "${camera.name}" removed from fleet.`);
       } else {
         showFeedback('error', 'Failed to remove camera.');
       }
+    } catch (err: any) {
+      showFeedback('error', `Error removing camera: ${err.message}`);
+    } finally {
+      setConfirmDeleteId(null);
     }
   };
 
@@ -144,13 +156,13 @@ export function AdminCamerasManager() {
     setFormData({
       camera_id: cid,
       name: `Camera ${nextNum}`,
-      source_type: 'rtsp',
-      source_url: '',
+      source_type: 'ip_webcam',
+      source_url: 'http://192.168.1.50:8080/video',
       classroom_id: '',
       is_primary: cameras.length === 0,
       enabled: true,
-      width: 1920,
-      height: 1080,
+      width: 1280,
+      height: 720,
       target_fps: 15,
       view_angle_description: '',
       monitored_seats: seats.map(s => s.id)
@@ -179,12 +191,21 @@ export function AdminCamerasManager() {
 
   const handleSaveCamera = async (e: React.FormEvent) => {
     e.preventDefault();
+    let cleanUrl = formData.source_url.trim();
+    if (formData.source_type === 'ip_webcam' || cleanUrl.includes(':8080')) {
+      if (/^https?:\/\/[^/]+:8080\/?$/i.test(cleanUrl)) {
+        cleanUrl = cleanUrl.replace(/\/?$/, '/video');
+      }
+    } else if (formData.source_type === 'webcam' && (!cleanUrl || cleanUrl === '')) {
+      cleanUrl = 'webcam:default';
+    }
+
     if (editingCameraId) {
       // Update existing
       const ok = await updateCameraConfig(editingCameraId, {
         name: formData.name,
         source_type: formData.source_type,
-        source_url: formData.source_url,
+        source_url: cleanUrl,
         classroom_id: formData.classroom_id,
         is_primary: formData.is_primary,
         enabled: formData.enabled,
@@ -205,7 +226,7 @@ export function AdminCamerasManager() {
         camera_id: formData.camera_id,
         name: formData.name,
         source_type: formData.source_type,
-        source_url: formData.source_url,
+        source_url: cleanUrl,
         classroom_id: formData.classroom_id,
         is_primary: formData.is_primary,
         enabled: formData.enabled,
@@ -438,7 +459,23 @@ export function AdminCamerasManager() {
                     <span>Edit</span>
                   </button>
 
-                  {!isPrimary && (
+                  {confirmDeleteId === camera.camera_id ? (
+                    <div className="flex items-center space-x-1 bg-rose-950/90 border border-rose-800 px-2 py-0.5 rounded animate-in fade-in">
+                      <span className="text-[10px] text-rose-300 font-semibold">Delete?</span>
+                      <button
+                        onClick={() => executeDelete(camera)}
+                        className="px-1.5 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold text-[10px]"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px]"
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
                     <button
                       onClick={() => handleDelete(camera)}
                       className="p-1 rounded bg-slate-900 hover:bg-rose-950/60 border border-slate-700 hover:border-rose-800 text-slate-400 hover:text-rose-400 transition-colors"
@@ -487,6 +524,59 @@ export function AdminCamerasManager() {
             </div>
 
             <form onSubmit={handleSaveCamera} className="p-5 space-y-4 text-xs">
+              {/* Quick Setup Presets */}
+              {!editingCameraId && (
+                <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Quick Camera Presets
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setFormData({
+                        ...formData,
+                        name: 'Mobile Phone IP Camera',
+                        source_type: 'ip_webcam',
+                        source_url: 'http://192.168.1.50:8080/video',
+                        width: 1280,
+                        height: 720
+                      })}
+                      className="px-2 py-1 rounded bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[11px] font-medium"
+                    >
+                      📱 Mobile IP Webcam
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({
+                        ...formData,
+                        name: 'Laptop / Phone Built-in Camera',
+                        source_type: 'webcam',
+                        source_url: 'webcam:default',
+                        width: 1280,
+                        height: 720
+                      })}
+                      className="px-2 py-1 rounded bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 text-[11px] font-medium"
+                    >
+                      💻 Built-in Device Webcam
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({
+                        ...formData,
+                        name: 'Exam Room CCTV Feed',
+                        source_type: 'stream',
+                        source_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+                        width: 1280,
+                        height: 720
+                      })}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] font-medium"
+                    >
+                      📹 Video Stream Link
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">Camera Name</label>
                 <input
@@ -494,7 +584,7 @@ export function AdminCamerasManager() {
                   required
                   value={formData.name}
                   onChange={e => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="e.g. Classroom Camera 04 - Right Flank"
+                  placeholder="e.g. Mobile Phone IP Camera"
                   className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
                 />
               </div>
@@ -504,13 +594,24 @@ export function AdminCamerasManager() {
                   <label className="block text-slate-300 font-semibold mb-1">Source Protocol</label>
                   <select
                     value={formData.source_type}
-                    onChange={e => setFormData({ ...formData, source_type: e.target.value as CameraSourceType })}
+                    onChange={e => {
+                      const type = e.target.value as CameraSourceType;
+                      let defaultUrl = formData.source_url;
+                      if (type === 'webcam') defaultUrl = 'webcam:default';
+                      else if (type === 'ip_webcam' && (!formData.source_url || formData.source_url.includes(':554'))) {
+                        defaultUrl = 'http://192.168.1.50:8080/video';
+                      }
+                      setFormData({ ...formData, source_type: type, source_url: defaultUrl });
+                    }}
                     className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500 font-mono"
                   >
-                    <option value="rtsp">RTSP IP Stream</option>
-                    <option value="usb">USB Video / V4L2</option>
-                    <option value="http">HTTP MJPEG</option>
-                    <option value="demo">Synthetic Demo Stream</option>
+                    <option value="ip_webcam">📱 Mobile IP Webcam (Android/iOS)</option>
+                    <option value="webcam">💻 Device Webcam (Laptop/Phone)</option>
+                    <option value="stream">📹 Video Stream Link (MP4, CCTV, HLS)</option>
+                    <option value="rtsp">🏢 RTSP IP Stream</option>
+                    <option value="http">🌐 HTTP MJPEG Stream</option>
+                    <option value="usb">🔌 USB Video / V4L2</option>
+                    <option value="demo">🎮 Synthetic Demo Stream</option>
                   </select>
                 </div>
 
@@ -535,10 +636,36 @@ export function AdminCamerasManager() {
                   required
                   value={formData.source_url}
                   onChange={e => setFormData({ ...formData, source_url: e.target.value })}
-                  placeholder={formData.source_type === 'usb' ? '/dev/video0' : 'rtsp://192.168.1.104:554/stream'}
+                  placeholder={
+                    formData.source_type === 'ip_webcam'
+                      ? 'http://192.168.1.X:8080/video'
+                      : formData.source_type === 'webcam'
+                      ? 'webcam:default'
+                      : formData.source_type === 'stream'
+                      ? 'https://domain.com/feed.mp4'
+                      : 'rtsp://192.168.1.104:554/stream'
+                  }
                   className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500 font-mono"
                 />
               </div>
+
+              {/* Helpful Protocol Notice */}
+              {formData.source_type === 'ip_webcam' && (
+                <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/60 text-cyan-300 text-[11px] leading-relaxed">
+                  <strong className="text-white block mb-0.5">📱 IP Webcam Setup Guide:</strong>
+                  1. In the IP Webcam mobile app, tap <strong>&quot;Start Server&quot;</strong>.<br />
+                  2. Use the address shown with <code>/video</code> at the end (e.g. <code>http://192.168.1.50:8080/video</code>).<br />
+                  3. Both phone and computer must be on the same local Wi-Fi.<br />
+                  <em>💡 Note: If outside local Wi-Fi, select <strong>&quot;Device Webcam&quot;</strong> to use this laptop/phone camera directly!</em>
+                </div>
+              )}
+
+              {formData.source_type === 'webcam' && (
+                <div className="p-2.5 rounded-lg bg-indigo-950/40 border border-indigo-800/60 text-indigo-300 text-[11px] leading-relaxed">
+                  <strong className="text-white block mb-0.5">💻 Built-in Device Webcam:</strong>
+                  Directly uses your laptop or phone camera via your browser without needing any third-party apps or local Wi-Fi network configuration.
+                </div>
+              )}
 
               <div className="grid grid-cols-3 gap-3">
                 <div>

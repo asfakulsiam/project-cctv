@@ -5,6 +5,7 @@
 
 import express from 'express';
 import http from 'http';
+import https from 'https';
 import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
@@ -279,15 +280,77 @@ async function startServer() {
     }
   });
 
+  // Camera Management Helpers
+  function normalizeCameraSourceUrl(url?: string, sourceType?: string): string {
+    if (!url) return '';
+    let trimmed = url.trim();
+    if (sourceType === 'ip_webcam' || trimmed.includes(':8080')) {
+      // If user provided http://192.168.x.x:8080 or http://192.168.x.x:8080/
+      if (/^https?:\/\/[^/]+:8080\/?$/i.test(trimmed)) {
+        trimmed = trimmed.replace(/\/?$/, '/video');
+      }
+    } else if (sourceType === 'webcam' && (!trimmed || trimmed === '')) {
+      trimmed = 'webcam:default';
+    }
+    return trimmed;
+  }
+
+  const handleStreamProxy = (targetUrl: string, res: express.Response, req: express.Request) => {
+    try {
+      const parsed = new URL(targetUrl);
+      const isHttps = parsed.protocol === 'https:';
+      const client = isHttps ? https : http;
+
+      const proxyReq = client.get(targetUrl, { timeout: 10000 }, (proxyRes) => {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        if (proxyRes.headers['content-type']) {
+          res.setHeader('Content-Type', proxyRes.headers['content-type']);
+        }
+        proxyRes.pipe(res);
+      });
+
+      proxyReq.on('timeout', () => {
+        proxyReq.destroy(new Error('Connection timed out to camera stream.'));
+      });
+
+      proxyReq.on('error', (err) => {
+        if (!res.headersSent) {
+          res.status(502).json({ error: `Cannot connect to stream: ${err.message}` });
+        }
+      });
+
+      req.on('close', () => {
+        proxyReq.destroy();
+      });
+    } catch (err: any) {
+      if (!res.headersSent) {
+        res.status(400).json({ error: `Invalid stream URL: ${err.message}` });
+      }
+    }
+  };
+
+  // Public Stream Proxy for CORS & HTTPS bypass
+  app.get('/api/proxy/stream', (req, res) => {
+    const streamUrl = req.query.url as string;
+    if (!streamUrl) {
+      return res.status(400).json({ error: 'Missing ?url= parameter.' });
+    }
+    handleStreamProxy(streamUrl, res, req);
+  });
+
   // Camera Management
   app.post('/api/cameras', requireAdminAuth, async (req, res) => {
     try {
       const generatedId = req.body.camera_id || `cam-${Date.now().toString().slice(-4)}`;
+      const sourceType = req.body.source_type || 'rtsp';
+      const cleanUrl = normalizeCameraSourceUrl(req.body.source_url, sourceType);
+
       const newCamera: CameraConfig = {
         camera_id: generatedId,
         name: req.body.name || `Camera ${generatedId.toUpperCase()}`,
-        source_type: req.body.source_type || 'rtsp',
-        source_url: req.body.source_url || '',
+        source_type: sourceType,
+        source_url: cleanUrl,
         classroom_id: req.body.classroom_id || '',
         status: 'online',
         is_primary: !!req.body.is_primary,
@@ -307,6 +370,26 @@ async function startServer() {
       const created = await db.addCamera(newCamera);
       if (cvEngine) await cvEngine.reloadConfiguration();
       res.status(201).json(created);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Dedicated Camera Stream Proxy Endpoint
+  app.get('/api/cameras/:id/stream', async (req, res) => {
+    try {
+      const cam = await db.getCameraById(req.params.id);
+      if (!cam) return res.status(404).json({ error: 'Camera not found.' });
+
+      if (cam.source_type === 'webcam') {
+        return res.status(400).json({ error: 'Webcam feeds are rendered directly in the client browser.' });
+      }
+
+      if (!cam.source_url || !cam.source_url.startsWith('http')) {
+        return res.status(400).json({ error: 'Camera does not have an HTTP/MJPEG streaming URL.' });
+      }
+
+      handleStreamProxy(cam.source_url, res, req);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -360,7 +443,11 @@ async function startServer() {
 
   app.put('/api/cameras/:id', requireAdminAuth, async (req, res) => {
     try {
-      const updated = await db.updateCamera(req.params.id, req.body);
+      const updates = { ...req.body };
+      if (updates.source_url) {
+        updates.source_url = normalizeCameraSourceUrl(updates.source_url, updates.source_type);
+      }
+      const updated = await db.updateCamera(req.params.id, updates);
       if (!updated) return res.status(404).json({ error: 'Camera not found' });
       if (cvEngine) await cvEngine.reloadConfiguration();
       res.json(updated);
