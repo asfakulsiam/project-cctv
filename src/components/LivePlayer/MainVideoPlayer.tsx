@@ -320,7 +320,10 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
             }
           }
 
-          const isInternalWebcam = focusedCamera.source_type === 'webcam' || (focusedCamera.source_url || '').startsWith('webcam:');
+          const isInternalWebcam = focusedCamera.source_type === 'webcam' || 
+                                   focusedCamera.source_type === 'usb' || 
+                                   (focusedCamera.source_url || '').startsWith('webcam:') ||
+                                   (focusedCamera.source_url || '') === 'webcam:default';
 
           // For internal/local webcams, client optical vision is the authoritative ground truth
           // For remote CCTV feeds, use client detections if available, otherwise server tracking
