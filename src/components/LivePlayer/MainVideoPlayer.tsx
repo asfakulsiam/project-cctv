@@ -34,7 +34,8 @@ import {
   VolumeX,
   RefreshCw,
   Video,
-  Camera
+  Camera,
+  Scan
 } from 'lucide-react';
 
 interface MainVideoPlayerProps {
@@ -64,6 +65,11 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   // Client-Side Optical Vision & Motion Detector
   const detectorRef = useRef<MotionVisionDetector>(new MotionVisionDetector());
   const lastDetectionTimeRef = useRef<number>(0);
+  const liveTracksRef = useRef<CameraTrack[]>([]);
+  const lastBroadcastTimeRef = useRef<number>(0);
+
+  // Framing mode: contain (Auto Frame - Best View) or cover (Fill Screen)
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
 
   // Phone Camera Facing (Rear/Back vs Front camera) - defaults to Rear (environment)
   const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>(() => {
@@ -98,6 +104,26 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const focusedCamera = cameras.find(c => c.camera_id === focusedCameraId) || cameras[0];
   const tracks = tracksByCamera[focusedCameraId] || [];
   const isPrimary = focusedCamera?.camera_id === primaryCameraId;
+
+  // Stable refs to decouple the 60fps canvas render loop from React state re-render thrashing
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
+  const studentsRef = useRef(students);
+  studentsRef.current = students;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const zoomLevelRef = useRef(zoomLevel);
+  zoomLevelRef.current = zoomLevel;
+  const panOffsetRef = useRef(panOffset);
+  panOffsetRef.current = panOffset;
+  const selectedTrackRef = useRef(selectedTrack);
+  selectedTrackRef.current = selectedTrack;
+  const isPrimaryRef = useRef(isPrimary);
+  isPrimaryRef.current = isPrimary;
+  const fitModeRef = useRef(fitMode);
+  fitModeRef.current = fitMode;
+  const broadcastDetectionsRef = useRef(broadcastDetections);
+  broadcastDetectionsRef.current = broadcastDetections;
 
   // Responsive ResizeObserver for crisp Canvas sizing
   useEffect(() => {
@@ -140,8 +166,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
       const constraints: MediaStreamConstraints = {
         video: {
           facingMode: { ideal: cameraFacing },
-          width: { ideal: 1920, min: 640 },
-          height: { ideal: 1080, min: 480 }
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         },
         audio: false
       };
@@ -160,7 +186,15 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           if (videoEl) {
             videoEl.srcObject = stream;
             videoEl.play().then(() => {
-              if (!isCancelled) setStreamStatus('playing');
+              if (!isCancelled) {
+                setStreamStatus('playing');
+                if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+                  setStreamInfo(prev => ({
+                    ...prev,
+                    resolution: `${videoEl.videoWidth}x${videoEl.videoHeight}`
+                  }));
+                }
+              }
             }).catch(err => {
               if (isCancelled) return;
               if (err.name === 'NotAllowedError') {
@@ -266,18 +300,28 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           const activeSource = isMjpeg ? mjpegEl : videoEl;
           const now = Date.now();
 
-          // Client-Side Real-Time Optical Motion & Person Detection (~15 FPS)
-          if (now - lastDetectionTimeRef.current >= 66 && activeSource) {
+          // Client-Side Real-Time Optical Motion & Person Detection (~10 FPS)
+          if (now - lastDetectionTimeRef.current >= 95 && activeSource) {
             lastDetectionTimeRef.current = now;
             try {
               const detectedTracks = detectorRef.current.processFrame(activeSource, focusedCamera.camera_id);
               if (detectedTracks && detectedTracks.length > 0) {
-                broadcastDetections(focusedCamera.camera_id, detectedTracks);
+                liveTracksRef.current = detectedTracks;
+                // Throttled broadcast to global context & server to prevent React re-render thrashing
+                if (now - lastBroadcastTimeRef.current >= 750) {
+                  lastBroadcastTimeRef.current = now;
+                  broadcastDetectionsRef.current(focusedCamera.camera_id, detectedTracks);
+                }
               }
             } catch {
               // ignore frame read exceptions
             }
           }
+
+          // Use live client detections immediately for instantaneous, smooth tracking overlay
+          const effectiveTracks = liveTracksRef.current.length > 0 
+            ? liveTracksRef.current 
+            : tracksRef.current;
 
           drawCameraFeed(
             ctx,
@@ -286,14 +330,15 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               height: canvas.height,
               cameraName: focusedCamera.name,
               cameraId: focusedCamera.camera_id,
-              isPrimary,
-              tracks,
-              students,
-              zoomLevel,
-              panOffset,
-              selectedTrackId: selectedTrack?.track_id || null,
-              highSuspicionThreshold: settings?.thresholds?.high_suspicion_threshold || 65,
-              videoSource: activeSource
+              isPrimary: isPrimaryRef.current,
+              tracks: effectiveTracks,
+              students: studentsRef.current,
+              zoomLevel: zoomLevelRef.current,
+              panOffset: panOffsetRef.current,
+              selectedTrackId: selectedTrackRef.current?.track_id || null,
+              highSuspicionThreshold: settingsRef.current?.thresholds?.high_suspicion_threshold || 65,
+              videoSource: activeSource,
+              fitMode: fitModeRef.current
             },
             now
           );
@@ -304,7 +349,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
     animationFrameId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [focusedCamera, tracks, students, zoomLevel, panOffset, selectedTrack, settings, isPrimary, broadcastDetections]);
+  }, [focusedCamera?.camera_id, focusedCamera?.status]);
 
   // User playback trigger (for autoplay restrictions)
   const handleStartPlayback = () => {
@@ -531,6 +576,20 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               <div className="h-4 w-px bg-slate-800 mx-1" />
             </>
           )}
+
+          {/* Auto Frame (Best View) Aspect Ratio Preservation Toggle */}
+          <button
+            onClick={() => setFitMode(prev => prev === 'contain' ? 'cover' : 'contain')}
+            className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition-all ${
+              fitMode === 'contain'
+                ? 'bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/80 shadow-sm'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+            }`}
+            title={fitMode === 'contain' ? 'Auto Frame Best View (Active): Preserves 100% natural camera aspect ratio with no stretching or distortion. Click to switch to Fill Screen.' : 'Fill Screen: Video fills canvas (edges cropped). Click for Auto Frame Best View.'}
+          >
+            <Scan className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">{fitMode === 'contain' ? 'Auto Frame (Best View)' : 'Fill Screen'}</span>
+          </button>
 
           <button
             onClick={handleZoomOut}

@@ -314,7 +314,96 @@ async function startServer() {
     return trimmed;
   }
 
-  const handleStreamProxy = (targetUrl: string, res: express.Response, req: express.Request, redirectCount = 0) => {
+  // Cache for resolved Google Drive video direct URLs and session cookies
+  const gdriveResolutionCache = new Map<string, { finalUrl: string; cookies: string; expireAt: number }>();
+
+  const resolveGoogleDriveStreamUrl = async (fileId: string): Promise<{ finalUrl: string; cookies: string } | null> => {
+    const cached = gdriveResolutionCache.get(fileId);
+    if (cached && cached.expireAt > Date.now()) {
+      return cached;
+    }
+
+    return new Promise((resolve) => {
+      const initialUrl = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`;
+      let accumulatedCookies = '';
+
+      const req1 = https.get(initialUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 }, (res1) => {
+        const rawCookies1 = (res1.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
+        if (rawCookies1) accumulatedCookies = rawCookies1;
+
+        const location1 = res1.headers['location'];
+        if (location1) {
+          const req2 = https.get(location1, {
+            headers: { 'User-Agent': 'Mozilla/5.0', 'Cookie': accumulatedCookies },
+            timeout: 10000
+          }, (res2) => {
+            const rawCookies2 = (res2.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
+            if (rawCookies2) {
+              accumulatedCookies = accumulatedCookies ? `${accumulatedCookies}; ${rawCookies2}` : rawCookies2;
+            }
+
+            // If it's already a direct video or binary stream
+            const contentType2 = res2.headers['content-type'] || '';
+            if (!contentType2.includes('text/html')) {
+              const result = { finalUrl: location1, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
+              gdriveResolutionCache.set(fileId, result);
+              res2.destroy();
+              return resolve(result);
+            }
+
+            // Otherwise, it's the Google Drive Virus Scan warning page for large videos (>100MB)
+            let htmlBody = '';
+            res2.on('data', chunk => {
+              if (htmlBody.length < 50000) htmlBody += chunk.toString('utf8');
+            });
+            res2.on('end', () => {
+              const uuidMatch = htmlBody.match(/name="uuid"\s+value="([^"]+)"/);
+              const actionMatch = htmlBody.match(/action="([^"]+)"/);
+              const actionUrl = actionMatch ? actionMatch[1] : 'https://drive.usercontent.google.com/download';
+              
+              if (uuidMatch) {
+                const finalUrl = `${actionUrl}?id=${encodeURIComponent(fileId)}&export=download&confirm=t&uuid=${encodeURIComponent(uuidMatch[1])}`;
+                const result = { finalUrl, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
+                gdriveResolutionCache.set(fileId, result);
+                return resolve(result);
+              }
+
+              // Fallback to direct confirm URL
+              const fallbackUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+              resolve({ finalUrl: fallbackUrl, cookies: accumulatedCookies });
+            });
+          });
+
+          req2.on('error', () => {
+            resolve({
+              finalUrl: `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
+              cookies: accumulatedCookies
+            });
+          });
+        } else {
+          resolve({
+            finalUrl: `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
+            cookies: accumulatedCookies
+          });
+        }
+      });
+
+      req1.on('error', () => {
+        resolve({
+          finalUrl: `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
+          cookies: ''
+        });
+      });
+    });
+  };
+
+  const handleStreamProxy = (
+    targetUrl: string,
+    res: express.Response,
+    req: express.Request,
+    redirectCount = 0,
+    customCookies = ''
+  ) => {
     if (redirectCount > 5) {
       return res.status(508).json({ error: 'Too many stream redirects.' });
     }
@@ -327,15 +416,22 @@ async function startServer() {
       const headers: Record<string, string> = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       };
+      if (customCookies) {
+        headers['Cookie'] = customCookies;
+      }
       if (req.headers.range) {
         headers['range'] = req.headers.range as string;
       }
 
-      const proxyReq = client.get(targetUrl, { headers, timeout: 15000 }, (proxyRes) => {
+      const proxyReq = client.get(targetUrl, { headers, timeout: 20000 }, (proxyRes) => {
+        // Collect any set-cookies along redirects
+        const newCookies = (proxyRes.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
+        const mergedCookies = customCookies ? (newCookies ? `${customCookies}; ${newCookies}` : customCookies) : newCookies;
+
         // Handle HTTP Redirects (301, 302, 303, 307, 308)
         if (proxyRes.statusCode && [301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
           const redirectUrl = new URL(proxyRes.headers.location, targetUrl).toString();
-          return handleStreamProxy(redirectUrl, res, req, redirectCount + 1);
+          return handleStreamProxy(redirectUrl, res, req, redirectCount + 1, mergedCookies);
         }
 
         res.status(proxyRes.statusCode || 200);
@@ -382,11 +478,22 @@ async function startServer() {
   };
 
   // Dedicated Google Drive Video Stream Proxy
-  app.get('/api/proxy/gdrive/:fileId', (req, res) => {
+  app.get('/api/proxy/gdrive/:fileId', async (req, res) => {
     const fileId = req.params.fileId;
     if (!fileId) return res.status(400).json({ error: 'Missing fileId parameter.' });
-    const directUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
-    handleStreamProxy(directUrl, res, req);
+    
+    try {
+      const resolved = await resolveGoogleDriveStreamUrl(fileId);
+      if (resolved && resolved.finalUrl) {
+        handleStreamProxy(resolved.finalUrl, res, req, 0, resolved.cookies);
+      } else {
+        const directUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+        handleStreamProxy(directUrl, res, req);
+      }
+    } catch (err: any) {
+      const directUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+      handleStreamProxy(directUrl, res, req);
+    }
   });
 
   // Public Stream Proxy for CORS & HTTPS bypass

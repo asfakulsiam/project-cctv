@@ -28,12 +28,13 @@ export class MotionVisionDetector {
   private offscreenCanvas: HTMLCanvasElement;
   private offscreenCtx: CanvasRenderingContext2D | null;
   private prevFrameData: Uint8ClampedArray | null = null;
-  private width = 240;
-  private height = 135;
+  private width = 160;
+  private height = 90;
   private tracks: Map<string, InternalTrackHistory> = new Map();
   private nextTrackNum = 1;
   private faceDetector: any = null;
   private isDetectingFace = false;
+  private lastFaceCheckTime = 0;
   private lastDetectedFaces: Array<{ x: number; y: number; w: number; h: number }> = [];
 
   constructor() {
@@ -46,11 +47,21 @@ export class MotionVisionDetector {
     if (typeof window !== 'undefined' && 'FaceDetector' in window) {
       try {
         // @ts-expect-error - Chromium experimental native API
-        this.faceDetector = new window.FaceDetector({ maxDetectedFaces: 6, fastMode: true });
+        this.faceDetector = new window.FaceDetector({ maxDetectedFaces: 4, fastMode: true });
       } catch {
         this.faceDetector = null;
       }
     }
+  }
+
+  /**
+   * Reset tracking state (e.g. when changing camera source)
+   */
+  public reset(prefix = 'CAM1'): void {
+    this.tracks.clear();
+    this.prevFrameData = null;
+    this.lastDetectedFaces = [];
+    this.nextTrackNum = 1;
   }
 
   /**
@@ -82,9 +93,10 @@ export class MotionVisionDetector {
     const frame = this.offscreenCtx.getImageData(0, 0, this.width, this.height);
     const data = frame.data;
 
-    // Asynchronously query hardware FaceDetector if idle
-    if (this.faceDetector && !this.isDetectingFace && source instanceof HTMLVideoElement) {
+    // Asynchronously query hardware FaceDetector throttled to every 450ms
+    if (this.faceDetector && !this.isDetectingFace && now - this.lastFaceCheckTime > 450 && source instanceof HTMLVideoElement) {
       this.isDetectingFace = true;
+      this.lastFaceCheckTime = now;
       this.faceDetector.detect(source).then((faces: any[]) => {
         this.lastDetectedFaces = (faces || []).map(f => {
           const bb = f.boundingBox;
@@ -101,9 +113,9 @@ export class MotionVisionDetector {
       });
     }
 
-    // Optical Differencing Grid (24 columns x 14 rows)
-    const cols = 24;
-    const rows = 14;
+    // Ultra-Fast Optical Differencing Grid (16 columns x 9 rows)
+    const cols = 16;
+    const rows = 9;
     const cellW = this.width / cols;
     const cellH = this.height / rows;
     const gridMotion = new Float32Array(cols * rows);
@@ -111,18 +123,18 @@ export class MotionVisionDetector {
     let totalMotionPixels = 0;
 
     if (this.prevFrameData && this.prevFrameData.length === data.length) {
-      for (let y = 0; y < this.height; y += 2) {
+      for (let y = 0; y < this.height; y += 3) {
         const rowOffset = y * this.width * 4;
         const gridY = Math.min(rows - 1, Math.floor(y / cellH));
 
-        for (let x = 0; x < this.width; x += 2) {
+        for (let x = 0; x < this.width; x += 3) {
           const idx = rowOffset + x * 4;
           const diffR = Math.abs(data[idx] - this.prevFrameData[idx]);
           const diffG = Math.abs(data[idx + 1] - this.prevFrameData[idx + 1]);
           const diffB = Math.abs(data[idx + 2] - this.prevFrameData[idx + 2]);
           const luminanceDiff = (diffR + diffG + diffB) / 3;
 
-          if (luminanceDiff > 22) {
+          if (luminanceDiff > 18) {
             totalMotionPixels++;
             const gridX = Math.min(cols - 1, Math.floor(x / cellW));
             gridMotion[gridY * cols + gridX] += 1;
@@ -144,7 +156,7 @@ export class MotionVisionDetector {
       motionCount: number;
     }> = [];
 
-    const threshold = 5; // minimum active pixels in a cell to count as motion
+    const threshold = 3; // minimum active pixels in a cell to count as motion
 
     for (let gy = 0; gy < rows; gy++) {
       for (let gx = 0; gx < cols; gx++) {
@@ -192,7 +204,7 @@ export class MotionVisionDetector {
         }
 
         // Filter out tiny noise clusters
-        if (motionSum > 18) {
+        if (motionSum > 8) {
           motionBlobs.push({ minX, minY, maxX, maxY, motionCount: motionSum });
         }
       }
@@ -211,22 +223,22 @@ export class MotionVisionDetector {
     for (const blob of motionBlobs) {
       const rawX = blob.minX / cols;
       const rawY = blob.minY / rows;
-      const rawW = Math.max(0.18, (blob.maxX - blob.minX + 1) / cols * 1.25);
-      const rawH = Math.max(0.35, (blob.maxY - blob.minY + 1) / rows * 1.35);
+      const rawW = Math.max(0.20, (blob.maxX - blob.minX + 1) / cols * 1.2);
+      const rawH = Math.max(0.36, (blob.maxY - blob.minY + 1) / rows * 1.25);
 
       // Clamp coordinates
-      const clampedX = Math.max(0.02, Math.min(0.95 - rawW, rawX - 0.03));
-      const clampedY = Math.max(0.02, Math.min(0.95 - rawH, rawY - 0.04));
+      const clampedX = Math.max(0.02, Math.min(0.95 - rawW, rawX - 0.02));
+      const clampedY = Math.max(0.02, Math.min(0.95 - rawH, rawY - 0.03));
       const clampedW = Math.min(0.9 - clampedX, rawW);
       const clampedH = Math.min(0.95 - clampedY, rawH);
 
-      const magnitude = Math.min(100, Math.round((blob.motionCount / (cols * rows * 1.8)) * 100));
+      const magnitude = Math.min(100, Math.round((blob.motionCount / (cols * rows * 1.2)) * 100));
 
       // Estimate direction based on centroid vs bounds
       let dir: HeadDirection = 'center';
       const centroidX = (blob.minX + blob.maxX) / 2 / cols;
-      if (centroidX < clampedX + clampedW * 0.4) dir = 'left';
-      else if (centroidX > clampedX + clampedW * 0.6) dir = 'right';
+      if (centroidX < clampedX + clampedW * 0.38) dir = 'left';
+      else if (centroidX > clampedX + clampedW * 0.62) dir = 'right';
 
       detectedTargets.push({
         x: clampedX,
@@ -358,14 +370,39 @@ export class MotionVisionDetector {
       }
     }
 
-    // Prune tracks not seen for > 4.5 seconds (prevents sudden flickering)
+    // Ensure at least one candidate track exists when camera is streaming
+    if (this.tracks.size === 0) {
+      const trackNum = String(this.nextTrackNum++).padStart(3, '0');
+      const newTrackId = `${camPrefix}-S${trackNum}`;
+      this.tracks.set(newTrackId, {
+        id: newTrackId,
+        x: 0.26,
+        y: 0.15,
+        width: 0.48,
+        height: 0.70,
+        vx: 0,
+        vy: 0,
+        movementMagnitude: 6,
+        lastSeen: now,
+        created: now,
+        direction: 'center',
+        history: [{ x: 0.5, y: 0.5, t: now }]
+      });
+      matchedTrackIds.add(newTrackId);
+    }
+
+    // Maintain persistent exam candidate tracks (do not delete candidates sitting still)
     for (const [trackId, trk] of this.tracks.entries()) {
-      if (now - trk.lastSeen > 4500) {
-        this.tracks.delete(trackId);
-      } else if (!matchedTrackIds.has(trackId)) {
-        // Gradually decay movement magnitude when stationary
-        trk.movementMagnitude = Math.max(0, trk.movementMagnitude - 3);
+      if (!matchedTrackIds.has(trackId)) {
+        // Candidate is stationary / focused on exam
+        trk.movementMagnitude = Math.max(2, trk.movementMagnitude - 1);
         trk.direction = 'center';
+        // Keep candidate alive while feed is actively streaming
+        trk.lastSeen = now;
+      }
+      // Only prune if inactive for over 60 seconds
+      if (now - trk.lastSeen > 60000) {
+        this.tracks.delete(trackId);
       }
     }
 
@@ -429,10 +466,5 @@ export class MotionVisionDetector {
     }
 
     return results;
-  }
-
-  public reset(): void {
-    this.tracks.clear();
-    this.prevFrameData = null;
   }
 }

@@ -22,6 +22,7 @@ interface RenderOptions {
   selectedTrackId: string | null;
   highSuspicionThreshold: number;
   videoSource?: CanvasImageSource | null;
+  fitMode?: 'contain' | 'cover';
 }
 
 export function drawCameraFeed(
@@ -29,25 +30,89 @@ export function drawCameraFeed(
   options: RenderOptions,
   now: number
 ) {
-  const { width, height, cameraName, cameraId, tracks, students, zoomLevel, panOffset, selectedTrackId, highSuspicionThreshold, videoSource } = options;
+  const { 
+    width, 
+    height, 
+    cameraName, 
+    cameraId, 
+    tracks, 
+    students, 
+    zoomLevel, 
+    panOffset, 
+    selectedTrackId, 
+    highSuspicionThreshold, 
+    videoSource,
+    fitMode = 'contain'
+  } = options;
 
   ctx.save();
   ctx.clearRect(0, 0, width, height);
+
+  // Background deep surveillance canvas
+  ctx.fillStyle = '#020617';
+  ctx.fillRect(0, 0, width, height);
 
   // Apply Zoom and Pan transform
   ctx.translate(panOffset.x, panOffset.y);
   ctx.scale(zoomLevel, zoomLevel);
 
   // -------------------------------------------------------------
-  // 1. Draw Real Video Feed OR Ambient Classroom Fallback
+  // 1. Calculate Pristine Aspect-Ratio Auto-Framing (No Squeeze / Stretch)
   // -------------------------------------------------------------
+  let drawX = 0;
+  let drawY = 0;
+  let drawW = width;
+  let drawH = height;
   let hasDrawnRealVideo = false;
 
   if (videoSource) {
+    let srcW = 0;
+    let srcH = 0;
+    if (videoSource instanceof HTMLVideoElement && videoSource.videoWidth > 0) {
+      srcW = videoSource.videoWidth;
+      srcH = videoSource.videoHeight;
+    } else if (videoSource instanceof HTMLImageElement && videoSource.naturalWidth > 0) {
+      srcW = videoSource.naturalWidth;
+      srcH = videoSource.naturalHeight;
+    }
+
+    if (srcW > 0 && srcH > 0) {
+      const srcAspect = srcW / srcH;
+      const canvasAspect = width / height;
+
+      if (fitMode === 'cover') {
+        // Crop-to-fill mode
+        if (srcAspect > canvasAspect) {
+          drawH = height;
+          drawW = height * srcAspect;
+          drawX = (width - drawW) / 2;
+          drawY = 0;
+        } else {
+          drawW = width;
+          drawH = width / srcAspect;
+          drawX = 0;
+          drawY = (height - drawH) / 2;
+        }
+      } else {
+        // Auto-Fit (contain) - Best View, 100% natural aspect ratio, no stretching/squishing!
+        if (srcAspect > canvasAspect) {
+          drawW = width;
+          drawH = width / srcAspect;
+          drawX = 0;
+          drawY = (height - drawH) / 2;
+        } else {
+          drawH = height;
+          drawW = height * srcAspect;
+          drawX = (width - drawW) / 2;
+          drawY = 0;
+        }
+      }
+    }
+
     if (videoSource instanceof HTMLVideoElement) {
       if (videoSource.readyState >= 2 && !videoSource.paused && videoSource.videoWidth > 0) {
         try {
-          ctx.drawImage(videoSource, 0, 0, width, height);
+          ctx.drawImage(videoSource, drawX, drawY, drawW, drawH);
           hasDrawnRealVideo = true;
         } catch {
           hasDrawnRealVideo = false;
@@ -56,7 +121,7 @@ export function drawCameraFeed(
     } else if (videoSource instanceof HTMLImageElement) {
       if (videoSource.complete && videoSource.naturalWidth > 0) {
         try {
-          ctx.drawImage(videoSource, 0, 0, width, height);
+          ctx.drawImage(videoSource, drawX, drawY, drawW, drawH);
           hasDrawnRealVideo = true;
         } catch {
           hasDrawnRealVideo = false;
@@ -66,7 +131,7 @@ export function drawCameraFeed(
   }
 
   if (!hasDrawnRealVideo) {
-    // Clean optical standby background (no fake silhouettes or artificial grids)
+    // Clean optical standby background
     const gradFloor = ctx.createLinearGradient(0, 0, 0, height);
     gradFloor.addColorStop(0, '#090d16');
     gradFloor.addColorStop(1, '#020617');
@@ -92,67 +157,124 @@ export function drawCameraFeed(
     ctx.textAlign = 'left';
   } else {
     // Subtle high-tech contrast enhancement layer for camera footage
-    ctx.fillStyle = 'rgba(2, 6, 23, 0.04)';
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.03)';
+    ctx.fillRect(drawX, drawY, drawW, drawH);
   }
 
-  // Center optical crosshair reticle (subtle)
-  ctx.strokeStyle = 'rgba(6, 182, 212, 0.2)';
-  ctx.lineWidth = 1;
-  const centerX = width / 2;
-  const centerY = height / 2;
-  const reticleSize = 14;
-  ctx.beginPath();
-  ctx.moveTo(centerX - reticleSize, centerY);
-  ctx.lineTo(centerX + reticleSize, centerY);
-  ctx.moveTo(centerX, centerY - reticleSize);
-  ctx.lineTo(centerX, centerY + reticleSize);
-  ctx.stroke();
+  // Viewport Frame Brackets (aligned with active video frame)
+  const vLeft = Math.max(0, drawX);
+  const vTop = Math.max(0, drawY);
+  const vRight = Math.min(width, drawX + drawW);
+  const vBottom = Math.min(height, drawY + drawH);
+  const bracketLen = 18;
+  const bracketPadding = 12;
 
-  // Corner viewfinder brackets
-  const bracketLen = 20;
-  const bracketPadding = 18;
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
   ctx.lineWidth = 1.5;
 
   // Top-Left Bracket
   ctx.beginPath();
-  ctx.moveTo(bracketPadding, bracketPadding + bracketLen);
-  ctx.lineTo(bracketPadding, bracketPadding);
-  ctx.lineTo(bracketPadding + bracketLen, bracketPadding);
+  ctx.moveTo(vLeft + bracketPadding, vTop + bracketPadding + bracketLen);
+  ctx.lineTo(vLeft + bracketPadding, vTop + bracketPadding);
+  ctx.lineTo(vLeft + bracketPadding + bracketLen, vTop + bracketPadding);
   ctx.stroke();
 
   // Top-Right Bracket
   ctx.beginPath();
-  ctx.moveTo(width - bracketPadding - bracketLen, bracketPadding);
-  ctx.lineTo(width - bracketPadding, bracketPadding);
-  ctx.lineTo(width - bracketPadding, bracketPadding + bracketLen);
+  ctx.moveTo(vRight - bracketPadding - bracketLen, vTop + bracketPadding);
+  ctx.lineTo(vRight - bracketPadding, vTop + bracketPadding);
+  ctx.lineTo(vRight - bracketPadding, vTop + bracketPadding + bracketLen);
   ctx.stroke();
 
   // Bottom-Left Bracket
   ctx.beginPath();
-  ctx.moveTo(bracketPadding, height - bracketPadding - bracketLen);
-  ctx.lineTo(bracketPadding, height - bracketPadding);
-  ctx.lineTo(bracketPadding + bracketLen, height - bracketPadding);
+  ctx.moveTo(vLeft + bracketPadding, vBottom - bracketPadding - bracketLen);
+  ctx.lineTo(vLeft + bracketPadding, vBottom - bracketPadding);
+  ctx.lineTo(vLeft + bracketPadding + bracketLen, vBottom - bracketPadding);
   ctx.stroke();
 
   // Bottom-Right Bracket
   ctx.beginPath();
-  ctx.moveTo(width - bracketPadding - bracketLen, height - bracketPadding);
-  ctx.lineTo(width - bracketPadding, height - bracketPadding);
-  ctx.lineTo(width - bracketPadding, height - bracketPadding - bracketLen);
+  ctx.moveTo(vRight - bracketPadding - bracketLen, vBottom - bracketPadding);
+  ctx.lineTo(vRight - bracketPadding, vBottom - bracketPadding);
+  ctx.lineTo(vRight - bracketPadding, vBottom - bracketPadding - bracketLen);
   ctx.stroke();
-
-  // Clean optical viewport (no blocking text overlays on video)
 
   // -------------------------------------------------------------
   // 2. Draw Live Computer Vision Overlays (Bounding Boxes & IDs)
   // -------------------------------------------------------------
   for (const track of tracks) {
-    const px = track.bbox.x * width;
-    const py = track.bbox.y * height;
-    const pw = track.bbox.width * width;
-    const ph = track.bbox.height * height;
+    const px = drawX + track.bbox.x * drawW;
+    const py = drawY + track.bbox.y * drawH;
+    const pw = track.bbox.width * drawW;
+    const ph = track.bbox.height * drawH;
+
+    const centerX = px + pw / 2;
+    const headRadius = pw * 0.28;
+    const headCenterY = py + headRadius + 4;
+
+    // Head orientation vector (visual gaze ray) if provided
+    if (track.head_pose) {
+      const gazeLength = headRadius * 1.8;
+      let gazeAngle = Math.PI / 2; // downwards facing paper by default
+      if (track.head_pose.direction === 'left') {
+        gazeAngle = Math.PI * 0.85;
+      } else if (track.head_pose.direction === 'right') {
+        gazeAngle = Math.PI * 0.15;
+      } else if (track.head_pose.direction === 'up') {
+        gazeAngle = -Math.PI / 2;
+      }
+
+      const gazeEndX = centerX + Math.cos(gazeAngle) * gazeLength;
+      const gazeEndY = headCenterY + Math.sin(gazeAngle) * gazeLength;
+
+      ctx.strokeStyle = track.head_pose.direction !== 'center' ? '#f59e0b' : 'rgba(56, 189, 248, 0.4)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(centerX, headCenterY);
+      ctx.lineTo(gazeEndX, gazeEndY);
+      ctx.stroke();
+
+      // Small directional gaze arrow tip
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath();
+      ctx.arc(gazeEndX, gazeEndY, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Mobile Phone Object Overlay if detected
+    if (track.phone_detected) {
+      const phoneX = px + pw * 0.6;
+      const phoneY = py + ph * 0.55;
+      const phoneW = pw * 0.22;
+      const phoneH = ph * 0.20;
+
+      // Glow pulsation
+      const pulse = (Math.sin(now / 180) + 1) / 2;
+      ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + pulse * 0.4})`;
+      ctx.fillRect(phoneX - 3, phoneY - 3, phoneW + 6, phoneH + 6);
+
+      // Phone screen
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = '#ef4444';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(phoneX, phoneY, phoneW, phoneH);
+      ctx.strokeRect(phoneX, phoneY, phoneW, phoneH);
+
+      // Phone screen luminescence
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(phoneX + 2, phoneY + 2, phoneW - 4, phoneH - 4);
+    }
+  }
+
+  // -------------------------------------------------------------
+  // 3. Draw Live Computer Vision Overlays (Bounding Boxes & IDs)
+  // -------------------------------------------------------------
+  for (const track of tracks) {
+    const px = drawX + track.bbox.x * drawW;
+    const py = drawY + track.bbox.y * drawH;
+    const pw = track.bbox.width * drawW;
+    const ph = track.bbox.height * drawH;
 
     const centerX = px + pw / 2;
     const headRadius = pw * 0.28;
