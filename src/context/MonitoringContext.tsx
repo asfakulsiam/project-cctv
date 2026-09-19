@@ -44,6 +44,7 @@ interface MonitoringContextType {
   deleteCamera: (cameraId: string) => Promise<boolean>;
   updateCameraConfig: (cameraId: string, updates: Partial<CameraConfig>) => Promise<boolean>;
   testCameraConnection: (cameraId: string) => Promise<any>;
+  broadcastDetections: (cameraId: string, detections: CameraTrack[]) => void;
 }
 
 const defaultStats: SystemStats = {
@@ -387,6 +388,28 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
     }
   };
 
+  // Broadcast Real-time Video Detections to Local State & Backend Server
+  const broadcastDetections = useCallback((cameraId: string, detections: CameraTrack[]) => {
+    // 1. Instantly update local camera tracks for zero-latency client HUD bounding boxes
+    setTracksByCamera(prev => ({
+      ...prev,
+      [cameraId]: detections
+    }));
+
+    // 2. Transmit to server CV engine via WebSocket (or throttled POST)
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({
+          type: 'DETECTIONS',
+          camera_id: cameraId,
+          detections
+        }));
+      } catch {
+        // ignore socket send errors
+      }
+    }
+  }, []);
+
   return (
     <MonitoringContext.Provider
       value={{
@@ -413,7 +436,8 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
         addCamera,
         deleteCamera,
         updateCameraConfig,
-        testCameraConnection
+        testCameraConnection,
+        broadcastDetections
       }}
     >
       {children}

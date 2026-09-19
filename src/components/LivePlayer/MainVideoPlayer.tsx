@@ -14,6 +14,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
 import { drawCameraFeed } from '../../utils/canvasRenderer.js';
 import { resolveCameraStream } from '../../utils/streamHelper.js';
+import { MotionVisionDetector } from '../../utils/motionVisionDetector.js';
 import { CameraTrack } from '../../types.js';
 import { 
   ZoomIn, 
@@ -32,7 +33,8 @@ import {
   Volume2,
   VolumeX,
   RefreshCw,
-  Video
+  Video,
+  Camera
 } from 'lucide-react';
 
 interface MainVideoPlayerProps {
@@ -50,13 +52,34 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     selectedTrack, 
     setSelectedTrack,
     setSelectedStudent,
-    primaryCameraId
+    primaryCameraId,
+    broadcastDetections
   } = useMonitoring();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mjpegRef = useRef<HTMLImageElement>(null);
+
+  // Client-Side Optical Vision & Motion Detector
+  const detectorRef = useRef<MotionVisionDetector>(new MotionVisionDetector());
+  const lastDetectionTimeRef = useRef<number>(0);
+
+  // Phone Camera Facing (Rear/Back vs Front camera) - defaults to Rear (environment)
+  const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('preferred_camera_facing') as 'environment' | 'user') || 'environment';
+    }
+    return 'environment';
+  });
+
+  const handleToggleCameraFacing = () => {
+    const nextFacing = cameraFacing === 'environment' ? 'user' : 'environment';
+    setCameraFacing(nextFacing);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('preferred_camera_facing', nextFacing);
+    }
+  };
 
   // Zoom & Pan state
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
@@ -108,33 +131,51 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     setErrorMessage(null);
 
     let activeStream: MediaStream | null = null;
+    let isCancelled = false;
     const videoEl = videoRef.current;
     const mjpegEl = mjpegRef.current;
 
     if (resolution.kind === 'webcam') {
       if (mjpegEl) mjpegEl.src = '';
-      navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      const constraints: MediaStreamConstraints = {
+        video: {
+          facingMode: { ideal: cameraFacing },
+          width: { ideal: 1920, min: 640 },
+          height: { ideal: 1080, min: 480 }
+        },
         audio: false
-      }).then(stream => {
-        activeStream = stream;
-        if (videoEl) {
-          videoEl.srcObject = stream;
-          videoEl.play().then(() => {
-            setStreamStatus('playing');
-          }).catch(err => {
-            if (err.name === 'NotAllowedError') {
-              setStreamStatus('blocked');
-            } else {
-              setStreamStatus('error');
-              setErrorMessage(err.message);
-            }
-          });
-        }
-      }).catch(err => {
-        setStreamStatus('error');
-        setErrorMessage(`Camera hardware access denied: ${err.message}`);
-      });
+      };
+
+      navigator.mediaDevices.getUserMedia(constraints)
+        .catch(() => {
+          // Hardware fallback if specific lens constraint fails
+          return navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        })
+        .then(stream => {
+          if (isCancelled) {
+            stream.getTracks().forEach(t => t.stop());
+            return;
+          }
+          activeStream = stream;
+          if (videoEl) {
+            videoEl.srcObject = stream;
+            videoEl.play().then(() => {
+              if (!isCancelled) setStreamStatus('playing');
+            }).catch(err => {
+              if (isCancelled) return;
+              if (err.name === 'NotAllowedError') {
+                setStreamStatus('blocked');
+              } else {
+                setStreamStatus('error');
+                setErrorMessage(err.message);
+              }
+            });
+          }
+        }).catch(err => {
+          if (isCancelled) return;
+          setStreamStatus('error');
+          setErrorMessage(`Camera hardware access denied: ${err.message}`);
+        });
     } else if (resolution.kind === 'mjpeg') {
       if (videoEl) {
         videoEl.pause();
@@ -195,6 +236,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     }
 
     return () => {
+      isCancelled = true;
       if (activeStream) {
         activeStream.getTracks().forEach(t => t.stop());
       }
@@ -207,9 +249,9 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         mjpegEl.src = '';
       }
     };
-  }, [focusedCamera?.camera_id, focusedCamera?.source_url, focusedCamera?.source_type, focusedCamera?.status, focusedCamera?.enabled]);
+  }, [focusedCamera?.camera_id, focusedCamera?.source_url, focusedCamera?.source_type, focusedCamera?.status, focusedCamera?.enabled, cameraFacing]);
 
-  // Animation Loop for live canvas rendering with real video feed
+  // Animation Loop for live canvas rendering with real video feed and real-time movement tracking
   useEffect(() => {
     let animationFrameId: number;
 
@@ -222,6 +264,20 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           const mjpegEl = mjpegRef.current;
           const isMjpeg = focusedCamera.source_type === 'ip_webcam' || (focusedCamera.source_url || '').includes(':8080');
           const activeSource = isMjpeg ? mjpegEl : videoEl;
+          const now = Date.now();
+
+          // Client-Side Real-Time Optical Motion & Person Detection (~15 FPS)
+          if (now - lastDetectionTimeRef.current >= 66 && activeSource) {
+            lastDetectionTimeRef.current = now;
+            try {
+              const detectedTracks = detectorRef.current.processFrame(activeSource, focusedCamera.camera_id);
+              if (detectedTracks && detectedTracks.length > 0) {
+                broadcastDetections(focusedCamera.camera_id, detectedTracks);
+              }
+            } catch {
+              // ignore frame read exceptions
+            }
+          }
 
           drawCameraFeed(
             ctx,
@@ -239,7 +295,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               highSuspicionThreshold: settings?.thresholds?.high_suspicion_threshold || 65,
               videoSource: activeSource
             },
-            Date.now()
+            now
           );
         }
       }
@@ -248,7 +304,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
     animationFrameId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [focusedCamera, tracks, students, zoomLevel, panOffset, selectedTrack, settings, isPrimary]);
+  }, [focusedCamera, tracks, students, zoomLevel, panOffset, selectedTrack, settings, isPrimary, broadcastDetections]);
 
   // User playback trigger (for autoplay restrictions)
   const handleStartPlayback = () => {
@@ -438,6 +494,17 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
         {/* Playback, Zoom & Inspection Controls */}
         <div className="flex items-center space-x-1.5">
+          {focusedCamera && (focusedCamera.source_type === 'webcam' || (focusedCamera.source_url || '').startsWith('webcam:')) && (
+            <button
+              onClick={handleToggleCameraFacing}
+              className="px-2.5 py-1 rounded bg-cyan-950/70 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/80 text-xs font-semibold flex items-center space-x-1.5 transition-colors shadow-sm"
+              title="Flip between Phone Rear/Back Camera (CCTV) and Front Selfie Camera"
+            >
+              <Camera className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{cameraFacing === 'environment' ? 'Rear Cam (CCTV)' : 'Front Cam'}</span>
+            </button>
+          )}
+
           {focusedCamera && focusedCamera.source_type !== 'webcam' && (
             <>
               <button

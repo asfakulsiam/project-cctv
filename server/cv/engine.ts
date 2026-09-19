@@ -169,6 +169,7 @@ export class MultiCameraCVEngine {
 
       // Ingest detections from real camera input queue (or empty if idle)
       const rawDetections = this.cameraDetectionsQueue.get(cameraId) || [];
+      this.cameraDetectionsQueue.delete(cameraId);
 
       // INDEPENDENT PER-CAMERA TRACKING
       const tracks = tracker.updateDetections(rawDetections, now);

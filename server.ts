@@ -84,6 +84,10 @@ async function startServer() {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'PING') {
           ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
+        } else if (msg.type === 'DETECTIONS' && msg.camera_id && Array.isArray(msg.detections)) {
+          if (cvEngine) {
+            cvEngine.injectCameraDetections(msg.camera_id, msg.detections);
+          }
         }
       } catch {
         // ignore malformed ws messages

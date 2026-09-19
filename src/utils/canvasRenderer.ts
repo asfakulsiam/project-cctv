@@ -143,17 +143,7 @@ export function drawCameraFeed(
   ctx.lineTo(width - bracketPadding, height - bracketPadding - bracketLen);
   ctx.stroke();
 
-  // Optical HUD Overlays: Camera Label & Live Status
-  ctx.fillStyle = 'rgba(226, 232, 240, 0.85)';
-  ctx.font = '10px "JetBrains Mono", monospace';
-  ctx.fillText(`CAM: ${cameraName.toUpperCase()}`, bracketPadding + 6, bracketPadding + 14);
-
-  // Live Timestamp in top right
-  const liveIsoDate = new Date(now).toISOString().replace('T', ' ').substring(0, 19);
-  ctx.textAlign = 'right';
-  ctx.fillStyle = 'rgba(148, 163, 184, 0.85)';
-  ctx.fillText(liveIsoDate, width - bracketPadding - 6, bracketPadding + 14);
-  ctx.textAlign = 'left';
+  // Clean optical viewport (no blocking text overlays on video)
 
   // -------------------------------------------------------------
   // 2. Draw Live Computer Vision Overlays (Bounding Boxes & IDs)
@@ -395,42 +385,8 @@ export function drawCameraFeed(
   ctx.restore();
 
   // -------------------------------------------------------------
-  // 4. On-Screen Camera HUD (Top Left & Top Right)
+  // 4. Clean Viewport (No blocking overlays on top of video)
   // -------------------------------------------------------------
-  // Camera Name & Mode Pill (Top Left)
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-  ctx.strokeStyle = 'rgba(51, 65, 85, 0.8)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.roundRect(14, 14, 280, 32, 6);
-  ctx.fill();
-  ctx.stroke();
-
-  // Flashing recording dot
-  const isPulse = Math.floor(now / 500) % 2 === 0;
-  ctx.fillStyle = isPulse ? '#ef4444' : '#991b1b';
-  ctx.beginPath();
-  ctx.arc(26, 30, 4.5, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#f8fafc';
-  ctx.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(cameraName, 38, 34);
-
-  // Top Right Telemetry: FPS, Timestamp & Resolution
-  const dateStr = new Date(now).toLocaleTimeString('en-US', { hour12: false });
-  const hudInfo = `LIVE REC • ${dateStr} • 15.0 FPS`;
-  ctx.font = '600 11px "JetBrains Mono", monospace';
-  const hudW = ctx.measureText(hudInfo).width + 16;
-
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-  ctx.beginPath();
-  ctx.roundRect(width - hudW - 14, 14, hudW, 32, 6);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = '#38bdf8';
-  ctx.fillText(hudInfo, width - hudW - 6, 34);
 
   // Zoom factor indicator if zoomed
   if (zoomLevel > 1.0) {
