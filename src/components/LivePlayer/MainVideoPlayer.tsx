@@ -307,29 +307,23 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
             lastDetectionTimeRef.current = now;
             try {
               const detectedTracks = detectorRef.current.processFrame(activeSource, focusedCamera.camera_id);
-              // Directly update live tracks (clears out immediately when no human is in view)
-              liveTracksRef.current = detectedTracks || [];
-
-              // Throttled broadcast to global context & server
-              if (now - lastBroadcastTimeRef.current >= 650) {
-                lastBroadcastTimeRef.current = now;
-                broadcastDetectionsRef.current(focusedCamera.camera_id, liveTracksRef.current);
+              if (detectedTracks && detectedTracks.length > 0) {
+                liveTracksRef.current = detectedTracks;
+                // Throttled broadcast to global context & server to prevent React re-render thrashing
+                if (now - lastBroadcastTimeRef.current >= 750) {
+                  lastBroadcastTimeRef.current = now;
+                  broadcastDetectionsRef.current(focusedCamera.camera_id, detectedTracks);
+                }
               }
             } catch {
               // ignore frame read exceptions
             }
           }
 
-          const isInternalWebcam = focusedCamera.source_type === 'webcam' || 
-                                   focusedCamera.source_type === 'usb' || 
-                                   (focusedCamera.source_url || '').startsWith('webcam:') ||
-                                   (focusedCamera.source_url || '') === 'webcam:default';
-
-          // For internal/local webcams, client optical vision is the authoritative ground truth
-          // For remote CCTV feeds, use client detections if available, otherwise server tracking
-          const effectiveTracks = isInternalWebcam 
+          // Use live client detections immediately for instantaneous, smooth tracking overlay
+          const effectiveTracks = liveTracksRef.current.length > 0 
             ? liveTracksRef.current 
-            : (liveTracksRef.current.length > 0 ? liveTracksRef.current : tracksRef.current);
+            : tracksRef.current;
 
           drawCameraFeed(
             ctx,
