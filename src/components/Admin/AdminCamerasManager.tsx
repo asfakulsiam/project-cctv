@@ -563,6 +563,20 @@ export function AdminCamerasManager() {
                       type="button"
                       onClick={() => setFormData({
                         ...formData,
+                        name: 'Exam Hall CCTV (Google Drive)',
+                        source_type: 'stream',
+                        source_url: 'https://drive.google.com/file/d/1Ww9Yv7WprUGF0cDLZPfQpZ2szGB7saIG/view?usp=drivesdk',
+                        width: 1920,
+                        height: 1080
+                      })}
+                      className="px-2 py-1 rounded bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[11px] font-medium"
+                    >
+                      📁 Google Drive CCTV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({
+                        ...formData,
                         name: 'Exam Room CCTV Feed',
                         source_type: 'stream',
                         source_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
@@ -571,7 +585,7 @@ export function AdminCamerasManager() {
                       })}
                       className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] font-medium"
                     >
-                      📹 Video Stream Link
+                      📹 Direct MP4 Link
                     </button>
                   </div>
                 </div>
@@ -650,7 +664,25 @@ export function AdminCamerasManager() {
               </div>
 
               {/* Helpful Protocol Notice */}
-              {formData.source_type === 'ip_webcam' && (
+              {formData.source_url.includes('drive.google.com') && (
+                <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-[11px] leading-relaxed">
+                  <strong className="text-white flex items-center space-x-1.5 mb-0.5">
+                    <span>✨ Google Drive Video Link Detected!</span>
+                  </strong>
+                  Our backend proxy will automatically route this video stream with HTTP 206 Partial Content Range support and bypass virus-scan confirmation screens for seamless CCTV playback.
+                </div>
+              )}
+
+              {formData.source_url.includes('youtube.com') || formData.source_url.includes('youtu.be') ? (
+                <div className="p-2.5 rounded-lg bg-amber-950/50 border border-amber-800/70 text-amber-300 text-[11px] leading-relaxed">
+                  <strong className="text-white block mb-0.5">⚠️ YouTube Cross-Origin Notice:</strong>
+                  YouTube videos cannot be drawn onto an HTML5 Canvas for real-time Computer Vision bounding box analysis due to browser security restrictions on embedded iframes.
+                  <br />
+                  <strong>Recommended:</strong> Upload your CCTV video to <strong>Google Drive</strong> (set sharing to &quot;Anyone with the link&quot;) and paste the drive link here, or use a direct MP4/stream URL!
+                </div>
+              ) : null}
+
+              {formData.source_type === 'ip_webcam' && !formData.source_url.includes('drive.google.com') && (
                 <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/60 text-cyan-300 text-[11px] leading-relaxed">
                   <strong className="text-white block mb-0.5">📱 IP Webcam Setup Guide:</strong>
                   1. In the IP Webcam mobile app, tap <strong>&quot;Start Server&quot;</strong>.<br />

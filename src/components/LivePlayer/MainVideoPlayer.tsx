@@ -13,6 +13,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
 import { drawCameraFeed } from '../../utils/canvasRenderer.js';
+import { resolveCameraStream } from '../../utils/streamHelper.js';
 import { CameraTrack } from '../../types.js';
 import { 
   ZoomIn, 
@@ -25,7 +26,13 @@ import {
   WifiOff, 
   ChevronRight,
   ShieldAlert,
-  AlertCircle
+  AlertCircle,
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  RefreshCw,
+  Video
 } from 'lucide-react';
 
 interface MainVideoPlayerProps {
@@ -48,6 +55,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const mjpegRef = useRef<HTMLImageElement>(null);
 
   // Zoom & Pan state
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
@@ -56,6 +65,12 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [canvasDimensions, setCanvasDimensions] = useState<{ width: number; height: number }>({ width: 960, height: 540 });
+
+  // Stream state
+  const [streamStatus, setStreamStatus] = useState<'connecting' | 'playing' | 'paused' | 'error' | 'blocked' | 'offline'>('connecting');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isMuted, setIsMuted] = useState<boolean>(true);
+  const [streamInfo, setStreamInfo] = useState<{ label: string; resolution: string }>({ label: '', resolution: '' });
 
   const focusedCamera = cameras.find(c => c.camera_id === focusedCameraId) || cameras[0];
   const tracks = tracksByCamera[focusedCameraId] || [];
@@ -77,7 +92,124 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     return () => observer.disconnect();
   }, []);
 
-  // Animation Loop for live canvas rendering
+  // Connect & Manage Camera Video Stream
+  useEffect(() => {
+    if (!focusedCamera || focusedCamera.status === 'offline' || focusedCamera.enabled === false) {
+      setStreamStatus('offline');
+      return;
+    }
+
+    const resolution = resolveCameraStream(focusedCamera);
+    setStreamInfo({
+      label: resolution.label,
+      resolution: `${focusedCamera.resolution?.width || 1920}x${focusedCamera.resolution?.height || 1080}`
+    });
+    setStreamStatus('connecting');
+    setErrorMessage(null);
+
+    let activeStream: MediaStream | null = null;
+    const videoEl = videoRef.current;
+    const mjpegEl = mjpegRef.current;
+
+    if (resolution.kind === 'webcam') {
+      if (mjpegEl) mjpegEl.src = '';
+      navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      }).then(stream => {
+        activeStream = stream;
+        if (videoEl) {
+          videoEl.srcObject = stream;
+          videoEl.play().then(() => {
+            setStreamStatus('playing');
+          }).catch(err => {
+            if (err.name === 'NotAllowedError') {
+              setStreamStatus('blocked');
+            } else {
+              setStreamStatus('error');
+              setErrorMessage(err.message);
+            }
+          });
+        }
+      }).catch(err => {
+        setStreamStatus('error');
+        setErrorMessage(`Camera hardware access denied: ${err.message}`);
+      });
+    } else if (resolution.kind === 'mjpeg') {
+      if (videoEl) {
+        videoEl.pause();
+        videoEl.srcObject = null;
+        videoEl.src = '';
+      }
+      if (mjpegEl) {
+        mjpegEl.src = resolution.streamUrl;
+        mjpegEl.onload = () => setStreamStatus('playing');
+        mjpegEl.onerror = () => {
+          setStreamStatus('error');
+          setErrorMessage('Failed to connect to IP webcam MJPEG stream. Ensure stream endpoint is online.');
+        };
+      }
+    } else if (resolution.kind === 'gdrive' || resolution.kind === 'video') {
+      if (mjpegEl) mjpegEl.src = '';
+      if (videoEl) {
+        videoEl.srcObject = null;
+        videoEl.src = resolution.streamUrl;
+        videoEl.crossOrigin = 'anonymous';
+        videoEl.loop = true;
+        videoEl.muted = isMuted;
+        videoEl.playsInline = true;
+
+        const handleCanPlay = () => {
+          videoEl.play().then(() => {
+            setStreamStatus('playing');
+            if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
+              setStreamInfo(prev => ({
+                ...prev,
+                resolution: `${videoEl.videoWidth}x${videoEl.videoHeight}`
+              }));
+            }
+          }).catch(err => {
+            if (err.name === 'NotAllowedError') {
+              setStreamStatus('blocked');
+            } else {
+              setStreamStatus('error');
+              setErrorMessage(err.message);
+            }
+          });
+        };
+
+        const handleError = () => {
+          setStreamStatus('error');
+          setErrorMessage('Could not decode video stream. Verifying direct access...');
+        };
+
+        videoEl.addEventListener('canplay', handleCanPlay, { once: true });
+        videoEl.addEventListener('error', handleError, { once: true });
+        videoEl.load();
+
+        return () => {
+          videoEl.removeEventListener('canplay', handleCanPlay);
+          videoEl.removeEventListener('error', handleError);
+        };
+      }
+    }
+
+    return () => {
+      if (activeStream) {
+        activeStream.getTracks().forEach(t => t.stop());
+      }
+      if (videoEl) {
+        videoEl.pause();
+        videoEl.srcObject = null;
+        videoEl.src = '';
+      }
+      if (mjpegEl) {
+        mjpegEl.src = '';
+      }
+    };
+  }, [focusedCamera?.camera_id, focusedCamera?.source_url, focusedCamera?.source_type, focusedCamera?.status, focusedCamera?.enabled]);
+
+  // Animation Loop for live canvas rendering with real video feed
   useEffect(() => {
     let animationFrameId: number;
 
@@ -86,6 +218,11 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
       if (canvas && focusedCamera && focusedCamera.status === 'online') {
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          const videoEl = videoRef.current;
+          const mjpegEl = mjpegRef.current;
+          const isMjpeg = focusedCamera.source_type === 'ip_webcam' || (focusedCamera.source_url || '').includes(':8080');
+          const activeSource = isMjpeg ? mjpegEl : videoEl;
+
           drawCameraFeed(
             ctx,
             {
@@ -99,7 +236,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               zoomLevel,
               panOffset,
               selectedTrackId: selectedTrack?.track_id || null,
-              highSuspicionThreshold: settings?.thresholds?.high_suspicion_threshold || 65
+              highSuspicionThreshold: settings?.thresholds?.high_suspicion_threshold || 65,
+              videoSource: activeSource
             },
             Date.now()
           );
@@ -111,6 +249,46 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     animationFrameId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationFrameId);
   }, [focusedCamera, tracks, students, zoomLevel, panOffset, selectedTrack, settings, isPrimary]);
+
+  // User playback trigger (for autoplay restrictions)
+  const handleStartPlayback = () => {
+    if (videoRef.current) {
+      videoRef.current.play().then(() => {
+        setStreamStatus('playing');
+      }).catch(err => {
+        setStreamStatus('error');
+        setErrorMessage(err.message);
+      });
+    }
+  };
+
+  const handleTogglePlayPause = () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.play().then(() => setStreamStatus('playing'));
+    } else {
+      videoRef.current.pause();
+      setStreamStatus('paused');
+    }
+  };
+
+  const handleToggleMute = () => {
+    if (!videoRef.current) return;
+    const newMuted = !isMuted;
+    videoRef.current.muted = newMuted;
+    setIsMuted(newMuted);
+  };
+
+  const handleReloadStream = () => {
+    if (!videoRef.current) return;
+    setStreamStatus('connecting');
+    setErrorMessage(null);
+    videoRef.current.load();
+    videoRef.current.play().then(() => setStreamStatus('playing')).catch(err => {
+      setStreamStatus('error');
+      setErrorMessage(err.message);
+    });
+  };
 
   // Zoom Controls
   const handleZoomIn = () => setZoomLevel(prev => Math.min(3.0, Math.round((prev + 0.25) * 100) / 100));
@@ -188,6 +366,23 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   return (
     <div className="flex flex-col bg-slate-900 rounded-xl border border-slate-800 shadow-2xl overflow-hidden">
       
+      {/* Hidden Video & Image elements for native hardware decoding */}
+      <video
+        ref={videoRef}
+        playsInline
+        autoPlay
+        muted={isMuted}
+        loop
+        crossOrigin="anonymous"
+        className="hidden"
+      />
+      <img
+        ref={mjpegRef}
+        crossOrigin="anonymous"
+        alt="stream-frame"
+        className="hidden"
+      />
+
       {/* Player Header Bar */}
       <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-slate-950/80 border-b border-slate-800 gap-2">
         <div className="flex items-center space-x-3">
@@ -207,17 +402,18 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               )
             )}
           </div>
-          {focusedCamera && (
+          {focusedCamera && streamInfo.label && (
             <>
               <span className="text-slate-600 hidden sm:inline">•</span>
-              <span className="text-xs text-slate-400 font-mono hidden sm:inline">
-                Angle Clarity: <strong className="text-cyan-400">{focusedCamera.quality_score}%</strong>
+              <span className="text-xs text-slate-400 font-mono hidden sm:inline flex items-center space-x-1">
+                <Video className="w-3 h-3 text-cyan-400 inline" />
+                <span>{streamInfo.label}</span>
               </span>
             </>
           )}
         </div>
 
-        {/* Quick Camera Buttons */}
+        {/* Quick Camera Switcher Buttons */}
         {cameras.length > 1 && (
           <div className="flex items-center space-x-1.5 overflow-x-auto py-0.5">
             {cameras.map(cam => {
@@ -240,8 +436,35 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           </div>
         )}
 
-        {/* Zoom & Inspection Controls */}
+        {/* Playback, Zoom & Inspection Controls */}
         <div className="flex items-center space-x-1.5">
+          {focusedCamera && focusedCamera.source_type !== 'webcam' && (
+            <>
+              <button
+                onClick={handleTogglePlayPause}
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+                title={streamStatus === 'paused' ? 'Resume Stream' : 'Pause Stream'}
+              >
+                {streamStatus === 'paused' ? <Play className="w-4 h-4 text-emerald-400" /> : <Pause className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={handleToggleMute}
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+                title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
+              >
+                {isMuted ? <VolumeX className="w-4 h-4 text-slate-400" /> : <Volume2 className="w-4 h-4 text-cyan-400" />}
+              </button>
+              <button
+                onClick={handleReloadStream}
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+                title="Reload Stream Decoder"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+              <div className="h-4 w-px bg-slate-800 mx-1" />
+            </>
+          )}
+
           <button
             onClick={handleZoomOut}
             disabled={zoomLevel <= 1.0}
@@ -282,20 +505,64 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
       {/* Main Canvas Player Area */}
       <div 
         ref={containerRef}
-        className="relative w-full bg-black flex items-center justify-center overflow-hidden cursor-crosshair select-none"
+        className="relative w-full bg-black flex items-center justify-center overflow-hidden select-none cursor-crosshair"
         style={{ minHeight: '380px' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
       >
         {focusedCamera && focusedCamera.status === 'online' ? (
-          <canvas
-            ref={canvasRef}
-            width={canvasDimensions.width}
-            height={canvasDimensions.height}
-            onClick={handleCanvasClick}
-            className="cv-canvas block w-full h-auto"
-          />
+          <>
+            <canvas
+              ref={canvasRef}
+              width={canvasDimensions.width}
+              height={canvasDimensions.height}
+              onClick={handleCanvasClick}
+              className="cv-canvas block w-full h-auto"
+            />
+
+            {/* Overlay if browser requires click to autoplay */}
+            {streamStatus === 'blocked' && (
+              <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center space-y-3">
+                <div className="w-12 h-12 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+                  <Play className="w-6 h-6 ml-0.5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-100">Live Video Stream Ready</h4>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1">
+                    Browser policy requires user confirmation to initiate live media playback.
+                  </p>
+                </div>
+                <button
+                  onClick={handleStartPlayback}
+                  className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center space-x-2 transition-colors shadow-lg shadow-cyan-500/20"
+                >
+                  <Play className="w-4 h-4 fill-slate-950" />
+                  <span>Start Live Video Stream</span>
+                </button>
+              </div>
+            )}
+
+            {/* Overlay if video decode fails */}
+            {streamStatus === 'error' && (
+              <div className="absolute top-4 right-4 z-30 bg-rose-950/90 border border-rose-700/80 text-rose-200 text-xs p-3 rounded-lg shadow-xl max-w-md flex items-start space-x-2.5">
+                <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <span className="font-bold block">Video Stream Notice</span>
+                  <p className="text-[11px] text-rose-300 leading-relaxed">
+                    {errorMessage || 'Unable to decode stream. Verifying direct stream link...'}
+                  </p>
+                  <button
+                    onClick={handleReloadStream}
+                    className="mt-1 px-2 py-0.5 rounded bg-rose-800/60 hover:bg-rose-700 text-[10px] font-semibold text-white flex items-center space-x-1"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Retry Stream</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <div className="flex flex-col items-center justify-center p-12 text-center text-slate-500">
             <div className="w-14 h-14 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mb-3">
@@ -307,7 +574,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
             <p className="text-xs text-slate-500 max-w-sm mt-1">
               {focusedCamera 
                 ? 'Live camera feed disconnected. Hardware stream standby or network link offline.' 
-                : 'No camera streams configured in database. Register RTSP or local camera endpoints in Admin.'}
+                : 'No camera streams configured in database. Register RTSP, Google Drive, or local camera endpoints in Admin.'}
             </p>
           </div>
         )}
@@ -350,7 +617,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           <span className="text-slate-700">|</span>
           <span>
             Resolution: <strong className="text-slate-300">
-              {focusedCamera?.resolution ? `${focusedCamera.resolution.width}x${focusedCamera.resolution.height}` : 'N/A'}
+              {streamInfo.resolution || (focusedCamera?.resolution ? `${focusedCamera.resolution.width}x${focusedCamera.resolution.height}` : '1920x1080')}
             </strong>
           </span>
         </div>
@@ -359,3 +626,4 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     </div>
   );
 }
+

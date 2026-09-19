@@ -66,36 +66,42 @@ export function drawCameraFeed(
   }
 
   if (!hasDrawnRealVideo) {
-    // Ambient floor tone
+    // Clean optical standby background (no fake silhouettes or artificial grids)
     const gradFloor = ctx.createLinearGradient(0, 0, 0, height);
-    gradFloor.addColorStop(0, '#0f172a'); // slate-900
-    gradFloor.addColorStop(1, '#020617'); // slate-950
+    gradFloor.addColorStop(0, '#090d16');
+    gradFloor.addColorStop(1, '#020617');
     ctx.fillStyle = gradFloor;
     ctx.fillRect(0, 0, width, height);
 
-    // Perspective floor tiles / grid
-    ctx.strokeStyle = 'rgba(51, 65, 85, 0.25)'; // slate-700
+    // Subtle optical center target
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)';
     ctx.lineWidth = 1;
-    const numGridLines = 12;
-    for (let i = 0; i <= numGridLines; i++) {
-      const y = (height * 0.25) + (i * (height * 0.75) / numGridLines);
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
-      ctx.stroke();
-    }
+    const centerX = width / 2;
+    const centerY = height / 2;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, 32, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.7)';
+    ctx.font = '12px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`STREAM BUFFERING: ${cameraName.toUpperCase()}`, centerX, centerY + 54);
+    ctx.font = '10px "Plus Jakarta Sans", sans-serif';
+    ctx.fillStyle = 'rgba(100, 116, 139, 0.8)';
+    ctx.fillText('Establishing optical decoder feed...', centerX, centerY + 70);
+    ctx.textAlign = 'left';
   } else {
-    // High-tech optical tint layer to integrate HUD overlays seamlessly
-    ctx.fillStyle = 'rgba(2, 6, 23, 0.08)';
+    // Subtle high-tech contrast enhancement layer for camera footage
+    ctx.fillStyle = 'rgba(2, 6, 23, 0.04)';
     ctx.fillRect(0, 0, width, height);
   }
 
-  // Center optical crosshair reticle
-  ctx.strokeStyle = 'rgba(6, 182, 212, 0.25)'; // cyan-500/25
+  // Center optical crosshair reticle (subtle)
+  ctx.strokeStyle = 'rgba(6, 182, 212, 0.2)';
   ctx.lineWidth = 1;
   const centerX = width / 2;
   const centerY = height / 2;
-  const reticleSize = 16;
+  const reticleSize = 14;
   ctx.beginPath();
   ctx.moveTo(centerX - reticleSize, centerY);
   ctx.lineTo(centerX + reticleSize, centerY);
@@ -104,9 +110,9 @@ export function drawCameraFeed(
   ctx.stroke();
 
   // Corner viewfinder brackets
-  const bracketLen = 24;
-  const bracketPadding = 20;
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)'; // slate-400/30
+  const bracketLen = 20;
+  const bracketPadding = 18;
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
   ctx.lineWidth = 1.5;
 
   // Top-Left Bracket
@@ -137,16 +143,16 @@ export function drawCameraFeed(
   ctx.lineTo(width - bracketPadding, height - bracketPadding - bracketLen);
   ctx.stroke();
 
-  // Optical HUD Overlays: Camera Label & Telemetry
-  ctx.fillStyle = 'rgba(148, 163, 184, 0.7)';
+  // Optical HUD Overlays: Camera Label & Live Status
+  ctx.fillStyle = 'rgba(226, 232, 240, 0.85)';
   ctx.font = '10px "JetBrains Mono", monospace';
-  ctx.fillText(`CH: ${cameraName.toUpperCase()}`, bracketPadding + 6, bracketPadding + 16);
-  ctx.fillText(`FOV: LIVE SENSOR • 1080P`, bracketPadding + 6, bracketPadding + 30);
+  ctx.fillText(`CAM: ${cameraName.toUpperCase()}`, bracketPadding + 6, bracketPadding + 14);
 
   // Live Timestamp in top right
   const liveIsoDate = new Date(now).toISOString().replace('T', ' ').substring(0, 19);
   ctx.textAlign = 'right';
-  ctx.fillText(liveIsoDate, width - bracketPadding - 6, bracketPadding + 16);
+  ctx.fillStyle = 'rgba(148, 163, 184, 0.85)';
+  ctx.fillText(liveIsoDate, width - bracketPadding - 6, bracketPadding + 14);
   ctx.textAlign = 'left';
 
   // -------------------------------------------------------------
@@ -162,53 +168,34 @@ export function drawCameraFeed(
     const headRadius = pw * 0.28;
     const headCenterY = py + headRadius + 4;
 
-    // Student Body Silhouette (Only in synthetic fallback mode)
-    if (!hasDrawnRealVideo) {
-      // Torso
-      ctx.fillStyle = 'rgba(30, 58, 138, 0.65)'; // deep academic navy shirt
-      ctx.beginPath();
-      ctx.ellipse(centerX, py + ph * 0.65, pw * 0.38, ph * 0.32, 0, 0, Math.PI * 2);
-      ctx.fill();
+    // Head orientation vector (visual gaze ray) if provided
+    if (track.head_pose) {
+      const gazeLength = headRadius * 1.8;
+      let gazeAngle = Math.PI / 2; // downwards facing paper by default
+      if (track.head_pose.direction === 'left') {
+        gazeAngle = Math.PI * 0.85;
+      } else if (track.head_pose.direction === 'right') {
+        gazeAngle = Math.PI * 0.15;
+      } else if (track.head_pose.direction === 'up') {
+        gazeAngle = -Math.PI / 2;
+      }
 
-      // Head / Face
-      ctx.fillStyle = track.face_visible ? 'rgba(226, 232, 240, 0.9)' : 'rgba(100, 116, 139, 0.7)';
-      ctx.beginPath();
-      ctx.arc(centerX, headCenterY, headRadius, 0, Math.PI * 2);
-      ctx.fill();
+      const gazeEndX = centerX + Math.cos(gazeAngle) * gazeLength;
+      const gazeEndY = headCenterY + Math.sin(gazeAngle) * gazeLength;
 
-      // Hair
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+      ctx.strokeStyle = track.head_pose.direction !== 'center' ? '#f59e0b' : 'rgba(56, 189, 248, 0.4)';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(centerX, headCenterY - 2, headRadius * 0.95, Math.PI, Math.PI * 2);
+      ctx.moveTo(centerX, headCenterY);
+      ctx.lineTo(gazeEndX, gazeEndY);
+      ctx.stroke();
+
+      // Small directional gaze arrow tip
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath();
+      ctx.arc(gazeEndX, gazeEndY, 3, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    // Head orientation vector (visual gaze ray)
-    const gazeLength = headRadius * 1.8;
-    let gazeAngle = Math.PI / 2; // downwards facing paper by default
-    if (track.head_pose.direction === 'left') {
-      gazeAngle = Math.PI * 0.85; // looking left
-    } else if (track.head_pose.direction === 'right') {
-      gazeAngle = Math.PI * 0.15; // looking right
-    } else if (track.head_pose.direction === 'up') {
-      gazeAngle = -Math.PI / 2;
-    }
-
-    const gazeEndX = centerX + Math.cos(gazeAngle) * gazeLength;
-    const gazeEndY = headCenterY + Math.sin(gazeAngle) * gazeLength;
-
-    ctx.strokeStyle = track.head_pose.direction !== 'center' ? '#f59e0b' : 'rgba(56, 189, 248, 0.4)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(centerX, headCenterY);
-    ctx.lineTo(gazeEndX, gazeEndY);
-    ctx.stroke();
-
-    // Small directional gaze arrow tip
-    ctx.fillStyle = ctx.strokeStyle;
-    ctx.beginPath();
-    ctx.arc(gazeEndX, gazeEndY, 3, 0, Math.PI * 2);
-    ctx.fill();
 
     // Mobile Phone Object Overlay if detected
     if (track.phone_detected) {

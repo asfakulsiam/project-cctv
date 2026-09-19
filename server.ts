@@ -281,9 +281,24 @@ async function startServer() {
   });
 
   // Camera Management Helpers
+  function extractGoogleDriveFileId(url?: string): string | null {
+    if (!url) return null;
+    const match1 = url.match(/\/file\/d\/([a-zA-Z0-9_-]{20,})/);
+    if (match1) return match1[1];
+    const match2 = url.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+    if (match2) return match2[1];
+    const match3 = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+    if (match3) return match3[1];
+    return null;
+  }
+
   function normalizeCameraSourceUrl(url?: string, sourceType?: string): string {
     if (!url) return '';
     let trimmed = url.trim();
+    const gdriveId = extractGoogleDriveFileId(trimmed);
+    if (gdriveId) {
+      return `https://drive.usercontent.google.com/download?id=${gdriveId}&export=download&confirm=t`;
+    }
     if (sourceType === 'ip_webcam' || trimmed.includes(':8080')) {
       // If user provided http://192.168.x.x:8080 or http://192.168.x.x:8080/
       if (/^https?:\/\/[^/]+:8080\/?$/i.test(trimmed)) {
@@ -295,18 +310,50 @@ async function startServer() {
     return trimmed;
   }
 
-  const handleStreamProxy = (targetUrl: string, res: express.Response, req: express.Request) => {
+  const handleStreamProxy = (targetUrl: string, res: express.Response, req: express.Request, redirectCount = 0) => {
+    if (redirectCount > 5) {
+      return res.status(508).json({ error: 'Too many stream redirects.' });
+    }
+
     try {
       const parsed = new URL(targetUrl);
       const isHttps = parsed.protocol === 'https:';
       const client = isHttps ? https : http;
 
-      const proxyReq = client.get(targetUrl, { timeout: 10000 }, (proxyRes) => {
+      const headers: Record<string, string> = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      };
+      if (req.headers.range) {
+        headers['range'] = req.headers.range as string;
+      }
+
+      const proxyReq = client.get(targetUrl, { headers, timeout: 15000 }, (proxyRes) => {
+        // Handle HTTP Redirects (301, 302, 303, 307, 308)
+        if (proxyRes.statusCode && [301, 302, 303, 307, 308].includes(proxyRes.statusCode) && proxyRes.headers.location) {
+          const redirectUrl = new URL(proxyRes.headers.location, targetUrl).toString();
+          return handleStreamProxy(redirectUrl, res, req, redirectCount + 1);
+        }
+
+        res.status(proxyRes.statusCode || 200);
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Range');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+
         if (proxyRes.headers['content-type']) {
           res.setHeader('Content-Type', proxyRes.headers['content-type']);
         }
+        if (proxyRes.headers['content-length']) {
+          res.setHeader('Content-Length', proxyRes.headers['content-length']);
+        }
+        if (proxyRes.headers['content-range']) {
+          res.setHeader('Content-Range', proxyRes.headers['content-range']);
+        }
+        if (proxyRes.headers['accept-ranges']) {
+          res.setHeader('Accept-Ranges', proxyRes.headers['accept-ranges']);
+        } else {
+          res.setHeader('Accept-Ranges', 'bytes');
+        }
+
         proxyRes.pipe(res);
       });
 
@@ -329,6 +376,14 @@ async function startServer() {
       }
     }
   };
+
+  // Dedicated Google Drive Video Stream Proxy
+  app.get('/api/proxy/gdrive/:fileId', (req, res) => {
+    const fileId = req.params.fileId;
+    if (!fileId) return res.status(400).json({ error: 'Missing fileId parameter.' });
+    const directUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+    handleStreamProxy(directUrl, res, req);
+  });
 
   // Public Stream Proxy for CORS & HTTPS bypass
   app.get('/api/proxy/stream', (req, res) => {

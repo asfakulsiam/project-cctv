@@ -103,19 +103,59 @@ export async function initDatabase(): Promise<void> {
 function seedMemoryStore(): void {
   // Ensure default base settings exist if store is completely empty
   if (memoryStore.settings.length === 0) {
-    memoryStore.settings.push({ ...DEFAULT_SETTINGS, default_primary_camera: '' });
+    memoryStore.settings.push({ ...DEFAULT_SETTINGS, default_primary_camera: 'cam-1' });
+  } else if (!memoryStore.settings[0].default_primary_camera) {
+    memoryStore.settings[0].default_primary_camera = 'cam-1';
   }
-  // Production startup starts completely clean: 0 demo cameras, 0 dummy students, 0 fake seats
-  console.log(`[Database] In-memory store ready. Clean database with ${memoryStore.cameras.length} camera records.`);
+
+  // Pre-seed primary CCTV camera with the user's Google Drive video link
+  if (memoryStore.cameras.length === 0) {
+    memoryStore.cameras.push({
+      camera_id: 'cam-1',
+      name: 'CCTV Camera 1 (Exam Hall)',
+      source_type: 'stream',
+      source_url: 'https://drive.google.com/file/d/1Ww9Yv7WprUGF0cDLZPfQpZ2szGB7saIG/view?usp=drivesdk',
+      classroom_id: 'hall-a',
+      status: 'online',
+      is_primary: true,
+      enabled: true,
+      resolution: { width: 1920, height: 1080 },
+      target_fps: 15,
+      actual_fps: 15,
+      quality_score: 95,
+      view_angle_description: 'Wide Optical CCTV Perspective',
+      monitored_seats: []
+    });
+  }
+  console.log(`[Database] In-memory store ready with ${memoryStore.cameras.length} camera records.`);
 }
 
 async function seedDatabaseIfEmpty(): Promise<void> {
   if (!mongoDb) return;
   const count = await mongoDb.collection('settings').countDocuments();
   if (count === 0) {
-    await mongoDb.collection('settings').insertOne({ ...DEFAULT_SETTINGS, default_primary_camera: '' });
-    console.log('[Database] Real MongoDB initialized with base settings (0 demo records).');
+    await mongoDb.collection('settings').insertOne({ ...DEFAULT_SETTINGS, default_primary_camera: 'cam-1' });
   }
+  const camCount = await mongoDb.collection('cameras').countDocuments();
+  if (camCount === 0) {
+    await mongoDb.collection('cameras').insertOne({
+      camera_id: 'cam-1',
+      name: 'CCTV Camera 1 (Exam Hall)',
+      source_type: 'stream',
+      source_url: 'https://drive.google.com/file/d/1Ww9Yv7WprUGF0cDLZPfQpZ2szGB7saIG/view?usp=drivesdk',
+      classroom_id: 'hall-a',
+      status: 'online',
+      is_primary: true,
+      enabled: true,
+      resolution: { width: 1920, height: 1080 },
+      target_fps: 15,
+      actual_fps: 15,
+      quality_score: 95,
+      view_angle_description: 'Wide Optical CCTV Perspective',
+      monitored_seats: []
+    });
+  }
+  console.log('[Database] Real MongoDB initialized with primary CCTV feed.');
 }
 
 // Database Abstraction API
