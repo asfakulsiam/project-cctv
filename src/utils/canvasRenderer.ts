@@ -201,7 +201,7 @@ export function drawCameraFeed(
   ctx.stroke();
 
   // -------------------------------------------------------------
-  // 2. Draw Live Computer Vision Overlays (Bounding Boxes & IDs)
+  // 2. Draw Live Computer Vision Overlays (Bounding Boxes & Telemetry)
   // -------------------------------------------------------------
   for (const track of tracks) {
     const px = drawX + track.bbox.x * drawW;
@@ -210,10 +210,10 @@ export function drawCameraFeed(
     const ph = track.bbox.height * drawH;
 
     const centerX = px + pw / 2;
-    const headRadius = pw * 0.28;
+    const headRadius = Math.max(12, pw * 0.28);
     const headCenterY = py + headRadius + 4;
 
-    // Head orientation vector (visual gaze ray) if provided
+    // Head orientation vector (visual gaze ray)
     if (track.head_pose) {
       const gazeLength = headRadius * 1.8;
       let gazeAngle = Math.PI / 2; // downwards facing paper by default
@@ -265,83 +265,6 @@ export function drawCameraFeed(
       ctx.fillStyle = '#38bdf8';
       ctx.fillRect(phoneX + 2, phoneY + 2, phoneW - 4, phoneH - 4);
     }
-  }
-
-  // -------------------------------------------------------------
-  // 3. Draw Live Computer Vision Overlays (Bounding Boxes & IDs)
-  // -------------------------------------------------------------
-  for (const track of tracks) {
-    const px = drawX + track.bbox.x * drawW;
-    const py = drawY + track.bbox.y * drawH;
-    const pw = track.bbox.width * drawW;
-    const ph = track.bbox.height * drawH;
-
-    const centerX = px + pw / 2;
-    const headRadius = pw * 0.28;
-    const headCenterY = py + headRadius + 4;
-
-    // Head orientation vector (visual gaze ray) if provided
-    if (track.head_pose) {
-      const gazeLength = headRadius * 1.8;
-      let gazeAngle = Math.PI / 2; // downwards facing paper by default
-      if (track.head_pose.direction === 'left') {
-        gazeAngle = Math.PI * 0.85;
-      } else if (track.head_pose.direction === 'right') {
-        gazeAngle = Math.PI * 0.15;
-      } else if (track.head_pose.direction === 'up') {
-        gazeAngle = -Math.PI / 2;
-      }
-
-      const gazeEndX = centerX + Math.cos(gazeAngle) * gazeLength;
-      const gazeEndY = headCenterY + Math.sin(gazeAngle) * gazeLength;
-
-      ctx.strokeStyle = track.head_pose.direction !== 'center' ? '#f59e0b' : 'rgba(56, 189, 248, 0.4)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(centerX, headCenterY);
-      ctx.lineTo(gazeEndX, gazeEndY);
-      ctx.stroke();
-
-      // Small directional gaze arrow tip
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.beginPath();
-      ctx.arc(gazeEndX, gazeEndY, 3, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Mobile Phone Object Overlay if detected
-    if (track.phone_detected) {
-      const phoneX = px + pw * 0.6;
-      const phoneY = py + ph * 0.55;
-      const phoneW = pw * 0.22;
-      const phoneH = ph * 0.20;
-
-      // Glow pulsation
-      const pulse = (Math.sin(now / 180) + 1) / 2;
-      ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + pulse * 0.4})`;
-      ctx.fillRect(phoneX - 3, phoneY - 3, phoneW + 6, phoneH + 6);
-
-      // Phone screen
-      ctx.fillStyle = '#0f172a';
-      ctx.strokeStyle = '#ef4444';
-      ctx.lineWidth = 1.5;
-      ctx.fillRect(phoneX, phoneY, phoneW, phoneH);
-      ctx.strokeRect(phoneX, phoneY, phoneW, phoneH);
-
-      // Phone screen luminescence
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(phoneX + 2, phoneY + 2, phoneW - 4, phoneH - 4);
-    }
-  }
-
-  // -------------------------------------------------------------
-  // 3. Draw Live Computer Vision Overlays (Bounding Boxes & IDs)
-  // -------------------------------------------------------------
-  for (const track of tracks) {
-    const px = track.bbox.x * width;
-    const py = track.bbox.y * height;
-    const pw = track.bbox.width * width;
-    const ph = track.bbox.height * height;
 
     const isSelected = track.track_id === selectedTrackId;
     const isHighSuspicion = track.suspicion_score >= highSuspicionThreshold;
