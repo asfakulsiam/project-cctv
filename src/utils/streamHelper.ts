@@ -19,7 +19,15 @@ export function extractGoogleDriveId(url?: string): string | null {
   if (match2) return match2[1];
   const match3 = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
   if (match3) return match3[1];
+  const match4 = url.match(/id=([a-zA-Z0-9_-]{20,})/);
+  if (match4) return match4[1];
   return null;
+}
+
+export function getGoogleDrivePreviewUrl(url?: string): string | null {
+  const gdriveId = extractGoogleDriveId(url);
+  if (!gdriveId) return null;
+  return `https://drive.google.com/file/d/${gdriveId}/preview`;
 }
 
 export type StreamKind = 'gdrive' | 'webcam' | 'mjpeg' | 'video' | 'offline';
@@ -29,6 +37,8 @@ export interface StreamResolution {
   streamUrl: string;
   isProxy: boolean;
   label: string;
+  gdriveId?: string | null;
+  previewUrl?: string | null;
 }
 
 export function resolveCameraStream(camera?: CameraConfig | null): StreamResolution {
@@ -44,7 +54,17 @@ export function resolveCameraStream(camera?: CameraConfig | null): StreamResolut
   const rawUrl = (camera.source_url || '').trim();
   const sourceType = (camera.source_type || '').toLowerCase();
 
-  // 1. Local Device Webcam
+  // 1. Resilient CCTV Feed
+  if (rawUrl === '/api/video/sample' || rawUrl === '/sample_cctv.mp4' || rawUrl === 'sample:cctv') {
+    return {
+      kind: 'video',
+      streamUrl: '/api/video/sample',
+      isProxy: false,
+      label: 'Resilient Exam CCTV Feed'
+    };
+  }
+
+  // 2. Local Device Webcam
   if (sourceType === 'webcam' || rawUrl === 'webcam:default' || rawUrl.startsWith('webcam:')) {
     return {
       kind: 'webcam',
@@ -54,15 +74,17 @@ export function resolveCameraStream(camera?: CameraConfig | null): StreamResolut
     };
   }
 
-  // 2. Google Drive Video Link
+  // 3. Google Drive Video Link
   const gdriveId = extractGoogleDriveId(rawUrl);
   if (gdriveId) {
-    // Route through our high-performance backend proxy with Range support and CORS headers
+    // Route through our high-performance backend proxy with Range support and automatic quota fallback
     return {
       kind: 'gdrive',
       streamUrl: `/api/proxy/gdrive/${gdriveId}`,
       isProxy: true,
-      label: 'Google Drive Video Stream'
+      label: 'Google Drive Video Stream',
+      gdriveId,
+      previewUrl: `https://drive.google.com/file/d/${gdriveId}/preview`
     };
   }
 

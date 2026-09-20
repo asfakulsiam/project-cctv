@@ -180,13 +180,59 @@ export function AdminCamerasManager() {
       classroom_id: camera.classroom_id,
       is_primary: camera.is_primary,
       enabled: camera.enabled !== false,
-      width: camera.resolution.width,
-      height: camera.resolution.height,
+      width: camera.resolution?.width || 1920,
+      height: camera.resolution?.height || 1080,
       target_fps: camera.target_fps || 15,
       view_angle_description: camera.view_angle_description || '',
       monitored_seats: camera.monitored_seats || seats.map(s => s.id)
     });
     setIsModalOpen(true);
+  };
+
+  const handleQuickSwitch = async (cameraId: string, sourceType: CameraSourceType, sourceUrl: string, namePrefix: string) => {
+    try {
+      const camera = cameras.find(c => c.camera_id === cameraId);
+      if (!camera) return;
+      const ok = await updateCameraConfig(cameraId, {
+        source_type: sourceType,
+        source_url: sourceUrl
+      });
+      if (ok) {
+        showFeedback('success', `Switched ${camera.name} to ${namePrefix}.`);
+      } else {
+        showFeedback('error', 'Failed to switch camera feed.');
+      }
+    } catch (err: any) {
+      showFeedback('error', `Switch error: ${err.message}`);
+    }
+  };
+
+  const [urlCheckResult, setUrlCheckResult] = useState<{
+    valid: boolean;
+    message?: string;
+    is_gdrive?: boolean;
+    quota_exceeded?: boolean;
+    preview_url?: string;
+  } | null>(null);
+  const [isCheckingUrl, setIsCheckingUrl] = useState(false);
+
+  const handleCheckUrl = async () => {
+    if (!formData.source_url) return;
+    setIsCheckingUrl(true);
+    setUrlCheckResult(null);
+    try {
+      const res = await fetch('/api/cameras/validate-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: formData.source_url, source_type: formData.source_type })
+      });
+      const data = await res.json();
+      setUrlCheckResult(data);
+    } catch (err: any) {
+      setUrlCheckResult({ valid: false, message: err.message || 'Validation request failed.' });
+    } finally {
+      setIsCheckingUrl(false);
+    }
   };
 
   const handleSaveCamera = async (e: React.FormEvent) => {
@@ -434,9 +480,43 @@ export function AdminCamerasManager() {
                 </div>
               </div>
 
-              {/* Angle Description */}
-              <div className="mt-2 text-[11px] text-slate-400 flex items-center justify-between">
+              {/* Angle Description & Quick Feed Switch */}
+              <div className="mt-2 text-[11px] text-slate-400 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
                 <span className="truncate">{camera.view_angle_description || 'Surveillance perspective'}</span>
+                
+                {/* 1-Click Fast Feed Switchers */}
+                <div className="flex items-center space-x-1 self-start sm:self-auto">
+                  {camera.source_type !== 'webcam' && (
+                    <button
+                      type="button"
+                      onClick={() => handleQuickSwitch(camera.camera_id, 'webcam', 'webcam:default', 'Device Webcam')}
+                      className="px-1.5 py-0.5 rounded bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-800/80 text-indigo-300 text-[10px] font-medium"
+                      title="Instantly switch this camera to your laptop/device webcam"
+                    >
+                      💻 Webcam
+                    </button>
+                  )}
+                  {camera.source_url !== '/api/video/sample' && (
+                    <button
+                      type="button"
+                      onClick={() => handleQuickSwitch(camera.camera_id, 'stream', '/api/video/sample', 'Resilient CCTV Feed')}
+                      className="px-1.5 py-0.5 rounded bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-800/80 text-cyan-300 text-[10px] font-medium"
+                      title="Instantly switch to high-definition resilient exam CCTV feed"
+                    >
+                      📹 CCTV Sample
+                    </button>
+                  )}
+                  {(!camera.source_url || !camera.source_url.includes('drive.google.com')) && (
+                    <button
+                      type="button"
+                      onClick={() => handleQuickSwitch(camera.camera_id, 'stream', 'https://drive.google.com/file/d/1Ww9Yv7WprUGF0cDLZPfQpZ2szGB7saIG/view?usp=drivesdk', 'Google Drive CCTV')}
+                      className="px-1.5 py-0.5 rounded bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-800/80 text-emerald-300 text-[10px] font-medium"
+                      title="Switch back to Google Drive video stream"
+                    >
+                      📁 Drive Link
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Action Buttons */}
@@ -524,72 +604,85 @@ export function AdminCamerasManager() {
             </div>
 
             <form onSubmit={handleSaveCamera} className="p-5 space-y-4 text-xs">
-              {/* Quick Setup Presets */}
-              {!editingCameraId && (
-                <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
+              {/* Quick Setup Presets - Always available for Add and Edit */}
+              <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
+                <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                     Quick Camera Presets
                   </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setFormData({
+                  <span className="text-[10px] text-cyan-400">Click to apply template</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData({
                         ...formData,
-                        name: 'Mobile Phone IP Camera',
+                        name: formData.name || 'Mobile Phone IP Camera',
                         source_type: 'ip_webcam',
                         source_url: 'http://192.168.1.50:8080/video',
                         width: 1280,
                         height: 720
-                      })}
-                      className="px-2 py-1 rounded bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[11px] font-medium"
-                    >
-                      📱 Mobile IP Webcam
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setFormData({
+                      });
+                      setUrlCheckResult(null);
+                    }}
+                    className="px-2 py-1 rounded bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[11px] font-medium"
+                  >
+                    📱 Mobile IP Webcam
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData({
                         ...formData,
-                        name: 'Laptop / Phone Built-in Camera',
+                        name: formData.name || 'Laptop / Phone Built-in Camera',
                         source_type: 'webcam',
                         source_url: 'webcam:default',
                         width: 1280,
                         height: 720
-                      })}
-                      className="px-2 py-1 rounded bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 text-[11px] font-medium"
-                    >
-                      💻 Built-in Device Webcam
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setFormData({
+                      });
+                      setUrlCheckResult(null);
+                    }}
+                    className="px-2 py-1 rounded bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-800 text-indigo-300 text-[11px] font-medium"
+                  >
+                    💻 Built-in Device Webcam
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData({
                         ...formData,
-                        name: 'Exam Hall CCTV (Google Drive)',
+                        name: formData.name || 'Exam Hall CCTV (Sample Feed)',
+                        source_type: 'stream',
+                        source_url: '/api/video/sample',
+                        width: 1280,
+                        height: 720
+                      });
+                      setUrlCheckResult(null);
+                    }}
+                    className="px-2 py-1 rounded bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[11px] font-medium"
+                  >
+                    📹 Resilient Exam CCTV
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData({
+                        ...formData,
+                        name: formData.name || 'Exam Hall CCTV (Google Drive)',
                         source_type: 'stream',
                         source_url: 'https://drive.google.com/file/d/1Ww9Yv7WprUGF0cDLZPfQpZ2szGB7saIG/view?usp=drivesdk',
                         width: 1920,
                         height: 1080
-                      })}
-                      className="px-2 py-1 rounded bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[11px] font-medium"
-                    >
-                      📁 Google Drive CCTV
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setFormData({
-                        ...formData,
-                        name: 'Exam Room CCTV Feed',
-                        source_type: 'stream',
-                        source_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-                        width: 1280,
-                        height: 720
-                      })}
-                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-[11px] font-medium"
-                    >
-                      📹 Direct MP4 Link
-                    </button>
-                  </div>
+                      });
+                      setUrlCheckResult(null);
+                    }}
+                    className="px-2 py-1 rounded bg-amber-950/80 hover:bg-amber-900 border border-amber-800 text-amber-300 text-[11px] font-medium"
+                  >
+                    📁 Google Drive CCTV
+                  </button>
                 </div>
-              )}
+              </div>
 
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">Camera Name</label>
@@ -616,6 +709,7 @@ export function AdminCamerasManager() {
                         defaultUrl = 'http://192.168.1.50:8080/video';
                       }
                       setFormData({ ...formData, source_type: type, source_url: defaultUrl });
+                      setUrlCheckResult(null);
                     }}
                     className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500 font-mono"
                   >
@@ -642,14 +736,28 @@ export function AdminCamerasManager() {
               </div>
 
               <div>
-                <label className="block text-slate-300 font-semibold mb-1">
-                  Source URL / Hardware Path
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-300 font-semibold">
+                    Source URL / Hardware Path
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleCheckUrl}
+                    disabled={isCheckingUrl || !formData.source_url}
+                    className="flex items-center space-x-1 text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isCheckingUrl ? 'animate-spin' : ''}`} />
+                    <span>{isCheckingUrl ? 'Testing...' : 'Test Stream Link'}</span>
+                  </button>
+                </div>
                 <input
                   type="text"
                   required
                   value={formData.source_url}
-                  onChange={e => setFormData({ ...formData, source_url: e.target.value })}
+                  onChange={e => {
+                    setFormData({ ...formData, source_url: e.target.value });
+                    setUrlCheckResult(null);
+                  }}
                   placeholder={
                     formData.source_type === 'ip_webcam'
                       ? 'http://192.168.1.X:8080/video'
@@ -662,6 +770,58 @@ export function AdminCamerasManager() {
                   className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500 font-mono"
                 />
               </div>
+
+              {/* Live URL Validation Feedback */}
+              {urlCheckResult && (
+                <div className={`p-2.5 rounded-lg border text-[11px] leading-relaxed animate-in fade-in ${
+                  urlCheckResult.valid && !urlCheckResult.quota_exceeded
+                    ? 'bg-emerald-950/50 border-emerald-800 text-emerald-300'
+                    : urlCheckResult.quota_exceeded
+                    ? 'bg-amber-950/50 border-amber-800 text-amber-300'
+                    : 'bg-rose-950/50 border-rose-800 text-rose-300'
+                }`}>
+                  <strong className="block mb-0.5 font-bold">
+                    {urlCheckResult.quota_exceeded 
+                      ? '⚠️ Google Drive Quota Notice:' 
+                      : urlCheckResult.valid 
+                      ? '✓ Stream Source Verified:' 
+                      : '✕ Stream Check Error:'}
+                  </strong>
+                  <span>{urlCheckResult.message}</span>
+                  {urlCheckResult.quota_exceeded && (
+                    <div className="mt-1.5 flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormData({
+                            ...formData,
+                            source_type: 'stream',
+                            source_url: '/api/video/sample'
+                          });
+                          setUrlCheckResult(null);
+                        }}
+                        className="px-2 py-0.5 rounded bg-amber-800 hover:bg-amber-700 text-white font-semibold text-[10px]"
+                      >
+                        Switch to Resilient CCTV Feed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormData({
+                            ...formData,
+                            source_type: 'webcam',
+                            source_url: 'webcam:default'
+                          });
+                          setUrlCheckResult(null);
+                        }}
+                        className="px-2 py-0.5 rounded bg-indigo-800 hover:bg-indigo-700 text-white font-semibold text-[10px]"
+                      >
+                        Switch to Device Webcam
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Helpful Protocol Notice */}
               {formData.source_url.includes('drive.google.com') && (

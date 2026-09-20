@@ -2,6 +2,9 @@
 
 A minimal, efficient, professional, and production-ready academic system built entirely on free and open-source software (OpenCV, YOLO/ByteTrack, MongoDB, Node.js/Express, React, and Tailwind CSS).
 
+> 📘 **Looking for a step-by-step setup guide for a brand new computer?**  
+> Check out the complete [**Beginner's Installation, GitHub & Render Deployment Guide (BEGINNER_SETUP_AND_DEPLOYMENT_GUIDE.md)**](./BEGINNER_SETUP_AND_DEPLOYMENT_GUIDE.md) covering Node.js, Python, VS Code, Git, ZIP extraction, and free cloud deployment on Render.com.
+
 ---
 
 ## 1. System Overview

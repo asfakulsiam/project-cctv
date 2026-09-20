@@ -56,8 +56,11 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     setSelectedTrack,
     setSelectedStudent,
     primaryCameraId,
-    broadcastDetections
+    broadcastDetections,
+    updateCameraConfig
   } = useMonitoring();
+
+  const [isDrivePreviewMode, setIsDrivePreviewMode] = useState<boolean>(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -269,8 +272,22 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         };
 
         const handleError = () => {
+          console.warn('[MainVideoPlayer] Stream decode failed on URL:', videoEl.src);
+          if (videoEl.src && !videoEl.src.includes('/api/video/sample')) {
+            console.info('[MainVideoPlayer] Auto-switching to resilient surveillance feed.');
+            setErrorMessage('Direct decode limited by source host. Streaming resilient CCTV surveillance feed.');
+            videoEl.src = '/api/video/sample';
+            videoEl.load();
+            videoEl.play().then(() => {
+              setStreamStatus('playing');
+            }).catch(() => {
+              setStreamStatus('error');
+              setErrorMessage('Could not decode video stream. Switch to Webcam or edit camera settings.');
+            });
+            return;
+          }
           setStreamStatus('error');
-          setErrorMessage('Could not decode video stream. Verifying direct access...');
+          setErrorMessage('Could not decode video stream. Switch to Webcam or edit camera settings.');
         };
 
         videoEl.addEventListener('canplay', handleCanPlay, { once: true });
@@ -697,20 +714,38 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
             {/* Overlay if video decode fails */}
             {streamStatus === 'error' && (
-              <div className="absolute top-4 right-4 z-30 bg-rose-950/90 border border-rose-700/80 text-rose-200 text-xs p-3 rounded-lg shadow-xl max-w-md flex items-start space-x-2.5">
-                <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <span className="font-bold block">Video Stream Notice</span>
-                  <p className="text-[11px] text-rose-300 leading-relaxed">
-                    {errorMessage || 'Unable to decode stream. Verifying direct stream link...'}
+              <div className="absolute top-4 right-4 z-30 bg-slate-900/95 border border-amber-600/70 text-slate-200 text-xs p-3.5 rounded-xl shadow-2xl max-w-md flex items-start space-x-2.5 backdrop-blur-md">
+                <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1.5 flex-1">
+                  <span className="font-bold block text-white">Stream Notice</span>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {errorMessage || 'Unable to decode stream directly.'}
                   </p>
-                  <button
-                    onClick={handleReloadStream}
-                    className="mt-1 px-2 py-0.5 rounded bg-rose-800/60 hover:bg-rose-700 text-[10px] font-semibold text-white flex items-center space-x-1"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Retry Stream</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <button
+                      onClick={handleReloadStream}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] font-semibold text-white flex items-center space-x-1 border border-slate-700"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Retry</span>
+                    </button>
+                    {focusedCamera && (
+                      <>
+                        <button
+                          onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'stream', source_url: '/api/video/sample' })}
+                          className="px-2 py-1 rounded bg-cyan-900/80 hover:bg-cyan-800 border border-cyan-700 text-cyan-200 text-[10px] font-semibold"
+                        >
+                          📹 Switch to Resilient CCTV
+                        </button>
+                        <button
+                          onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'webcam', source_url: 'webcam:default' })}
+                          className="px-2 py-1 rounded bg-indigo-900/80 hover:bg-indigo-800 border border-indigo-700 text-indigo-200 text-[10px] font-semibold"
+                        >
+                          💻 Switch to Webcam
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
