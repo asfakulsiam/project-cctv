@@ -48,10 +48,6 @@ export function drawCameraFeed(
   ctx.save();
   ctx.clearRect(0, 0, width, height);
 
-  // Background deep surveillance canvas
-  ctx.fillStyle = '#020617';
-  ctx.fillRect(0, 0, width, height);
-
   // Apply Zoom and Pan transform
   ctx.translate(panOffset.x, panOffset.y);
   ctx.scale(zoomLevel, zoomLevel);
@@ -110,7 +106,7 @@ export function drawCameraFeed(
     }
 
     if (videoSource instanceof HTMLVideoElement) {
-      if (videoSource.readyState >= 2 && !videoSource.paused && videoSource.videoWidth > 0) {
+      if (videoSource.readyState >= 1 && videoSource.videoWidth > 0) {
         try {
           ctx.drawImage(videoSource, drawX, drawY, drawW, drawH);
           hasDrawnRealVideo = true;
@@ -130,8 +126,8 @@ export function drawCameraFeed(
     }
   }
 
-  if (!hasDrawnRealVideo) {
-    // Clean optical standby background
+  if (!hasDrawnRealVideo && !videoSource) {
+    // Clean optical standby background when completely disconnected
     const gradFloor = ctx.createLinearGradient(0, 0, 0, height);
     gradFloor.addColorStop(0, '#090d16');
     gradFloor.addColorStop(1, '#020617');
@@ -155,10 +151,6 @@ export function drawCameraFeed(
     ctx.fillStyle = 'rgba(100, 116, 139, 0.8)';
     ctx.fillText('Establishing optical decoder feed...', centerX, centerY + 70);
     ctx.textAlign = 'left';
-  } else {
-    // Subtle high-tech contrast enhancement layer for camera footage
-    ctx.fillStyle = 'rgba(2, 6, 23, 0.03)';
-    ctx.fillRect(drawX, drawY, drawW, drawH);
   }
 
   // Viewport Frame Brackets (aligned with active video frame)

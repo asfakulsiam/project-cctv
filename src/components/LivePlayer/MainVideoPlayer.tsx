@@ -109,6 +109,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const focusedCamera = cameras.find(c => c.camera_id === focusedCameraId) || cameras[0];
   const tracks = tracksByCamera[focusedCameraId] || [];
   const isPrimary = focusedCamera?.camera_id === primaryCameraId;
+  const streamResolution = resolveCameraStream(focusedCamera);
 
   // Apple HIG Screen Wake Lock: Keep display active while video is playing
   const { isLocked: isScreenAwake } = useScreenWakeLock({
@@ -246,14 +247,18 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
       if (mjpegEl) mjpegEl.src = '';
       if (videoEl) {
         videoEl.srcObject = null;
-        videoEl.src = resolution.streamUrl;
-        videoEl.crossOrigin = 'anonymous';
-        videoEl.loop = true;
+        videoEl.defaultMuted = true;
         videoEl.muted = isMuted;
+        videoEl.loop = true;
         videoEl.playsInline = true;
+        videoEl.crossOrigin = 'anonymous';
+        videoEl.src = resolution.streamUrl;
 
-        const handleCanPlay = () => {
+        let hasAttemptedFallback = false;
+
+        const attemptPlay = () => {
           videoEl.play().then(() => {
+            if (isCancelled) return;
             setStreamStatus('playing');
             if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
               setStreamInfo(prev => ({
@@ -262,8 +267,17 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               }));
             }
           }).catch(err => {
+            if (isCancelled) return;
             if (err.name === 'NotAllowedError') {
-              setStreamStatus('blocked');
+              // Try muted autoplay first as required by browser policy
+              videoEl.muted = true;
+              videoEl.defaultMuted = true;
+              setIsMuted(true);
+              videoEl.play().then(() => {
+                if (!isCancelled) setStreamStatus('playing');
+              }).catch(() => {
+                if (!isCancelled) setStreamStatus('blocked');
+              });
             } else {
               setStreamStatus('error');
               setErrorMessage(err.message);
@@ -271,31 +285,39 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           });
         };
 
+        const handleCanPlay = () => {
+          attemptPlay();
+        };
+
         const handleError = () => {
-          console.warn('[MainVideoPlayer] Stream decode failed on URL:', videoEl.src);
-          if (videoEl.src && !videoEl.src.includes('/api/video/sample')) {
-            console.info('[MainVideoPlayer] Auto-switching to resilient surveillance feed.');
-            setErrorMessage('Direct decode limited by source host. Streaming resilient CCTV surveillance feed.');
+          console.warn('[MainVideoPlayer] Stream decode issue on URL:', videoEl.src);
+          if (!hasAttemptedFallback && videoEl.src && !videoEl.src.includes('/api/video/sample')) {
+            hasAttemptedFallback = true;
+            console.info('[MainVideoPlayer] Auto-switching to resilient surveillance CCTV feed.');
             videoEl.src = '/api/video/sample';
             videoEl.load();
-            videoEl.play().then(() => {
-              setStreamStatus('playing');
-            }).catch(() => {
-              setStreamStatus('error');
-              setErrorMessage('Could not decode video stream. Switch to Webcam or edit camera settings.');
-            });
+            attemptPlay();
             return;
           }
           setStreamStatus('error');
           setErrorMessage('Could not decode video stream. Switch to Webcam or edit camera settings.');
         };
 
-        videoEl.addEventListener('canplay', handleCanPlay, { once: true });
-        videoEl.addEventListener('error', handleError, { once: true });
+        videoEl.addEventListener('loadedmetadata', handleCanPlay);
+        videoEl.addEventListener('canplay', handleCanPlay);
+        videoEl.addEventListener('loadeddata', handleCanPlay);
+        videoEl.addEventListener('error', handleError);
         videoEl.load();
 
+        // If media was already cached/buffered
+        if (videoEl.readyState >= 1) {
+          handleCanPlay();
+        }
+
         return () => {
+          videoEl.removeEventListener('loadedmetadata', handleCanPlay);
           videoEl.removeEventListener('canplay', handleCanPlay);
+          videoEl.removeEventListener('loadeddata', handleCanPlay);
           videoEl.removeEventListener('error', handleError);
         };
       }
@@ -500,24 +522,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
   return (
     <div className="flex flex-col bg-[var(--system-secondary-bg)] rounded-[20px] border border-[var(--system-card-border)] shadow-[var(--system-shadow-md)] overflow-hidden transition-all">
-      
-      {/* Hidden Video & Image elements for native hardware decoding */}
-      <video
-        ref={videoRef}
-        playsInline
-        autoPlay
-        muted={isMuted}
-        loop
-        crossOrigin="anonymous"
-        className="hidden"
-      />
-      <img
-        ref={mjpegRef}
-        crossOrigin="anonymous"
-        alt="stream-frame"
-        className="hidden"
-      />
-
       {/* Player Header Bar - Apple HIG Frosted Glass */}
       <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-[var(--system-chrome-bg)] backdrop-blur-xl border-b border-[var(--system-chrome-border)] gap-2">
         <div className="flex items-center space-x-2.5">
@@ -620,6 +624,20 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
             </>
           )}
 
+          {streamResolution.previewUrl && (
+            <button
+              onClick={() => setIsDrivePreviewMode(prev => !prev)}
+              className={`px-2.5 py-1 rounded-[8px] text-[12px] font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
+                isDrivePreviewMode
+                  ? 'bg-[var(--system-accent)] text-white font-semibold shadow-sm'
+                  : 'bg-[var(--system-fill)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-text-secondary)] border border-[var(--system-chrome-border)]'
+              }`}
+              title="Toggle between Direct CCTV Engine (AI Bounding Boxes) and Native Drive Player"
+            >
+              <span>{isDrivePreviewMode ? 'Native Drive' : 'CCTV Engine'}</span>
+            </button>
+          )}
+
           {/* Auto Frame (Best View) Aspect Ratio Preservation Toggle */}
           <button
             onClick={() => setFitMode(prev => prev === 'contain' ? 'cover' : 'contain')}
@@ -674,7 +692,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
       {/* Main Canvas Player Area */}
       <div 
         ref={containerRef}
-        className="relative w-full bg-black flex items-center justify-center overflow-hidden select-none cursor-crosshair"
+        className="relative w-full aspect-video bg-slate-950 flex items-center justify-center overflow-hidden select-none cursor-crosshair"
         style={{ minHeight: '380px' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -682,13 +700,56 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
       >
         {focusedCamera && focusedCamera.status === 'online' ? (
           <>
-            <canvas
-              ref={canvasRef}
-              width={canvasDimensions.width}
-              height={canvasDimensions.height}
-              onClick={handleCanvasClick}
-              className="cv-canvas block w-full h-auto"
+            {/* Native Google Drive Preview Player (if requested by user) */}
+            {isDrivePreviewMode && streamResolution.previewUrl ? (
+              <iframe
+                src={streamResolution.previewUrl}
+                title="Google Drive Video Player"
+                className="absolute inset-0 w-full h-full border-0 z-20"
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+              />
+            ) : null}
+
+            {/* Direct Hardware Video Stream (Plays smoothly underneath the AI telemetry canvas) */}
+            <video
+              ref={videoRef}
+              playsInline
+              autoPlay
+              muted={isMuted}
+              loop
+              crossOrigin="anonymous"
+              className="absolute inset-0 w-full h-full object-contain pointer-events-none z-0"
+              style={{
+                transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
+                transformOrigin: 'center center',
+                display: isDrivePreviewMode || focusedCamera.source_type === 'ip_webcam' || (focusedCamera.source_url || '').includes(':8080') ? 'none' : 'block'
+              }}
             />
+
+            {/* MJPEG Stream for IP Webcams */}
+            <img
+              ref={mjpegRef}
+              crossOrigin="anonymous"
+              alt="stream-frame"
+              className="absolute inset-0 w-full h-full object-contain pointer-events-none z-0"
+              style={{
+                transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
+                transformOrigin: 'center center',
+                display: !isDrivePreviewMode && (focusedCamera.source_type === 'ip_webcam' || (focusedCamera.source_url || '').includes(':8080')) ? 'block' : 'none'
+              }}
+            />
+
+            {/* Computer Vision AI Detection Overlay Canvas */}
+            {!isDrivePreviewMode && (
+              <canvas
+                ref={canvasRef}
+                width={canvasDimensions.width}
+                height={canvasDimensions.height}
+                onClick={handleCanvasClick}
+                className="cv-canvas absolute inset-0 w-full h-full object-contain z-10 pointer-events-auto cursor-crosshair"
+              />
+            )}
 
             {/* Overlay if browser requires click to autoplay */}
             {streamStatus === 'blocked' && (

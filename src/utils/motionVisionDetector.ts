@@ -89,13 +89,14 @@ export class MotionVisionDetector {
     }
 
     // Draw downscaled frame for optical processing (160x90)
+    let frame: ImageData;
     try {
       this.offscreenCtx.drawImage(source, 0, 0, this.width, this.height);
+      frame = this.offscreenCtx.getImageData(0, 0, this.width, this.height);
     } catch {
       return this.getActiveCameraTracks(cameraId, now);
     }
 
-    const frame = this.offscreenCtx.getImageData(0, 0, this.width, this.height);
     const data = frame.data;
 
     // Reset grid buffers

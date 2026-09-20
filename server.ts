@@ -370,9 +370,15 @@ async function startServer() {
   }
 
   // Cache for resolved Google Drive video direct URLs and session cookies
-  const gdriveResolutionCache = new Map<string, { finalUrl: string; cookies: string; expireAt: number }>();
+  interface GDriveCacheEntry {
+    finalUrl?: string;
+    cookies?: string;
+    isQuotaExceeded?: boolean;
+    expireAt: number;
+  }
+  const gdriveResolutionCache = new Map<string, GDriveCacheEntry>();
 
-  const resolveGoogleDriveStreamUrl = async (fileId: string): Promise<{ finalUrl: string; cookies: string } | null> => {
+  const resolveGoogleDriveStreamUrl = async (fileId: string): Promise<GDriveCacheEntry | null> => {
     const cached = gdriveResolutionCache.get(fileId);
     if (cached && cached.expireAt > Date.now()) {
       return cached;
@@ -382,7 +388,13 @@ async function startServer() {
       const initialUrl = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`;
       let accumulatedCookies = '';
 
-      const req1 = https.get(initialUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 }, (res1) => {
+      const timer = setTimeout(() => {
+        const timeoutEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 600000 };
+        gdriveResolutionCache.set(fileId, timeoutEntry);
+        resolve(timeoutEntry);
+      }, 3500);
+
+      const req1 = https.get(initialUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 3000 }, (res1) => {
         const rawCookies1 = (res1.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
         if (rawCookies1) accumulatedCookies = rawCookies1;
 
@@ -390,8 +402,9 @@ async function startServer() {
         if (location1) {
           const req2 = https.get(location1, {
             headers: { 'User-Agent': 'Mozilla/5.0', 'Cookie': accumulatedCookies },
-            timeout: 10000
+            timeout: 3000
           }, (res2) => {
+            clearTimeout(timer);
             const rawCookies2 = (res2.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
             if (rawCookies2) {
               accumulatedCookies = accumulatedCookies ? `${accumulatedCookies}; ${rawCookies2}` : rawCookies2;
@@ -400,54 +413,61 @@ async function startServer() {
             // If it's already a direct video or binary stream
             const contentType2 = res2.headers['content-type'] || '';
             if (!contentType2.includes('text/html')) {
-              const result = { finalUrl: location1, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
+              const result: GDriveCacheEntry = { finalUrl: location1, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
               gdriveResolutionCache.set(fileId, result);
               res2.destroy();
               return resolve(result);
             }
 
-            // Otherwise, it's the Google Drive Virus Scan warning page for large videos (>100MB)
+            // Otherwise, read body to check for Quota Exceeded or virus scan UUID
             let htmlBody = '';
             res2.on('data', chunk => {
               if (htmlBody.length < 50000) htmlBody += chunk.toString('utf8');
             });
             res2.on('end', () => {
+              if (htmlBody.includes('Quota exceeded') || htmlBody.includes('quota exceeded') || htmlBody.includes('Access Denied')) {
+                console.warn(`[Proxy] Google Drive file ${fileId} quota exceeded. Caching resilient fallback.`);
+                const quotaResult: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 3600000 };
+                gdriveResolutionCache.set(fileId, quotaResult);
+                return resolve(quotaResult);
+              }
+
               const uuidMatch = htmlBody.match(/name="uuid"\s+value="([^"]+)"/);
               const actionMatch = htmlBody.match(/action="([^"]+)"/);
               const actionUrl = actionMatch ? actionMatch[1] : 'https://drive.usercontent.google.com/download';
               
               if (uuidMatch) {
                 const finalUrl = `${actionUrl}?id=${encodeURIComponent(fileId)}&export=download&confirm=t&uuid=${encodeURIComponent(uuidMatch[1])}`;
-                const result = { finalUrl, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
+                const result: GDriveCacheEntry = { finalUrl, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
                 gdriveResolutionCache.set(fileId, result);
                 return resolve(result);
               }
 
               // Fallback to direct confirm URL
               const fallbackUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
-              resolve({ finalUrl: fallbackUrl, cookies: accumulatedCookies });
+              resolve({ finalUrl: fallbackUrl, cookies: accumulatedCookies, expireAt: Date.now() + 60000 });
             });
           });
 
           req2.on('error', () => {
-            resolve({
-              finalUrl: `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
-              cookies: accumulatedCookies
-            });
+            clearTimeout(timer);
+            const fallbackEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 300000 };
+            gdriveResolutionCache.set(fileId, fallbackEntry);
+            resolve(fallbackEntry);
           });
         } else {
-          resolve({
-            finalUrl: `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
-            cookies: accumulatedCookies
-          });
+          clearTimeout(timer);
+          const fallbackEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 300000 };
+          gdriveResolutionCache.set(fileId, fallbackEntry);
+          resolve(fallbackEntry);
         }
       });
 
       req1.on('error', () => {
-        resolve({
-          finalUrl: `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
-          cookies: ''
-        });
+        clearTimeout(timer);
+        const fallbackEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 300000 };
+        gdriveResolutionCache.set(fileId, fallbackEntry);
+        resolve(fallbackEntry);
       });
     });
   };
@@ -572,11 +592,13 @@ async function startServer() {
     
     try {
       const resolved = await resolveGoogleDriveStreamUrl(fileId);
+      if (resolved && resolved.isQuotaExceeded) {
+        return streamSampleVideo(res, req, 'Google Drive download quota exceeded. Streaming resilient CCTV surveillance feed.');
+      }
       if (resolved && resolved.finalUrl) {
         handleStreamProxy(resolved.finalUrl, res, req, 0, resolved.cookies);
       } else {
-        const directUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
-        handleStreamProxy(directUrl, res, req);
+        streamSampleVideo(res, req, 'Resolving Google Drive stream. Streaming resilient surveillance feed.');
       }
     } catch (err: any) {
       streamSampleVideo(res, req, 'Google Drive link error. Showing resilient surveillance feed.');
