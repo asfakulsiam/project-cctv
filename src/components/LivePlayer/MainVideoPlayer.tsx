@@ -12,6 +12,7 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
+import { useScreenWakeLock } from '../../hooks/useScreenWakeLock.js';
 import { drawCameraFeed } from '../../utils/canvasRenderer.js';
 import { resolveCameraStream } from '../../utils/streamHelper.js';
 import { MotionVisionDetector } from '../../utils/motionVisionDetector.js';
@@ -35,7 +36,8 @@ import {
   RefreshCw,
   Video,
   Camera,
-  Scan
+  Scan,
+  Sun
 } from 'lucide-react';
 
 interface MainVideoPlayerProps {
@@ -104,6 +106,19 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const focusedCamera = cameras.find(c => c.camera_id === focusedCameraId) || cameras[0];
   const tracks = tracksByCamera[focusedCameraId] || [];
   const isPrimary = focusedCamera?.camera_id === primaryCameraId;
+
+  // Apple HIG Screen Wake Lock: Keep display active while video is playing
+  const { isLocked: isScreenAwake } = useScreenWakeLock({
+    isPlaying: streamStatus === 'playing',
+    title: focusedCamera?.name || 'Examination Surveillance',
+    subtitle: 'Proctor-CV Academic Monitoring',
+    onPlay: () => {
+      if (videoRef.current) videoRef.current.play().catch(() => {});
+    },
+    onPause: () => {
+      if (videoRef.current) videoRef.current.pause();
+    }
+  });
 
   // Stable refs to decouple the 60fps canvas render loop from React state re-render thrashing
   const tracksRef = useRef(tracks);
@@ -467,7 +482,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   };
 
   return (
-    <div className="flex flex-col bg-slate-900 rounded-xl border border-slate-800 shadow-2xl overflow-hidden">
+    <div className="flex flex-col bg-[var(--system-secondary-bg)] rounded-[20px] border border-[var(--system-card-border)] shadow-[var(--system-shadow-md)] overflow-hidden transition-all">
       
       {/* Hidden Video & Image elements for native hardware decoding */}
       <video
@@ -486,49 +501,58 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         className="hidden"
       />
 
-      {/* Player Header Bar */}
-      <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-slate-950/80 border-b border-slate-800 gap-2">
-        <div className="flex items-center space-x-3">
+      {/* Player Header Bar - Apple HIG Frosted Glass */}
+      <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-[var(--system-chrome-bg)] backdrop-blur-xl border-b border-[var(--system-chrome-border)] gap-2">
+        <div className="flex items-center space-x-2.5">
           <div className="flex items-center space-x-2">
-            <span className="font-bold text-sm text-slate-100">
-              {focusedCamera ? focusedCamera.name : 'Surveillance Monitor (0 Feeds)'}
+            <span className="font-semibold text-[14px] text-[var(--system-text-primary)]">
+              {focusedCamera ? focusedCamera.name : 'Surveillance Monitor'}
             </span>
             {focusedCamera && (
               isPrimary ? (
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
-                  PRIMARY VIEW
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[var(--system-accent-subtle)] text-[var(--system-accent)] border border-[var(--system-accent)]/20">
+                  PRIMARY
                 </span>
               ) : (
-                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                  FOCUSED ANGLE
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--system-fill)] text-[var(--system-text-secondary)] border border-[var(--system-chrome-border)]">
+                  FOCUSED
                 </span>
               )
+            )}
+            {isScreenAwake && (
+              <span
+                className="px-2 py-0.5 rounded-full text-[10px] font-mono-apple font-medium bg-[var(--system-accent-subtle)] text-[var(--system-accent)] border border-[var(--system-accent)]/20 flex items-center space-x-1"
+                title="Screen Wake Lock: Display will remain on while playing"
+              >
+                <Sun className="w-2.5 h-2.5" />
+                <span className="hidden xs:inline">Awake</span>
+              </span>
             )}
           </div>
           {focusedCamera && streamInfo.label && (
             <>
-              <span className="text-slate-600 hidden sm:inline">•</span>
-              <span className="text-xs text-slate-400 font-mono hidden sm:inline flex items-center space-x-1">
-                <Video className="w-3 h-3 text-cyan-400 inline" />
+              <span className="text-[var(--system-text-tertiary)] hidden sm:inline">•</span>
+              <span className="text-[12px] text-[var(--system-text-secondary)] font-mono-apple hidden sm:inline flex items-center space-x-1">
+                <Video className="w-3 h-3 text-[var(--system-accent)] inline" />
                 <span>{streamInfo.label}</span>
               </span>
             </>
           )}
         </div>
 
-        {/* Quick Camera Switcher Buttons */}
+        {/* Quick Camera Switcher Pills */}
         {cameras.length > 1 && (
-          <div className="flex items-center space-x-1.5 overflow-x-auto py-0.5">
+          <div className="flex items-center space-x-1 overflow-x-auto py-0.5">
             {cameras.map(cam => {
               const isSelected = cam.camera_id === focusedCameraId;
               return (
                 <button
                   key={cam.camera_id}
                   onClick={() => setFocusedCameraId(cam.camera_id)}
-                  className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1 transition-all ${
+                  className={`px-2.5 py-1 rounded-[8px] text-[12px] font-medium flex items-center space-x-1 transition-all cursor-pointer ${
                     isSelected
-                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm ring-1 ring-cyan-400'
-                      : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700'
+                      ? 'bg-[var(--system-accent)] text-white font-semibold shadow-sm'
+                      : 'bg-[var(--system-fill)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] border border-[var(--system-chrome-border)]'
                   }`}
                   title={`Switch to ${cam.name} feed`}
                 >
@@ -540,15 +564,15 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         )}
 
         {/* Playback, Zoom & Inspection Controls */}
-        <div className="flex items-center space-x-1.5">
+        <div className="flex items-center space-x-1">
           {focusedCamera && (focusedCamera.source_type === 'webcam' || (focusedCamera.source_url || '').startsWith('webcam:')) && (
             <button
               onClick={handleToggleCameraFacing}
-              className="px-2.5 py-1 rounded bg-cyan-950/70 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/80 text-xs font-semibold flex items-center space-x-1.5 transition-colors shadow-sm"
+              className="px-2.5 py-1 rounded-[8px] bg-[var(--system-accent-subtle)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-accent)] border border-[var(--system-accent)]/20 text-[12px] font-medium flex items-center space-x-1.5 transition-colors cursor-pointer"
               title="Flip between Phone Rear/Back Camera (CCTV) and Front Selfie Camera"
             >
-              <Camera className="w-3.5 h-3.5 text-cyan-400" />
-              <span>{cameraFacing === 'environment' ? 'Rear Cam (CCTV)' : 'Front Cam'}</span>
+              <Camera className="w-3.5 h-3.5" />
+              <span>{cameraFacing === 'environment' ? 'Rear Cam' : 'Front Cam'}</span>
             </button>
           )}
 
@@ -556,76 +580,76 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
             <>
               <button
                 onClick={handleTogglePlayPause}
-                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+                className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer"
                 title={streamStatus === 'paused' ? 'Resume Stream' : 'Pause Stream'}
               >
-                {streamStatus === 'paused' ? <Play className="w-4 h-4 text-emerald-400" /> : <Pause className="w-4 h-4" />}
+                {streamStatus === 'paused' ? <Play className="w-4 h-4 text-[var(--system-success)] fill-current" /> : <Pause className="w-4 h-4" />}
               </button>
               <button
                 onClick={handleToggleMute}
-                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+                className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer"
                 title={isMuted ? 'Unmute Audio' : 'Mute Audio'}
               >
-                {isMuted ? <VolumeX className="w-4 h-4 text-slate-400" /> : <Volume2 className="w-4 h-4 text-cyan-400" />}
+                {isMuted ? <VolumeX className="w-4 h-4 text-[var(--system-text-tertiary)]" /> : <Volume2 className="w-4 h-4 text-[var(--system-accent)]" />}
               </button>
               <button
                 onClick={handleReloadStream}
-                className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+                className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer"
                 title="Reload Stream Decoder"
               >
-                <RefreshCw className="w-4 h-4" />
+                <RefreshCw className="w-3.5 h-3.5" />
               </button>
-              <div className="h-4 w-px bg-slate-800 mx-1" />
+              <div className="h-4 w-px bg-[var(--system-separator)] mx-1" />
             </>
           )}
 
           {/* Auto Frame (Best View) Aspect Ratio Preservation Toggle */}
           <button
             onClick={() => setFitMode(prev => prev === 'contain' ? 'cover' : 'contain')}
-            className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1.5 transition-all ${
+            className={`px-2.5 py-1 rounded-[8px] text-[12px] font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
               fitMode === 'contain'
-                ? 'bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/80 shadow-sm'
-                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+                ? 'bg-[var(--system-success-subtle)] text-[var(--system-success)] border border-[var(--system-success)]/20 shadow-sm'
+                : 'bg-[var(--system-fill)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-text-secondary)] border border-[var(--system-chrome-border)]'
             }`}
-            title={fitMode === 'contain' ? 'Auto Frame Best View (Active): Preserves 100% natural camera aspect ratio with no stretching or distortion. Click to switch to Fill Screen.' : 'Fill Screen: Video fills canvas (edges cropped). Click for Auto Frame Best View.'}
+            title={fitMode === 'contain' ? 'Auto Frame Best View (Active)' : 'Fill Screen'}
           >
-            <Scan className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="hidden sm:inline">{fitMode === 'contain' ? 'Auto Frame (Best View)' : 'Fill Screen'}</span>
+            <Scan className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{fitMode === 'contain' ? 'Auto Frame' : 'Fill'}</span>
           </button>
 
           <button
             onClick={handleZoomOut}
             disabled={zoomLevel <= 1.0}
-            className="p-1.5 rounded hover:bg-slate-800 text-slate-300 disabled:opacity-30 transition-colors"
+            className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] disabled:opacity-30 transition-colors cursor-pointer"
             title="Zoom Out"
           >
-            <ZoomOut className="w-4 h-4" />
+            <ZoomOut className="w-3.5 h-3.5" />
           </button>
-          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-cyan-400">
+          <span className="text-[11px] font-mono-apple px-2 py-0.5 rounded-[6px] bg-[var(--system-fill)] text-[var(--system-accent)] font-semibold">
             {zoomLevel.toFixed(1)}x
           </span>
           <button
             onClick={handleZoomIn}
             disabled={zoomLevel >= 3.0}
-            className="p-1.5 rounded hover:bg-slate-800 text-slate-300 disabled:opacity-30 transition-colors"
+            className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] disabled:opacity-30 transition-colors cursor-pointer"
             title="Zoom In"
           >
-            <ZoomIn className="w-4 h-4" />
+            <ZoomIn className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={handleResetView}
-            className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+            className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer"
             title="Reset Zoom & Pan"
           >
-            <RotateCcw className="w-4 h-4" />
+            <RotateCcw className="w-3.5 h-3.5" />
           </button>
-          <div className="h-4 w-px bg-slate-800 mx-1" />
+          <div className="h-4 w-px bg-[var(--system-separator)] mx-1" />
           <button
             onClick={toggleFullscreen}
-            className="p-1.5 rounded hover:bg-slate-800 text-slate-300 transition-colors"
+            className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer"
             title="Toggle Fullscreen"
           >
-            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
@@ -730,21 +754,21 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         )}
       </div>
 
-      {/* Observation Priority & Perspective Context Bar */}
-      <div className="px-4 py-2 bg-slate-950 border-t border-slate-800/80 flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2">
+      {/* Observation Priority & Perspective Context Bar - Apple HIG Inset Bar */}
+      <div className="px-4 py-2.5 bg-[var(--system-tertiary-bg)] border-t border-[var(--system-separator)] flex flex-wrap items-center justify-between text-[12px] text-[var(--system-text-secondary)] gap-2">
         <div className="flex items-center space-x-2">
-          <Eye className="w-3.5 h-3.5 text-cyan-400" />
+          <Eye className="w-3.5 h-3.5 text-[var(--system-accent)]" />
           <span>Active Perspective:</span>
-          <span className="text-slate-200 font-medium">
+          <span className="text-[var(--system-text-primary)] font-medium">
             {focusedCamera?.view_angle_description || (cameras.length === 0 ? 'No active camera' : 'Surveillance perspective')}
           </span>
         </div>
 
-        <div className="flex items-center space-x-4 font-mono text-[11px]">
-          <span>Visible Tracks: <strong className="text-cyan-400">{tracks.length}</strong></span>
-          <span className="text-slate-700">|</span>
+        <div className="flex items-center space-x-3 font-mono-apple text-[11px]">
+          <span>Visible Tracks: <strong className="text-[var(--system-accent)]">{tracks.length}</strong></span>
+          <span className="text-[var(--system-text-quaternary)]">|</span>
           <span>
-            Resolution: <strong className="text-slate-300">
+            Resolution: <strong className="text-[var(--system-text-primary)]">
               {streamInfo.resolution || (focusedCamera?.resolution ? `${focusedCamera.resolution.width}x${focusedCamera.resolution.height}` : '1920x1080')}
             </strong>
           </span>

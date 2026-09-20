@@ -759,7 +759,7 @@ export function AdminCamerasManager() {
                             : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
                         }`}
                       >
-                        {seat.label} ({seat.id})
+                        {seat.seat_label || seat.id} ({seat.id})
                       </button>
                     );
                   })}

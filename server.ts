@@ -28,11 +28,12 @@ const activeAdminTokens = new Set<string>();
 function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
-    return res.status(401).json({ error: 'Admin authentication required.' });
+    // Return plain 404 so existence of admin endpoints is never leaked to non-admins
+    return res.status(404).send('Cannot ' + req.method + ' ' + req.url);
   }
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
   if (!activeAdminTokens.has(token)) {
-    return res.status(403).json({ error: 'Invalid or expired admin authorization token.' });
+    return res.status(404).send('Cannot ' + req.method + ' ' + req.url);
   }
   next();
 }
@@ -741,6 +742,18 @@ async function startServer() {
     }
   });
 
+  // Robots.txt configuration to exclude administrative routes from search engines
+  app.get('/robots.txt', (req, res) => {
+    res.type('text/plain');
+    res.send('User-agent: *\nDisallow: /admin\nDisallow: /admin/*\nDisallow: /api/admin\nDisallow: /api/admin/*\n');
+  });
+
+  // Admin pages: noindex, excluded from sitemap and robots listing
+  app.use('/admin', (req, res, next) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    next();
+  });
+
   // -------------------------------------------------------------
   // VITE MIDDLEWARE / STATIC ASSETS
   // -------------------------------------------------------------
@@ -764,7 +777,6 @@ async function startServer() {
     console.log(` Smart Classroom Exam Monitoring Server Active`);
     console.log(` URL: http://0.0.0.0:${PORT}`);
     console.log(` WebSocket: ws://0.0.0.0:${PORT}/ws`);
-    console.log(` Admin Credentials: ${ADMIN_USERNAME} / (configured)`);
     console.log(`=======================================================`);
   });
 }

@@ -1,6 +1,6 @@
 /**
- * Smart Classroom Exam Monitoring System
- * Academic Audit Reports & Incident Export View
+ * Apple Human Interface Guidelines Academic Audit Reports & Incident Export View
+ * Pristine tables, KPI cards, download actions, and student breakdown.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -10,13 +10,11 @@ import {
   Download, 
   CheckCircle2, 
   AlertTriangle, 
-  ShieldAlert, 
-  Users, 
-  Video, 
-  Printer,
-  Calendar,
-  Clock
+  Users
 } from 'lucide-react';
+import { Card } from '../ui/Card.js';
+import { Badge } from '../ui/Badge.js';
+import { Button } from '../ui/Button.js';
 
 export function AuditReportsView() {
   const { session, students, cameras, events } = useMonitoring();
@@ -58,115 +56,115 @@ export function AuditReportsView() {
     <div className="space-y-6">
       
       {/* Page Header */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+      <Card padding="md" className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center space-x-2">
-            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-400 border border-cyan-800">
-              OFFICIAL RECORD
-            </span>
-            <span className="text-xs text-slate-400 font-mono">
-              Session #{session?.session_code || 'UNSCHEDULED'}
+            <Badge variant="accent">
+              OFFICIAL AUDIT RECORD
+            </Badge>
+            <span className="text-[12px] text-[var(--system-text-tertiary)] font-mono-apple">
+              Session #{session?.id || session?.course_code || 'SURVEILLANCE'}
             </span>
           </div>
-          <h1 className="text-xl font-bold text-white mt-1">
-            Exam Session Behavioral Audit & Incident Summary
+          <h1 className="text-[22px] font-semibold text-[var(--system-text-primary)] tracking-tight mt-1.5">
+            Exam Behavioral Audit & Incident Summary
           </h1>
-          <p className="text-xs text-slate-400 mt-0.5">
-            {session ? `${session.title} • ${session.course_code}` : 'No active examination session scheduled'}
+          <p className="text-[13px] text-[var(--system-text-secondary)] mt-0.5">
+            {session ? `${session.title} • ${session.course_code}` : 'Live examination surveillance record'}
           </p>
         </div>
 
         {/* Export Buttons */}
         <div className="flex items-center space-x-2.5">
-          <button
+          <Button
+            variant="primary"
             onClick={handleExportCSV}
-            className="flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-colors shadow-sm"
+            icon={Download}
           >
-            <Download className="w-4 h-4" />
-            <span>Export Incident CSV</span>
-          </button>
+            Export CSV
+          </Button>
 
-          <button
+          <Button
+            variant="secondary"
             onClick={handleExportJSON}
-            className="flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-700 transition-colors"
+            icon={FileText}
           >
-            <FileText className="w-4 h-4 text-cyan-400" />
-            <span>Export Full JSON</span>
-          </button>
+            Export JSON
+          </Button>
         </div>
-      </div>
+      </Card>
 
       {/* Summary KPI Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <span className="text-xs text-slate-400 uppercase font-medium">Present Candidates</span>
-          <div className="text-2xl font-bold font-mono text-white mt-1">
+        <Card padding="sm">
+          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Present Candidates</span>
+          <div className="text-[22px] font-bold font-mono-apple text-[var(--system-text-primary)] mt-1">
             {students.filter(s => s.status === 'present' || s.status === 'flagged').length}
           </div>
-          <span className="text-[10px] text-slate-500 font-mono mt-1 block">
+          <span className="text-[11px] text-[var(--system-text-tertiary)] font-mono-apple mt-0.5 block">
             {students.length} Registered
           </span>
-        </div>
+        </Card>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <span className="text-xs text-slate-400 uppercase font-medium">Elevated Monitoring</span>
-          <div className="text-2xl font-bold font-mono text-rose-400 mt-1">
+        <Card padding="sm">
+          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Elevated Monitoring</span>
+          <div className="text-[22px] font-bold font-mono-apple text-[var(--system-destructive)] mt-1">
             {highRisk.length}
           </div>
-          <span className="text-[10px] text-rose-500/80 font-mono mt-1 block">
+          <span className="text-[11px] text-[var(--system-destructive)] font-mono-apple mt-0.5 block opacity-80">
             Score &ge; 60 pts
           </span>
-        </div>
+        </Card>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <span className="text-xs text-slate-400 uppercase font-medium">Attention Warnings</span>
-          <div className="text-2xl font-bold font-mono text-amber-400 mt-1">
+        <Card padding="sm">
+          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Attention Warnings</span>
+          <div className="text-[22px] font-bold font-mono-apple text-[var(--system-warning)] mt-1">
             {warnings.length}
           </div>
-          <span className="text-[10px] text-amber-500/80 font-mono mt-1 block">
+          <span className="text-[11px] text-[var(--system-warning)] font-mono-apple mt-0.5 block opacity-80">
             Score 35 - 59 pts
           </span>
-        </div>
+        </Card>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-          <span className="text-xs text-slate-400 uppercase font-medium">Logged CV Incidents</span>
-          <div className="text-2xl font-bold font-mono text-cyan-400 mt-1">
+        <Card padding="sm">
+          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Logged CV Incidents</span>
+          <div className="text-[22px] font-bold font-mono-apple text-[var(--system-accent)] mt-1">
             {events.length}
           </div>
-          <span className="text-[10px] text-slate-500 font-mono mt-1 block">
+          <span className="text-[11px] text-[var(--system-text-tertiary)] font-mono-apple mt-0.5 block">
             Across {cameras.length} cameras
           </span>
-        </div>
+        </Card>
       </div>
 
       {/* Student Audit Roster */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-        <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
-          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-            Student Incident Breakdown & Monitoring Status
+      <Card padding="none" className="overflow-hidden">
+        <div className="p-4 bg-[var(--system-chrome-bg)] backdrop-blur-md border-b border-[var(--system-chrome-border)] flex items-center justify-between">
+          <h2 className="text-[13px] font-semibold text-[var(--system-text-primary)]">
+            Candidate Incident Breakdown & Monitoring Status
           </h2>
-          <span className="text-xs text-slate-400 font-mono">
-            Ground-Truth Identity Mapping
+          <span className="text-[11px] text-[var(--system-text-tertiary)] font-mono-apple">
+            Unified Identity Mapping
           </span>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 uppercase font-mono text-[10px]">
+          <table className="w-full text-left text-[12px]">
+            <thead className="bg-[var(--system-fill)] text-[var(--system-text-secondary)] border-b border-[var(--system-separator)] font-mono-apple text-[11px]">
               <tr>
-                <th className="px-4 py-3">Student Name</th>
-                <th className="px-4 py-3">Student ID Number</th>
-                <th className="px-4 py-3">Assigned Desk</th>
-                <th className="px-4 py-3">Attendance</th>
-                <th className="px-4 py-3">Suspicion Score</th>
-                <th className="px-4 py-3">Observation Coverage</th>
-                <th className="px-4 py-3">Status Assessment</th>
+                <th className="px-4 py-3 font-medium">Candidate</th>
+                <th className="px-4 py-3 font-medium">ID Number</th>
+                <th className="px-4 py-3 font-medium">Desk</th>
+                <th className="px-4 py-3 font-medium">Attendance</th>
+                <th className="px-4 py-3 font-medium">Suspicion Index</th>
+                <th className="px-4 py-3 font-medium">Coverage</th>
+                <th className="px-4 py-3 font-medium">Assessment</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/80 text-slate-300">
+            <tbody className="divide-y divide-[var(--system-separator)] text-[var(--system-text-secondary)]">
               {students.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={7} className="px-4 py-8 text-center text-[var(--system-text-tertiary)]">
                     No candidates registered or present in this examination session.
                   </td>
                 </tr>
@@ -176,53 +174,49 @@ export function AuditReportsView() {
                 const isWarn = s.unified_suspicion_score >= 35 && !isHigh;
 
                 return (
-                  <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="px-4 py-3 font-semibold text-white">
+                  <tr key={s.id} className="hover:bg-[var(--system-fill-secondary)] transition-colors">
+                    <td className="px-4 py-3 font-semibold text-[var(--system-text-primary)]">
                       {s.name}
                     </td>
-                    <td className="px-4 py-3 font-mono text-slate-400">
+                    <td className="px-4 py-3 font-mono-apple text-[var(--system-text-secondary)]">
                       {s.student_id_number}
                     </td>
-                    <td className="px-4 py-3 font-mono text-cyan-400">
+                    <td className="px-4 py-3 font-mono-apple text-[var(--system-accent)]">
                       {s.seat_id ? s.seat_id.toUpperCase() : 'Unassigned'}
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase ${
-                        s.status === 'present' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/40' :
-                        s.status === 'flagged' ? 'bg-rose-950 text-rose-400 border border-rose-800/40' :
-                        'bg-slate-800 text-slate-400'
-                      }`}>
+                      <Badge variant={s.status === 'flagged' ? 'destructive' : s.status === 'present' ? 'success' : 'secondary'}>
                         {s.status}
-                      </span>
+                      </Badge>
                     </td>
-                    <td className="px-4 py-3 font-mono font-bold">
-                      <span className={isHigh ? 'text-rose-400' : isWarn ? 'text-amber-400' : 'text-slate-300'}>
+                    <td className="px-4 py-3 font-mono-apple font-semibold">
+                      <span className={isHigh ? 'text-[var(--system-destructive)]' : isWarn ? 'text-[var(--system-warning)]' : 'text-[var(--system-text-primary)]'}>
                         {s.unified_suspicion_score} pts
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-slate-400">
+                    <td className="px-4 py-3">
                       {s.active_observations.length > 0 ? (
-                        <span className="font-mono text-[11px] text-cyan-400">
-                          {s.active_observations.map(o => o.camera_id.toUpperCase()).join(', ')}
+                        <span className="font-mono-apple text-[11px] text-[var(--system-accent)]">
+                          {s.active_observations.map(o => o.camera_id).join(', ')}
                         </span>
                       ) : (
-                        <span className="text-slate-600">No active view</span>
+                        <span className="text-[var(--system-text-quaternary)]">No active angle</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
                       {isHigh ? (
-                        <span className="text-rose-400 font-semibold flex items-center space-x-1">
+                        <span className="text-[var(--system-destructive)] font-semibold flex items-center space-x-1">
                           <AlertTriangle className="w-3.5 h-3.5" />
-                          <span>Review Recommended</span>
+                          <span>Flagged for Review</span>
                         </span>
                       ) : isWarn ? (
-                        <span className="text-amber-400 flex items-center space-x-1">
+                        <span className="text-[var(--system-warning)] flex items-center space-x-1">
                           <span>Minor Anomalies</span>
                         </span>
                       ) : (
-                        <span className="text-emerald-400 flex items-center space-x-1">
+                        <span className="text-[var(--system-success)] flex items-center space-x-1">
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Within Norm</span>
+                          <span>Normal</span>
                         </span>
                       )}
                     </td>
@@ -232,46 +226,42 @@ export function AuditReportsView() {
             </tbody>
           </table>
         </div>
-      </div>
+      </Card>
 
       {/* Incident Log Sample */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-        <div className="p-4 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
-          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-            Recorded Examination Incident Log (Last 15 Records)
+      <Card padding="none" className="overflow-hidden">
+        <div className="p-4 bg-[var(--system-chrome-bg)] backdrop-blur-md border-b border-[var(--system-chrome-border)] flex items-center justify-between">
+          <h2 className="text-[13px] font-semibold text-[var(--system-text-primary)]">
+            Recorded Examination Incident Log
           </h2>
-          <span className="text-xs text-slate-500 font-mono">
-            Immutable Audit Trail
+          <span className="text-[11px] text-[var(--system-text-tertiary)] font-mono-apple">
+            Audit Stream
           </span>
         </div>
 
-        <div className="divide-y divide-slate-800/80 text-xs">
+        <div className="divide-y divide-[var(--system-separator)] text-[12px]">
           {events.length === 0 && (
-            <div className="p-6 text-center text-slate-500">
+            <div className="p-6 text-center text-[var(--system-text-tertiary)]">
               No behavioral incidents or system warnings logged for this session.
             </div>
           )}
           {events.slice(0, 15).map((e, idx) => (
             <div key={`${e.id}-${idx}`} className="p-3 flex items-center justify-between space-x-4">
               <div className="flex items-center space-x-3">
-                <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase ${
-                  e.severity === 'high' ? 'bg-rose-950 text-rose-400 border border-rose-800/40' :
-                  e.severity === 'warning' ? 'bg-amber-950 text-amber-400 border border-amber-800/40' :
-                  'bg-slate-800 text-slate-400'
-                }`}>
+                <Badge variant={e.severity === 'high' ? 'destructive' : e.severity === 'warning' ? 'warning' : 'secondary'}>
                   {e.event_type}
-                </span>
-                <span className="text-white font-medium">{e.student_name || 'Subject'}</span>
-                <span className="text-slate-400">{e.description}</span>
+                </Badge>
+                <span className="text-[var(--system-text-primary)] font-medium">{e.student_name || 'Candidate'}</span>
+                <span className="text-[var(--system-text-secondary)]">{e.description}</span>
               </div>
-              <div className="flex items-center space-x-3 text-slate-500 font-mono text-[11px]">
-                <span>{e.camera_id.toUpperCase()}</span>
+              <div className="flex items-center space-x-3 text-[var(--system-text-tertiary)] font-mono-apple text-[11px]">
+                <span>{e.camera_id}</span>
                 <span>{new Date(e.timestamp).toLocaleTimeString()}</span>
               </div>
             </div>
           ))}
         </div>
-      </div>
+      </Card>
 
     </div>
   );

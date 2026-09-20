@@ -13,14 +13,14 @@ export function AdminBrandingManager() {
   const [appName, setAppName] = useState<string>(settings?.app_name || '');
   const [logoText, setLogoText] = useState<string>(settings?.app_logo_text || 'PROCTOR-CV');
   const [classroomTitle, setClassroomTitle] = useState<string>(settings?.classroom_display_title || '');
-  const [description, setDescription] = useState<string>(settings?.description || '');
+  const [description, setDescription] = useState<string>(settings?.app_description || '');
 
   React.useEffect(() => {
     if (settings) {
       if (settings.app_name) setAppName(settings.app_name);
       if (settings.app_logo_text) setLogoText(settings.app_logo_text);
       if (settings.classroom_display_title) setClassroomTitle(settings.classroom_display_title);
-      if (settings.description) setDescription(settings.description);
+      if (settings.app_description) setDescription(settings.app_description);
     }
   }, [settings]);
 
@@ -43,7 +43,7 @@ export function AdminBrandingManager() {
           app_name: appName.trim(),
           app_logo_text: logoText.trim(),
           classroom_display_title: classroomTitle.trim(),
-          description: description.trim()
+          app_description: description.trim()
         })
       });
 

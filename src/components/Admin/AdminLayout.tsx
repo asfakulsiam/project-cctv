@@ -1,12 +1,7 @@
 /**
- * Smart Classroom Exam Monitoring System
- * Protected Admin Layout & Authentication Gateway
- * 
- * CORE REQUIREMENT:
- * - Completely separate admin layout and navigation.
- * - Protected by environment-configured username & password.
- * - Manages students, student ID corrections, cameras, primary camera selection,
- *   seat mapping, behavior weights, and system branding.
+ * Apple Human Interface Guidelines Admin Layout & Authentication Gateway
+ * Completely isolated administration route with secure token verification,
+ * Cupertino segmented tabs, and responsive layout.
  */
 
 import React, { useState, useEffect } from 'react';
@@ -24,25 +19,26 @@ import {
   LogOut, 
   Lock, 
   AlertCircle, 
-  Activity, 
   ArrowLeft,
-  KeyRound,
-  FileSpreadsheet
+  KeyRound
 } from 'lucide-react';
+import { Card } from '../ui/Card.js';
+import { Button } from '../ui/Button.js';
+import { Input } from '../ui/Input.js';
 
 interface AdminLayoutProps {
   onExitAdmin: () => void;
 }
 
-type AdminTab = 'students' | 'cameras' | 'rules' | 'branding' | 'overview';
+type AdminTab = 'students' | 'cameras' | 'rules' | 'branding';
 
 export function AdminLayout({ onExitAdmin }: AdminLayoutProps) {
   const { stats, session, cameras, students } = useMonitoring();
 
-  // Authentication State
+  // Authentication State - no pre-filled credentials
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [username, setUsername] = useState<string>('admin');
-  const [password, setPassword] = useState<string>('academic_exam_2026');
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
@@ -88,7 +84,7 @@ export function AdminLayout({ onExitAdmin }: AdminLayoutProps) {
       } else {
         setLoginError(data.error || 'Invalid administrator credentials');
       }
-    } catch (err: any) {
+    } catch {
       setLoginError('Connection failure during authentication.');
     } finally {
       setIsSubmitting(false);
@@ -101,84 +97,75 @@ export function AdminLayout({ onExitAdmin }: AdminLayoutProps) {
   };
 
   // -------------------------------------------------------------
-  // Unauthenticated: Secure Admin Gate View
+  // Unauthenticated: Apple HIG Admin Gate View
   // -------------------------------------------------------------
   if (!isAuthenticated) {
     return (
       <div className="min-h-[70vh] flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
+        <Card padding="lg" className="w-full max-w-md space-y-6">
           
-          <div className="text-center mb-6">
-            <div className="w-12 h-12 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mx-auto mb-3 text-indigo-400">
+          <div className="text-center">
+            <div className="w-12 h-12 rounded-[14px] bg-[var(--system-accent-subtle)] flex items-center justify-center mx-auto mb-3 text-[var(--system-accent)]">
               <Lock className="w-6 h-6" />
             </div>
-            <h2 className="text-lg font-bold text-white">Administrator Portal</h2>
-            <p className="text-xs text-slate-400 mt-1">
+            <h2 className="text-[20px] font-semibold text-[var(--system-text-primary)] tracking-tight">
+              Administration Portal
+            </h2>
+            <p className="text-[13px] text-[var(--system-text-secondary)] mt-1">
               Protected Academic Management & Configuration Console
             </p>
           </div>
 
           {loginError && (
-            <div className="mb-4 p-3 rounded-lg bg-rose-950/80 border border-rose-800 text-rose-300 text-xs flex items-center space-x-2">
+            <div className="p-3 rounded-[12px] bg-[var(--system-destructive-subtle)] border border-[var(--system-destructive)]/30 text-[var(--system-destructive)] text-[12px] flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
               <span>{loginError}</span>
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-4 text-xs">
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">
-                Admin Username
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono focus:border-indigo-500 focus:outline-none"
-                placeholder="admin"
-                required
-              />
-            </div>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <Input
+              label="Admin Username"
+              type="text"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              placeholder="Username"
+              required
+              autoFocus
+            />
 
-            <div>
-              <label className="block text-slate-300 font-medium mb-1">
-                Administrator Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono focus:border-indigo-500 focus:outline-none"
-                placeholder="••••••••••••"
-                required
-              />
-            </div>
+            <Input
+              label="Password"
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••••••"
+              required
+            />
 
-            <div className="p-2.5 rounded bg-slate-950/70 border border-slate-800 text-[11px] text-slate-400 font-mono">
-              Default Academic Credential: <strong className="text-indigo-300">admin</strong> / <strong className="text-indigo-300">academic_exam_2026</strong>
-            </div>
-
-            <div className="pt-2 flex items-center space-x-2">
-              <button
+            <div className="pt-2 flex items-center space-x-2.5">
+              <Button
                 type="button"
+                variant="secondary"
                 onClick={onExitAdmin}
-                className="w-1/3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition-colors"
+                className="w-1/3"
               >
                 Back
-              </button>
+              </Button>
 
-              <button
+              <Button
                 type="submit"
+                variant="primary"
                 disabled={isSubmitting}
-                className="w-2/3 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition-all shadow-md shadow-indigo-600/30 flex items-center justify-center space-x-1.5"
+                className="w-2/3"
+                icon={KeyRound}
               >
-                <KeyRound className="w-4 h-4" />
-                <span>{isSubmitting ? 'Authenticating...' : 'Sign In as Admin'}</span>
-              </button>
+                {isSubmitting ? 'Authenticating...' : 'Sign In'}
+              </Button>
             </div>
           </form>
 
-        </div>
+        </Card>
       </div>
     );
   }
@@ -187,33 +174,33 @@ export function AdminLayout({ onExitAdmin }: AdminLayoutProps) {
   // Authenticated Admin Dashboard Layout
   // -------------------------------------------------------------
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl flex flex-col md:flex-row min-h-[680px]">
+    <div className="bg-[var(--system-secondary-bg)] border border-[var(--system-card-border)] rounded-[20px] overflow-hidden shadow-[var(--system-shadow-md)] flex flex-col md:flex-row min-h-[680px]">
       
       {/* Admin Sidebar Navigation */}
-      <div className="w-full md:w-64 bg-slate-950 border-b md:border-b-0 md:border-r border-slate-800 p-4 flex flex-col justify-between">
+      <div className="w-full md:w-64 bg-[var(--system-chrome-bg)] border-b md:border-b-0 md:border-r border-[var(--system-chrome-border)] p-4 flex flex-col justify-between">
         <div className="space-y-6">
           
           {/* Admin Header */}
           <div>
-            <div className="flex items-center space-x-2">
-              <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white shadow-md">
-                <ShieldCheck className="w-5 h-5" />
+            <div className="flex items-center space-x-2.5">
+              <div className="w-8 h-8 rounded-[9px] bg-[var(--system-accent)] flex items-center justify-center text-white shadow-sm">
+                <ShieldCheck className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-white">System Admin</h3>
-                <span className="text-[10px] text-indigo-400 font-mono">AUTHENTICATED</span>
+                <h3 className="font-semibold text-[14px] text-[var(--system-text-primary)]">System Admin</h3>
+                <span className="text-[10px] text-[var(--system-accent)] font-mono-apple font-medium">AUTHENTICATED</span>
               </div>
             </div>
           </div>
 
           {/* Navigation Links */}
-          <nav className="space-y-1 text-xs">
+          <nav className="space-y-1 text-[13px]">
             <button
               onClick={() => setActiveTab('students')}
-              className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-lg font-medium transition-colors ${
+              className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-[10px] font-medium transition-colors cursor-pointer text-left ${
                 activeTab === 'students'
-                  ? 'bg-indigo-600 text-white font-semibold shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                  ? 'bg-[var(--system-accent)] text-white font-semibold shadow-sm'
+                  : 'text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] hover:bg-[var(--system-fill)]'
               }`}
             >
               <Users className="w-4 h-4" />
@@ -222,22 +209,22 @@ export function AdminLayout({ onExitAdmin }: AdminLayoutProps) {
 
             <button
               onClick={() => setActiveTab('cameras')}
-              className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-lg font-medium transition-colors ${
+              className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-[10px] font-medium transition-colors cursor-pointer text-left ${
                 activeTab === 'cameras'
-                  ? 'bg-indigo-600 text-white font-semibold shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                  ? 'bg-[var(--system-accent)] text-white font-semibold shadow-sm'
+                  : 'text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] hover:bg-[var(--system-fill)]'
               }`}
             >
               <Video className="w-4 h-4" />
-              <span>Cameras &amp; Primary View</span>
+              <span>Cameras &amp; Feeds</span>
             </button>
 
             <button
               onClick={() => setActiveTab('rules')}
-              className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-lg font-medium transition-colors ${
+              className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-[10px] font-medium transition-colors cursor-pointer text-left ${
                 activeTab === 'rules'
-                  ? 'bg-indigo-600 text-white font-semibold shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                  ? 'bg-[var(--system-accent)] text-white font-semibold shadow-sm'
+                  : 'text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] hover:bg-[var(--system-fill)]'
               }`}
             >
               <Sliders className="w-4 h-4" />
@@ -246,10 +233,10 @@ export function AdminLayout({ onExitAdmin }: AdminLayoutProps) {
 
             <button
               onClick={() => setActiveTab('branding')}
-              className={`w-full flex items-center space-x-2.5 px-3 py-2.5 rounded-lg font-medium transition-colors ${
+              className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-[10px] font-medium transition-colors cursor-pointer text-left ${
                 activeTab === 'branding'
-                  ? 'bg-indigo-600 text-white font-semibold shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                  ? 'bg-[var(--system-accent)] text-white font-semibold shadow-sm'
+                  : 'text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] hover:bg-[var(--system-fill)]'
               }`}
             >
               <Settings className="w-4 h-4" />
@@ -259,28 +246,30 @@ export function AdminLayout({ onExitAdmin }: AdminLayoutProps) {
         </div>
 
         {/* Sidebar Footer Controls */}
-        <div className="pt-4 border-t border-slate-800/80 space-y-2">
-          <button
+        <div className="pt-4 border-t border-[var(--system-separator)] space-y-2">
+          <Button
+            variant="secondary"
+            fullWidth
             onClick={onExitAdmin}
-            className="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-800 transition-colors"
+            icon={ArrowLeft}
           >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Return to Live Player</span>
-          </button>
+            Return to Live
+          </Button>
 
-          <button
+          <Button
+            variant="destructive"
+            fullWidth
             onClick={handleLogout}
-            className="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 text-xs font-semibold border border-rose-900/40 transition-colors"
+            icon={LogOut}
           >
-            <LogOut className="w-4 h-4" />
-            <span>Sign Out</span>
-          </button>
+            Sign Out
+          </Button>
         </div>
 
       </div>
 
       {/* Admin Content Canvas */}
-      <div className="flex-1 p-5 md:p-6 bg-slate-900/50 overflow-y-auto">
+      <div className="flex-1 p-5 md:p-6 bg-[var(--system-bg)] overflow-y-auto">
         {activeTab === 'students' && <AdminStudentsManager />}
         {activeTab === 'cameras' && <AdminCamerasManager />}
         {activeTab === 'rules' && <AdminBehaviorRulesManager />}

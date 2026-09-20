@@ -19,16 +19,16 @@ export function AdminBehaviorRulesManager() {
     face_hidden_duration_sec: settings?.thresholds?.face_hidden_duration_sec ?? 4.0,
     leave_seat_grace_sec: settings?.thresholds?.leave_seat_grace_sec ?? 5.0,
     phone_confidence_min: settings?.thresholds?.phone_confidence_min ?? 0.65,
-    warning_threshold: settings?.thresholds?.warning_threshold ?? 35,
+    warning_threshold: settings?.thresholds?.warning_suspicion_threshold ?? 35,
     high_suspicion_threshold: settings?.thresholds?.high_suspicion_threshold ?? 65
   });
 
   const [weights, setWeights] = useState({
-    face_hidden: settings?.weights?.face_hidden ?? 20,
-    phone_detected: settings?.weights?.phone_detected ?? 40,
-    repeated_looking: settings?.weights?.repeated_looking ?? 25,
-    leaving_seat: settings?.weights?.leaving_seat ?? 30,
-    abnormal_movement: settings?.weights?.abnormal_movement ?? 15
+    face_hidden: settings?.suspicion_weights?.face_hidden ?? 20,
+    phone_detected: settings?.suspicion_weights?.phone_detected ?? 40,
+    repeated_looking: settings?.suspicion_weights?.repeated_looking ?? 25,
+    leaving_seat: settings?.suspicion_weights?.leaving_seat ?? 30,
+    abnormal_movement: settings?.suspicion_weights?.abnormal_movement ?? 15
   });
 
   useEffect(() => {
@@ -38,17 +38,17 @@ export function AdminBehaviorRulesManager() {
         face_hidden_duration_sec: settings.thresholds.face_hidden_duration_sec ?? 4.0,
         leave_seat_grace_sec: settings.thresholds.leave_seat_grace_sec ?? 5.0,
         phone_confidence_min: settings.thresholds.phone_confidence_min ?? 0.65,
-        warning_threshold: settings.thresholds.warning_threshold ?? 35,
+        warning_threshold: settings.thresholds.warning_suspicion_threshold ?? 35,
         high_suspicion_threshold: settings.thresholds.high_suspicion_threshold ?? 65
       });
     }
-    if (settings?.weights) {
+    if (settings?.suspicion_weights) {
       setWeights({
-        face_hidden: settings.weights.face_hidden ?? 20,
-        phone_detected: settings.weights.phone_detected ?? 40,
-        repeated_looking: settings.weights.repeated_looking ?? 25,
-        leaving_seat: settings.weights.leaving_seat ?? 30,
-        abnormal_movement: settings.weights.abnormal_movement ?? 15
+        face_hidden: settings.suspicion_weights.face_hidden ?? 20,
+        phone_detected: settings.suspicion_weights.phone_detected ?? 40,
+        repeated_looking: settings.suspicion_weights.repeated_looking ?? 25,
+        leaving_seat: settings.suspicion_weights.leaving_seat ?? 30,
+        abnormal_movement: settings.suspicion_weights.abnormal_movement ?? 15
       });
     }
   }, [settings]);
@@ -69,8 +69,11 @@ export function AdminBehaviorRulesManager() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          thresholds,
-          weights
+          thresholds: {
+            ...thresholds,
+            warning_suspicion_threshold: thresholds.warning_threshold
+          },
+          suspicion_weights: weights
         })
       });
 

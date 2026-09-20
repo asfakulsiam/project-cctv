@@ -1,9 +1,7 @@
 /**
- * Smart Classroom Exam Monitoring System
- * Live Statistics Bar Component
- * 
- * Displays live counters and system metrics generated directly
- * from the running multi-camera computer vision engine.
+ * Apple Human Interface Guidelines Live Statistics Bar
+ * Real-time telemetry counters rendered in Cupertino style cards with
+ * high contrast typography and subtle semantic indicators.
  */
 
 import React from 'react';
@@ -12,11 +10,11 @@ import {
   Users, 
   Video, 
   Activity, 
-  AlertTriangle, 
   ShieldAlert, 
   Cpu,
   UserCheck
 } from 'lucide-react';
+import { Card } from '../ui/Card.js';
 
 export function LiveStatisticsBar() {
   const { stats, cameras, students } = useMonitoring();
@@ -24,108 +22,91 @@ export function LiveStatisticsBar() {
   const flaggedStudents = students.filter(s => s.unified_suspicion_score >= 60).length;
   const warningStudents = students.filter(s => s.unified_suspicion_score >= 35 && s.unified_suspicion_score < 60).length;
 
+  const statItems = [
+    {
+      label: 'Cameras Online',
+      value: stats.online_cameras,
+      subvalue: `/ ${stats.total_cameras} feeds`,
+      icon: Video,
+      accentColor: 'text-[var(--system-accent)]',
+      progress: (stats.online_cameras / Math.max(1, stats.total_cameras)) * 100
+    },
+    {
+      label: 'Detected Tracks',
+      value: stats.detected_persons,
+      subvalue: 'active visual subjects',
+      icon: Users,
+      accentColor: 'text-[var(--system-info)]'
+    },
+    {
+      label: 'Verified Students',
+      value: stats.present_students,
+      subvalue: `/ ${students.length} enrolled`,
+      icon: UserCheck,
+      accentColor: 'text-[var(--system-success)]'
+    },
+    {
+      label: 'Active Movement',
+      value: stats.students_moving,
+      subvalue: 'real-time motion events',
+      icon: Activity,
+      accentColor: 'text-[var(--system-warning)]'
+    },
+    {
+      label: 'Suspicion Flags',
+      value: flaggedStudents,
+      subvalue: `${warningStudents} elevated`,
+      icon: ShieldAlert,
+      accentColor: flaggedStudents > 0 ? 'text-[var(--system-destructive)]' : 'text-[var(--system-text-tertiary)]',
+      isWarning: flaggedStudents > 0
+    },
+    {
+      label: 'CV Engine Core',
+      value: `${stats.processing_fps || 24} FPS`,
+      subvalue: `${(1000 / (stats.processing_fps || 24)).toFixed(0)}ms cycle`,
+      icon: Cpu,
+      accentColor: 'text-[var(--system-accent)]'
+    }
+  ];
+
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-      
-      {/* 1. Camera Network */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col justify-between shadow-sm">
-        <div className="flex items-center justify-between text-slate-400 mb-1">
-          <span className="text-[11px] font-medium tracking-wide uppercase">Cameras</span>
-          <Video className="w-4 h-4 text-cyan-400" />
-        </div>
-        <div className="flex items-baseline space-x-1.5">
-          <span className="text-xl font-bold font-mono text-white">{stats.online_cameras}</span>
-          <span className="text-xs font-mono text-slate-500">/ {stats.total_cameras} online</span>
-        </div>
-        <div className="w-full bg-slate-800 h-1 rounded-full mt-2 overflow-hidden">
-          <div 
-            className="bg-cyan-500 h-full rounded-full transition-all duration-500"
-            style={{ width: `${(stats.online_cameras / Math.max(1, stats.total_cameras)) * 100}%` }}
-          />
-        </div>
-      </div>
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+      {statItems.map((item, idx) => {
+        const Icon = item.icon;
 
-      {/* 2. Detected Persons / Tracks */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col justify-between shadow-sm">
-        <div className="flex items-center justify-between text-slate-400 mb-1">
-          <span className="text-[11px] font-medium tracking-wide uppercase">Detected Subjects</span>
-          <Users className="w-4 h-4 text-blue-400" />
-        </div>
-        <div className="flex items-baseline space-x-1.5">
-          <span className="text-xl font-bold font-mono text-white">{stats.detected_persons}</span>
-          <span className="text-xs text-slate-500">active tracks</span>
-        </div>
-        <span className="text-[10px] text-slate-400 mt-2 truncate">
-          Across all camera pools
-        </span>
-      </div>
+        return (
+          <Card key={idx} padding="sm" className="flex flex-col justify-between min-h-[96px]">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-[var(--system-text-secondary)] tracking-tight truncate">
+                {item.label}
+              </span>
+              <Icon className={`w-3.5 h-3.5 ${item.accentColor} flex-shrink-0`} />
+            </div>
 
-      {/* 3. Present Students */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col justify-between shadow-sm">
-        <div className="flex items-center justify-between text-slate-400 mb-1">
-          <span className="text-[11px] font-medium tracking-wide uppercase">Present Students</span>
-          <UserCheck className="w-4 h-4 text-emerald-400" />
-        </div>
-        <div className="flex items-baseline space-x-1.5">
-          <span className="text-xl font-bold font-mono text-emerald-400">{stats.present_students}</span>
-          <span className="text-xs text-slate-500">/ {students.length} enrolled</span>
-        </div>
-        <span className="text-[10px] text-emerald-500/80 mt-2 font-mono">
-          Unified Identity Verified
-        </span>
-      </div>
+            <div className="my-1">
+              <div className="flex items-baseline space-x-1.5">
+                <span className={`text-[20px] font-semibold font-mono-apple tracking-tight ${
+                  item.isWarning ? 'text-[var(--system-destructive)]' : 'text-[var(--system-text-primary)]'
+                }`}>
+                  {item.value}
+                </span>
+              </div>
+              <span className="text-[11px] text-[var(--system-text-tertiary)] block truncate">
+                {item.subvalue}
+              </span>
+            </div>
 
-      {/* 4. Active Behavioral Movement */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col justify-between shadow-sm">
-        <div className="flex items-center justify-between text-slate-400 mb-1">
-          <span className="text-[11px] font-medium tracking-wide uppercase">Movement Status</span>
-          <Activity className="w-4 h-4 text-amber-400" />
-        </div>
-        <div className="flex items-baseline space-x-1.5">
-          <span className="text-xl font-bold font-mono text-amber-400">{stats.students_moving}</span>
-          <span className="text-xs text-slate-500">active motion</span>
-        </div>
-        <span className="text-[10px] text-slate-400 mt-2">
-          Head turn or pose shift
-        </span>
-      </div>
-
-      {/* 5. Warning & High Alerts */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col justify-between shadow-sm">
-        <div className="flex items-center justify-between text-slate-400 mb-1">
-          <span className="text-[11px] font-medium tracking-wide uppercase">Suspicion Alerts</span>
-          <ShieldAlert className={`w-4 h-4 ${flaggedStudents > 0 ? 'text-rose-500' : 'text-slate-500'}`} />
-        </div>
-        <div className="flex items-baseline space-x-2">
-          <span className={`text-xl font-bold font-mono ${flaggedStudents > 0 ? 'text-rose-400' : 'text-slate-300'}`}>
-            {flaggedStudents}
-          </span>
-          <span className="text-xs text-slate-500">high</span>
-          <span className="text-slate-700">/</span>
-          <span className="text-sm font-bold font-mono text-amber-400">{warningStudents}</span>
-          <span className="text-xs text-slate-500">warn</span>
-        </div>
-        <span className="text-[10px] text-slate-400 mt-2 font-mono">
-          Threshold &gt;= 60 pts
-        </span>
-      </div>
-
-      {/* 6. Processing FPS & Engine Latency */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col justify-between shadow-sm">
-        <div className="flex items-center justify-between text-slate-400 mb-1">
-          <span className="text-[11px] font-medium tracking-wide uppercase">Engine Health</span>
-          <Cpu className="w-4 h-4 text-cyan-400" />
-        </div>
-        <div className="flex items-baseline space-x-1.5">
-          <span className="text-xl font-bold font-mono text-cyan-400">{stats.processing_fps}</span>
-          <span className="text-xs font-mono text-slate-500">FPS / ~35ms</span>
-        </div>
-        <div className="flex items-center space-x-1.5 mt-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-[10px] font-mono text-emerald-400 uppercase">{stats.system_health}</span>
-        </div>
-      </div>
-
+            {item.progress !== undefined && (
+              <div className="w-full bg-[var(--system-fill)] h-1 rounded-full overflow-hidden mt-1">
+                <div 
+                  className="bg-[var(--system-accent)] h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(100, Math.max(0, item.progress))}%` }}
+                />
+              </div>
+            )}
+          </Card>
+        );
+      })}
     </div>
   );
 }
