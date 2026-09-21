@@ -62,6 +62,8 @@ export class UnifiedStudentManager {
     reid_similarity_threshold: 0.70
   };
 
+  private fullThresholds?: MonitoringThresholds;
+
   // Seat stability tracker: track_id -> { seat_id, count }
   private trackSeatStability: Map<string, { seat_id: string; count: number }> = new Map();
 
@@ -71,9 +73,11 @@ export class UnifiedStudentManager {
   constructor(
     initialStudents: StudentRecord[], 
     seats: SeatRecord[],
-    thresholds?: Partial<GlobalIdentityThresholds>
+    thresholds?: Partial<GlobalIdentityThresholds>,
+    fullThresholds?: MonitoringThresholds
   ) {
     this.seats = seats;
+    this.fullThresholds = fullThresholds;
     if (thresholds) {
       this.thresholds = { ...this.thresholds, ...thresholds };
     }
@@ -101,6 +105,12 @@ export class UnifiedStudentManager {
 
   public setThresholds(thresholds: Partial<GlobalIdentityThresholds>): void {
     this.thresholds = { ...this.thresholds, ...thresholds };
+  }
+
+  public updateThresholds(thresholds: MonitoringThresholds): void {
+    this.fullThresholds = thresholds;
+    this.thresholds.warning_suspicion_threshold = thresholds.warning_suspicion_threshold;
+    this.thresholds.high_suspicion_threshold = thresholds.high_suspicion_threshold;
   }
 
   public updateSeats(seats: SeatRecord[]): void {
@@ -567,10 +577,10 @@ export class UnifiedStudentManager {
       gp.cumulative_score = Math.max(gp.cumulative_score || 0, maxCumulative);
       gp.max_score = Math.max(gp.max_score || 0, gp.current_score, gp.cumulative_score);
 
-      // Warning latch threshold comparison
-      if (gp.cumulative_score >= this.thresholds.warning_suspicion_threshold || 
-          gp.current_score >= this.thresholds.warning_suspicion_threshold) {
+      // Warning latching occurs strictly when active current behavioral violation occurs
+      if (gp.current_score >= this.thresholds.warning_suspicion_threshold) {
         gp.warning_latched = true;
+        gp.warning_latched_time = now;
       }
     }
 
@@ -584,7 +594,7 @@ export class UnifiedStudentManager {
     }
 
     // Step 3: Determine Best View & Unified Scores for each Student
-    const thresholdsConfig: MonitoringThresholds = {
+    const thresholdsConfig: MonitoringThresholds = this.fullThresholds || {
       looking_duration_sec: 3.5,
       face_hidden_duration_sec: 4.0,
       leave_seat_grace_sec: 5.0,
@@ -647,12 +657,20 @@ export class UnifiedStudentManager {
         student.unified_suspicion_score = student.cumulative_score;
       }
 
-      // Status flagging & Warning Level
-      const effectiveScore = Math.max(student.current_score || 0, student.unified_suspicion_score || 0);
-      student.warning_level = getWarningLevel(effectiveScore, thresholdsConfig);
+      // Warning Level & Status Flagging
+      // Warning latch is maintained until proctor clears it, or active current score breaches threshold
+      const assocGp = Array.from(this.global_persons.values()).find(g => g.associated_student_id === student.id);
+      const isGpLatched = assocGp?.warning_latched && (!student.warning_cleared_at || (assocGp.warning_latched_time || 0) > student.warning_cleared_at);
 
-      if (effectiveScore >= this.thresholds.high_suspicion_threshold) {
+      if ((student.current_score || 0) >= this.thresholds.high_suspicion_threshold) {
+        student.warning_level = 'critical';
         student.status = 'flagged';
+      } else if ((student.current_score || 0) >= this.thresholds.warning_suspicion_threshold || isGpLatched) {
+        student.warning_level = 'warning';
+        student.status = 'present';
+      } else {
+        student.warning_level = 'normal';
+        student.status = 'present';
       }
     }
 
@@ -751,9 +769,10 @@ export class UnifiedStudentManager {
       gp.cumulative_score = Math.max(gp.cumulative_score || 0, maxCumulative);
       gp.max_score = Math.max(maxPeak, gp.cumulative_score, gp.current_score);
 
-      if (gp.cumulative_score >= this.thresholds.warning_suspicion_threshold || 
-          gp.current_score >= this.thresholds.warning_suspicion_threshold) {
+      // Warning latch occurs strictly when current behavioral violation breaches warning threshold
+      if (gp.current_score >= this.thresholds.warning_suspicion_threshold) {
         gp.warning_latched = true;
+        gp.warning_latched_time = now;
       }
     }
 
@@ -798,12 +817,18 @@ export class UnifiedStudentManager {
         student.unified_suspicion_score = student.cumulative_score;
       }
 
-      const effectiveScore = Math.max(student.current_score || 0, student.unified_suspicion_score || 0);
-      student.warning_level = getWarningLevel(effectiveScore, thresholdsConfig);
+      // Warning Level & Status Flagging
+      const assocGp = Array.from(this.global_persons.values()).find(g => g.associated_student_id === student.id);
+      const isGpLatched = assocGp?.warning_latched && (!student.warning_cleared_at || (assocGp.warning_latched_time || 0) > student.warning_cleared_at);
 
-      if (effectiveScore >= this.thresholds.high_suspicion_threshold) {
+      if ((student.current_score || 0) >= this.thresholds.high_suspicion_threshold) {
+        student.warning_level = 'critical';
         student.status = 'flagged';
+      } else if ((student.current_score || 0) >= this.thresholds.warning_suspicion_threshold || isGpLatched) {
+        student.warning_level = 'warning';
+        student.status = 'present';
       } else {
+        student.warning_level = 'normal';
         student.status = 'present';
       }
     }
@@ -824,6 +849,7 @@ export class UnifiedStudentManager {
       student.status = 'absent';
       student.current_score = 0;
       student.warning_level = 'normal';
+      student.warning_cleared_at = Date.now();
     }
     return true;
   }
@@ -831,19 +857,33 @@ export class UnifiedStudentManager {
   public clearStudentWarning(studentId: string): boolean {
     const student = this.students.get(studentId);
     if (!student) return false;
-    // Proctor clearance: Reset immediate current risk, preserve cumulative score and max score
+    // Proctor clearance: Reset immediate current risk, record timestamp, preserve cumulative & max score
+    const now = Date.now();
     student.current_score = 0;
     student.warning_level = 'normal';
-    if (student.unified_suspicion_score < this.thresholds.high_suspicion_threshold) {
-      student.status = 'present';
-    }
+    student.warning_cleared_at = now;
+    student.status = 'present';
 
     // Also unlatch warning on associated Global Person
     for (const gp of this.global_persons.values()) {
       if (gp.associated_student_id === studentId) {
         gp.warning_latched = false;
         gp.current_score = 0;
+        gp.warning_cleared_at = now;
       }
+    }
+    return true;
+  }
+
+  public clearCandidateWarning(personId: string): boolean {
+    const gp = this.global_persons.get(personId);
+    if (!gp) return false;
+    const now = Date.now();
+    gp.warning_latched = false;
+    gp.current_score = 0;
+    gp.warning_cleared_at = now;
+    if (gp.associated_student_id) {
+      this.clearStudentWarning(gp.associated_student_id);
     }
     return true;
   }

@@ -64,7 +64,7 @@ export function getWarningLevel(
   thresholds?: MonitoringThresholds
 ): WarningLevel {
   const high = thresholds?.high_suspicion_threshold ?? 65;
-  const warning = thresholds?.warning_suspicion_threshold ?? 40;
+  const warning = thresholds?.warning_suspicion_threshold ?? 35;
   if (score >= high) return 'critical';
   if (score >= warning) return 'warning';
   return 'normal';
@@ -159,6 +159,8 @@ export interface GlobalPerson {
   cumulative_score: number;      // Lifetime non-decreasing penalty
   max_score?: number;            // Highest peak score
   warning_latched: boolean;
+  warning_latched_time?: number; // Timestamp when warning became latched
+  warning_cleared_at?: number;   // Timestamp when warning was manually cleared by proctor
   observations?: Record<string, GlobalPersonObservation>;
   first_seen?: number;
   last_seen: number;
@@ -196,6 +198,8 @@ export interface StudentRecord {
   cumulative_score?: number;       // Monotonically non-decreasing audit score (0 - 100)
   max_score?: number;              // Peak score reached
   warning_level?: WarningLevel;    // Centralized warning level (normal | warning | critical)
+  warning_latched_time?: number;   // Timestamp when warning was triggered
+  warning_cleared_at?: number;     // Timestamp when warning was administratively cleared
   active_observations: StudentObservation[];
   notes?: string;
   last_activity?: string;

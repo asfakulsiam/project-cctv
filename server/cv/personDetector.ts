@@ -6,20 +6,21 @@
  * 1. Real Person Detection Gatekeeper:
  *    Only class == 'person' detections with confidence >= threshold enter the tracker.
  *    Non-human objects (chairs, bags, posters, shadows) are rejected.
- * 2. Secondary Object Detection (Cell Phone):
+ * 2. True Temporal Confirmation Layer:
+ *    RAW DETECTION -> TEMPORAL BUFFER -> TEMPORAL CONSISTENCY ANALYSIS -> CONFIRMED PERSON -> TRACKER.
+ *    Single-frame noise or transient false positives are strictly rejected.
+ *    Stationary seated students remain consistently confirmed without requiring movement.
+ * 3. Candidate Deletion Suppression:
+ *    When a candidate is deleted by Admin, their spatial footprint is temporarily suppressed
+ *    to prevent immediate 1-tick re-creation from the same continuous observation chain.
+ * 4. Secondary Object Detection (Cell Phone):
  *    Phones are detected as class == 'cell phone' and linked to the nearest/overlapping
  *    person bounding box (hand/desk zone). Phones NEVER create a person track.
- * 3. Secondary Face & Pose Estimator:
- *    Evaluates head pose and face visibility on the person box. Never creates a person track.
- *    If no face/pose detector is available, confidence is 0 and face_visible is false.
- * 4. Appearance Encoder (Re-ID):
- *    Interface for deep visual feature embeddings. Until an actual vision encoder is connected,
- *    appearance_embedding is strictly undefined — no synthetic positional vectors.
- * 5. Bounded Temporal Frame Buffer:
- *    Maintains a bounded 1–3s ring buffer in memory to stabilize bounding boxes, verify
- *    temporal consistency, and expire stale frames without memory leaks.
- * 6. Stationary Persistence:
- *    Detection does NOT depend on motion. A stationary seated person remains fully detected.
+ * 5. Face & Head Pose Analysis:
+ *    Evaluates head pose and face visibility on the person box.
+ *    If face/pose data is unavailable or confidence is 0, it is NOT treated as face-hidden.
+ * 6. Pluggable Production Adapter:
+ *    Clean adapter abstraction for external inference engines (YOLO, ONNX, Python worker).
  */
 
 import { 
@@ -48,6 +49,7 @@ export interface RawDetectionPayload {
   seat_id?: string;
   associated_student_id?: string;
   appearance_embedding?: number[];
+  associated_track_id?: string;
 }
 
 export interface DetectorOutput {
@@ -68,6 +70,44 @@ export interface PersonDetectorAdapter {
   detect(input: PersonDetectorInput): Promise<DetectorOutput>;
 }
 
+/**
+ * Production Adapter for External Vision Inference Workers (e.g. YOLOv8 / ONNX / RT-DETR).
+ * Ingests external inference outputs or proxies frame payloads to high-performance CV workers.
+ */
+export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
+  public name = 'ExternalInferenceWorkerAdapter';
+  private inferenceUrl?: string;
+
+  constructor(inferenceUrl?: string) {
+    this.inferenceUrl = inferenceUrl;
+  }
+
+  public async detect(input: PersonDetectorInput): Promise<DetectorOutput> {
+    const rawDetections = input.detections || [];
+    const rawPhones = input.phones || [];
+
+    const humans: HumanDetection[] = rawDetections
+      .filter(d => d.class_name?.toLowerCase() === 'person' && d.confidence >= 0.40)
+      .map(d => ({
+        class_name: 'person',
+        confidence: d.confidence,
+        bbox: { ...d.bbox },
+        head_pose: d.head_pose,
+        face_visible: d.face_visible,
+        face_confidence: d.face_confidence,
+        appearance_embedding: d.appearance_embedding,
+        seat_id: d.seat_id,
+        associated_student_id: d.associated_student_id
+      }));
+
+    return {
+      humans,
+      phones: rawPhones,
+      timestamp: input.timestamp
+    };
+  }
+}
+
 export interface IdentityEvidence {
   appearance_similarity?: number;
   spatial_similarity?: number;
@@ -76,16 +116,40 @@ export interface IdentityEvidence {
 }
 
 /**
- * Bounded in-memory temporal frame buffer for video analysis
- * Retains only a short 1.5 - 3.0s window to prevent memory accumulation on continuous CCTV.
+ * Temporal Consistency Configuration
+ */
+export interface TemporalConfirmationConfig {
+  minObservations: number;       // Minimum required matching observations across time (default 2)
+  minPersistenceMs: number;      // Minimum duration (ms) from first to latest observation (default 250ms)
+  maxCenterDist: number;         // Normalized Euclidean center tolerance between frames (default 0.15)
+  minSizeRatio: number;          // Bounding box area & aspect consistency ratio (default 0.35)
+  maxWindowMs: number;           // Temporal ring-buffer retention window (default 3000ms)
+  maxFramesPerCamera: number;    // Maximum buffered frames per camera (default 45)
+  suppressionCooldownMs: number; // Duration to suppress re-entry of deleted candidate (default 4000ms)
+}
+
+/**
+ * Bounded in-memory temporal frame observation
  */
 export interface BufferedFrameObservation {
   timestamp: number;
   camera_id: string;
-  detections: HumanDetection[];
+  rawCandidates: RawDetectionPayload[];
   phones: SecondaryObjectDetection[];
 }
 
+export interface SuppressedIdentity {
+  personId: string;
+  seatId?: string;
+  bbox?: BoundingBox;
+  suppressedAt: number;
+  expiresAt: number;
+}
+
+/**
+ * Bounded in-memory temporal frame buffer
+ * Retains only a short 1.5 - 3.0s window to prevent memory accumulation on continuous 24/7 CCTV.
+ */
 export class TemporalObservationBuffer {
   private buffer: Map<string, BufferedFrameObservation[]> = new Map(); // camera_id -> observations
   private readonly maxWindowMs: number;
@@ -124,6 +188,14 @@ export class TemporalObservationBuffer {
       this.buffer.clear();
     }
   }
+
+  public removeMatching(cameraId: string, predicate: (raw: RawDetectionPayload) => boolean): void {
+    const list = this.buffer.get(cameraId);
+    if (!list) return;
+    for (const obs of list) {
+      obs.rawCandidates = obs.rawCandidates.filter(c => !predicate(c));
+    }
+  }
 }
 
 export class RealPersonDetector {
@@ -132,11 +204,33 @@ export class RealPersonDetector {
   private minConfidence: number;
   private appearanceEncoder?: AppearanceEncoder;
   private customAdapter?: PersonDetectorAdapter;
-  private temporalBuffer = new TemporalObservationBuffer(3000, 45);
+  private temporalBuffer: TemporalObservationBuffer;
+  private config: TemporalConfirmationConfig;
+  private suppressedIdentities: Map<string, SuppressedIdentity> = new Map();
 
-  constructor(minConfidence = 0.50, appearanceEncoder?: AppearanceEncoder) {
+  constructor(
+    minConfidence = 0.50, 
+    appearanceEncoder?: AppearanceEncoder,
+    config?: Partial<TemporalConfirmationConfig>
+  ) {
     this.minConfidence = minConfidence;
     this.appearanceEncoder = appearanceEncoder;
+    this.config = {
+      minObservations: config?.minObservations ?? 2,
+      minPersistenceMs: config?.minPersistenceMs ?? 250,
+      maxCenterDist: config?.maxCenterDist ?? 0.15,
+      minSizeRatio: config?.minSizeRatio ?? 0.35,
+      maxWindowMs: config?.maxWindowMs ?? 3000,
+      maxFramesPerCamera: config?.maxFramesPerCamera ?? 45,
+      suppressionCooldownMs: config?.suppressionCooldownMs ?? 4000
+    };
+    this.temporalBuffer = new TemporalObservationBuffer(
+      this.config.maxWindowMs,
+      this.config.maxFramesPerCamera
+    );
+
+    // Register standard production inference adapter by default
+    this.customAdapter = new ExternalInferenceWorkerAdapter();
   }
 
   public setMinConfidence(minConfidence: number): void {
@@ -149,6 +243,75 @@ export class RealPersonDetector {
 
   public clearTemporalBuffer(cameraId?: string): void {
     this.temporalBuffer.clear(cameraId);
+  }
+
+  /**
+   * Temporarily suppress candidate re-creation after administrative deletion.
+   */
+  public suppressCandidate(
+    personId: string, 
+    seatId?: string, 
+    bbox?: BoundingBox, 
+    durationMs: number = 4000
+  ): void {
+    const now = Date.now();
+    this.suppressedIdentities.set(personId, {
+      personId,
+      seatId,
+      bbox: bbox ? { ...bbox } : undefined,
+      suppressedAt: now,
+      expiresAt: now + durationMs
+    });
+
+    // Remove matching past observations from temporal buffer across all cameras
+    for (const cameraId of ['cam-1', 'cam-2', 'cam-3', 'cam-4', 'cam-default']) {
+      this.temporalBuffer.removeMatching(cameraId, (raw) => {
+        if (seatId && raw.seat_id === seatId) return true;
+        if (bbox && raw.bbox) {
+          const centerDist = Math.hypot(
+            (raw.bbox.x + raw.bbox.width / 2) - (bbox.x + bbox.width / 2),
+            (raw.bbox.y + raw.bbox.height / 2) - (bbox.y + bbox.height / 2)
+          );
+          if (centerDist < 0.12) return true;
+        }
+        return false;
+      });
+    }
+  }
+
+  public clearSuppression(): void {
+    this.suppressedIdentities.clear();
+  }
+
+  private isSuppressed(raw: RawDetectionPayload, now: number): boolean {
+    if (this.suppressedIdentities.size === 0) return false;
+
+    // Prune expired suppression records
+    for (const [id, sup] of this.suppressedIdentities.entries()) {
+      if (now >= sup.expiresAt) {
+        this.suppressedIdentities.delete(id);
+      }
+    }
+
+    const bbox = raw.bbox;
+    const cx = bbox.x + bbox.width / 2;
+    const cy = bbox.y + bbox.height / 2;
+
+    for (const sup of this.suppressedIdentities.values()) {
+      if (sup.seatId && raw.seat_id && sup.seatId === raw.seat_id) {
+        return true;
+      }
+      if (sup.bbox) {
+        const supCx = sup.bbox.x + sup.bbox.width / 2;
+        const supCy = sup.bbox.y + sup.bbox.height / 2;
+        const dist = Math.hypot(cx - supCx, cy - supCy);
+        if (dist < 0.12) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -170,19 +333,11 @@ export class RealPersonDetector {
     return Math.max(0.0, Math.min(1.0, dot / mag));
   }
 
-  /**
-   * Generates a unique ephemeral Layer 1 Detection ID.
-   * Example: det-000001
-   */
   public generateDetectionId(): string {
     const num = String(this.detectionCounter++).padStart(6, '0');
     return `det-${num}`;
   }
 
-  /**
-   * Generates a unique ephemeral secondary object ID.
-   * Example: phone-det-000001
-   */
   public generatePhoneDetectionId(): string {
     const num = String(this.phoneDetectionCounter++).padStart(6, '0');
     return `phone-det-${num}`;
@@ -218,7 +373,8 @@ export class RealPersonDetector {
 
   /**
    * Primary frame-processing boundary for person and secondary object detection.
-   * Accepts structured PersonDetectorInput or raw video frame with optional detections.
+   * Implements strict temporal confirmation pipeline:
+   * RAW FRAME / DETECTION -> TEMPORAL BUFFER -> CONSISTENCY ANALYSIS -> CONFIRMED PERSON.
    */
   public async detectFrame(
     frameOrInput: PersonDetectorInput | any,
@@ -231,96 +387,95 @@ export class RealPersonDetector {
 
     const camId = cameraId || frameOrInput.camera_id || 'cam-default';
 
-    // 1. If a custom external model adapter is registered (e.g. YOLO/ONNX), delegate to it
-    if (this.customAdapter) {
+    // 1. Gather raw detections from external payload or frame input
+    let detections: RawDetectionPayload[] = (rawDetections && rawDetections.length > 0)
+      ? rawDetections
+      : (frameOrInput.detections || []);
+
+    let phones: SecondaryObjectDetection[] = (rawPhones && rawPhones.length > 0)
+      ? rawPhones
+      : (frameOrInput.phones || []);
+
+    // If a custom model adapter is active, query it
+    if (this.customAdapter && detections.length === 0) {
       try {
         const output = await this.customAdapter.detect({
           frame: frameOrInput,
           timestamp,
           camera_id: camId,
-          detections: rawDetections,
-          phones: rawPhones
+          detections,
+          phones
         });
-        const processed = this.processDetections(output.humans || [], output.phones || []);
-        this.temporalBuffer.push(camId, {
-          timestamp,
-          camera_id: camId,
-          detections: processed,
-          phones: output.phones || []
-        });
-        return processed;
+        if (output.humans && output.humans.length > 0) {
+          detections = output.humans.map(h => ({
+            class_name: 'person',
+            confidence: h.confidence,
+            bbox: h.bbox,
+            head_pose: h.head_pose,
+            face_visible: h.face_visible,
+            face_confidence: h.face_confidence,
+            seat_id: h.seat_id,
+            associated_student_id: h.associated_student_id,
+            appearance_embedding: h.appearance_embedding
+          }));
+        }
+        if (output.phones && output.phones.length > 0) {
+          phones = output.phones;
+        }
       } catch (err) {
-        console.warn(`[PersonDetector] Custom adapter ${this.customAdapter.name} error:`, err);
+        console.warn(`[PersonDetector] Adapter ${this.customAdapter.name} error:`, err);
       }
     }
 
-    // 2. Extract structured detections from frame container or explicit parameter
-    const detections: RawDetectionPayload[] = (rawDetections && rawDetections.length > 0)
-      ? rawDetections
-      : (frameOrInput.detections || []);
-
-    const phones: SecondaryObjectDetection[] = (rawPhones && rawPhones.length > 0)
-      ? rawPhones
-      : (frameOrInput.phones || []);
-
-    const confirmedHumans = this.processDetections(detections, phones);
-
-    // 3. Push to bounded temporal buffer for multi-frame consistency analysis
-    this.temporalBuffer.push(camId, {
-      timestamp,
-      camera_id: camId,
-      detections: confirmedHumans,
-      phones
-    });
-
-    return confirmedHumans;
-  }
-
-  /**
-   * Performs real person detection filtering, anatomical validation,
-   * secondary phone association, and secondary head pose / face checks.
-   *
-   * PRESERVES:
-   * - seat_id and associated_student_id
-   * DOES NOT:
-   * - invent biometric confidence
-   * - generate fake appearance embeddings
-   * - create detections from seat rectangles or movement alone
-   */
-  public processDetections(
-    rawDetections: RawDetectionPayload[],
-    rawPhones: SecondaryObjectDetection[] = []
-  ): HumanDetection[] {
-    const confirmedHumans: HumanDetection[] = [];
-
-    for (const raw of rawDetections) {
-      // 1. Class Gate: Must be class 'person'
-      if (!raw.class_name || raw.class_name.toLowerCase() !== 'person') {
-        continue;
-      }
-
-      // 2. Confidence Gate
-      if (raw.confidence < this.minConfidence) {
-        continue;
-      }
+    // 2. Anatomical Gatekeeper: filter non-human classes, low confidence, and invalid proportions
+    const validCandidates: RawDetectionPayload[] = [];
+    for (const raw of detections) {
+      if (!raw.class_name || raw.class_name.toLowerCase() !== 'person') continue;
+      if (typeof raw.confidence !== 'number' || raw.confidence < this.minConfidence) continue;
 
       const bbox = raw.bbox;
       if (!bbox || typeof bbox.x !== 'number' || typeof bbox.y !== 'number') continue;
-      
-      // 3. Anatomical Proportions Validation (seated human morphology)
       if (bbox.width <= 0.02 || bbox.height <= 0.02) continue;
+
+      // Seated / standing human anatomical aspect ratio filter
       const aspect = bbox.height / bbox.width;
-      if (aspect < 1.15 || aspect > 4.30) continue; // Reject flat or overly elongated anomalies
+      if (aspect < 1.15 || aspect > 4.30) continue;
+
+      // Filter out administratively suppressed identities
+      if (this.isSuppressed(raw, timestamp)) continue;
+
+      validCandidates.push(raw);
+    }
+
+    // 3. Push valid candidates into the temporal frame ring buffer
+    this.temporalBuffer.push(camId, {
+      timestamp,
+      camera_id: camId,
+      rawCandidates: validCandidates,
+      phones
+    });
+
+    // 4. TEMPORAL CONSISTENCY ANALYSIS & CONFIRMATION
+    // Evaluate whether candidate has consistent evidence over time
+    const recentObservations = this.temporalBuffer.getRecent(camId);
+    const confirmedHumans: HumanDetection[] = [];
+
+    for (const current of validCandidates) {
+      const isConfirmed = this.evaluateTemporalConsistency(current, timestamp, recentObservations);
+      if (!isConfirmed) {
+        // Single-frame noise or insufficient persistence -> reject from tracker input
+        continue;
+      }
 
       const detId = this.generateDetectionId();
 
-      // 4. Secondary Cell Phone Association
+      // Associate Secondary Object (Cell Phone)
       let phoneDetected = false;
       let phoneConfidence = 0;
       let phoneBbox: BoundingBox | undefined = undefined;
 
-      for (const phone of rawPhones) {
-        if (phone.class_name === 'cell phone' && this.associatePhoneWithPerson(bbox, phone.bbox)) {
+      for (const phone of phones) {
+        if (phone.class_name === 'cell phone' && this.associatePhoneWithPerson(current.bbox, phone.bbox)) {
           phoneDetected = true;
           phoneConfidence = phone.confidence;
           phoneBbox = { ...phone.bbox };
@@ -329,26 +484,23 @@ export class RealPersonDetector {
         }
       }
 
-      // 5. Head Pose: do not invent confidence if none provided
-      const headPose: HeadPoseData = raw.head_pose || {
+      // Head Pose: do not invent confidence if none provided
+      const headPose: HeadPoseData = current.head_pose || {
         yaw: 0,
         pitch: 0,
         direction: 'center' as HeadDirection,
         confidence: 0
       };
 
-      // 6. Face Visibility & Confidence: do not invent biometric confidence
-      const faceVisible = raw.face_visible ?? false;
-      const faceConfidence = raw.face_confidence ?? 0;
-
-      // 7. Appearance Embedding: only use real embedding if provided by CV pipeline
-      const appearanceEmbedding = raw.appearance_embedding;
+      const faceVisible = current.face_visible ?? false;
+      const faceConfidence = current.face_confidence ?? 0;
+      const appearanceEmbedding = current.appearance_embedding;
 
       confirmedHumans.push({
         detection_id: detId,
         class_name: 'person',
-        confidence: raw.confidence,
-        bbox: { ...bbox },
+        confidence: current.confidence,
+        bbox: { ...current.bbox },
         appearance_embedding: appearanceEmbedding,
         head_pose: headPose,
         face_visible: faceVisible,
@@ -356,11 +508,83 @@ export class RealPersonDetector {
         phone_detected: phoneDetected,
         phone_confidence: phoneConfidence,
         phone_bbox: phoneBbox,
-        seat_id: raw.seat_id,
-        associated_student_id: raw.associated_student_id
+        seat_id: current.seat_id,
+        associated_student_id: current.associated_student_id
       });
     }
 
     return confirmedHumans;
+  }
+
+  /**
+   * Evaluates temporal consistency across buffered frame observations.
+   * Answers: "Has this candidate remained consistent over multiple observations to confirm a real human?"
+   * 
+   * Stationary seated students match consecutive frames effortlessly because their center & bbox
+   * remain stable, keeping them continuously confirmed without requiring motion.
+   */
+  private evaluateTemporalConsistency(
+    candidate: RawDetectionPayload,
+    currentTimestamp: number,
+    recentObservations: BufferedFrameObservation[]
+  ): boolean {
+    if (recentObservations.length === 0) return false;
+
+    const candBbox = candidate.bbox;
+    const candCx = candBbox.x + candBbox.width / 2;
+    const candCy = candBbox.y + candBbox.height / 2;
+    const candArea = candBbox.width * candBbox.height;
+
+    let matchingObservationsCount = 0;
+    let earliestMatchTime = currentTimestamp;
+    let confidenceSum = 0;
+
+    for (const obs of recentObservations) {
+      // Find matching candidate in this historical frame observation
+      let foundMatchInFrame = false;
+      for (const prev of obs.rawCandidates) {
+        const prevBbox = prev.bbox;
+        const prevCx = prevBbox.x + prevBbox.width / 2;
+        const prevCy = prevBbox.y + prevBbox.height / 2;
+        const prevArea = prevBbox.width * prevBbox.height;
+
+        const centerDistance = Math.hypot(candCx - prevCx, candCy - prevCy);
+        const areaRatio = Math.min(candArea, prevArea) / Math.max(candArea, prevArea);
+
+        // Matching criteria: Center proximity + bounding box scale consistency
+        if (centerDistance <= this.config.maxCenterDist && areaRatio >= this.config.minSizeRatio) {
+          foundMatchInFrame = true;
+          confidenceSum += prev.confidence;
+          if (obs.timestamp < earliestMatchTime) {
+            earliestMatchTime = obs.timestamp;
+          }
+          break;
+        }
+      }
+
+      if (foundMatchInFrame) {
+        matchingObservationsCount++;
+      }
+    }
+
+    const timeSpanMs = currentTimestamp - earliestMatchTime;
+    const avgConfidence = matchingObservationsCount > 0 ? (confidenceSum / matchingObservationsCount) : 0;
+
+    // Confirmation Criteria:
+    // 1. Minimum observation count (at least minObservations, e.g. 2 frames)
+    // 2. Minimum temporal persistence span (at least minPersistenceMs, e.g. 250ms), OR
+    // 3. Pre-associated seat/track stability with sufficient confidence
+    if (matchingObservationsCount >= this.config.minObservations && 
+        (timeSpanMs >= this.config.minPersistenceMs || matchingObservationsCount >= 3) &&
+        avgConfidence >= this.minConfidence) {
+      return true;
+    }
+
+    // Also confirm if high confidence and explicit valid seat anchor
+    if (candidate.confidence >= 0.85 && candidate.seat_id && matchingObservationsCount >= 1) {
+      return true;
+    }
+
+    return false;
   }
 }

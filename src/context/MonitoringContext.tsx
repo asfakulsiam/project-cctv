@@ -40,6 +40,7 @@ interface MonitoringContextType {
   setSelectedTrack: (track: CameraTrack | null) => void;
   clearStudentWarning: (studentId: string) => Promise<boolean>;
   clearTrackWarning: (trackId: string) => Promise<boolean>;
+  clearCandidateWarning: (personId: string) => Promise<boolean>;
   refreshData: () => Promise<void>;
   triggerDemoAction: (action: string, studentId?: string, durationSec?: number) => Promise<boolean>;
   toggleCamera: (cameraId: string) => Promise<void>;
@@ -493,6 +494,35 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
     }
   }, [selectedTrack]);
 
+  // Clear Candidate Warning / Reset Immediate Risk
+  const clearCandidateWarning = useCallback(async (personId: string): Promise<boolean> => {
+    const adminToken = localStorage.getItem('admin_token') || '';
+    try {
+      const res = await fetch(`/api/candidates/${encodeURIComponent(personId)}/clear-warning`, { 
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!data.success) return false;
+
+      // Only update local state after server confirmation
+      setGlobalPersons(prev => prev.map(gp => (gp.id === personId || gp.person_id === personId) ? {
+        ...gp,
+        current_score: 0,
+        warning_latched: false,
+        warning_cleared_at: Date.now()
+      } : gp));
+      return true;
+    } catch (err) {
+      console.error('Failed to clear candidate warning:', err);
+      return false;
+    }
+  }, []);
+
   // Broadcast Real-time Video Detections to Local State & Backend Server
   const broadcastDetections = useCallback((cameraId: string, detections: CameraTrack[]) => {
     // 1. Instantly update local camera tracks for zero-latency client HUD bounding boxes
@@ -651,6 +681,7 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
         setSelectedTrack,
         clearStudentWarning,
         clearTrackWarning,
+        clearCandidateWarning,
         refreshData,
         triggerDemoAction,
         toggleCamera,

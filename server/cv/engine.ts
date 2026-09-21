@@ -418,20 +418,34 @@ export class CVEngine {
       tracker.clearTrackWarning(trackId);
     }
     this.behaviorAnalyzer.clearTrackWarning(trackId);
+    const now = Date.now();
     // Immediately unlatch and reset score on cached track
     for (const tracks of this.latestTracksByCamera.values()) {
       for (const t of tracks) {
         if (t.track_id === trackId) {
           t.warning_latched = false;
           t.current_score = 0;
-          t.warning_cleared_at = Date.now();
+          t.warning_cleared_at = now;
         }
       }
     }
+    const synced = this.unifiedStudentManager.syncScoresAfterBehavior(this.latestTracksByCamera, now);
+    this.latestUnifiedStudents = synced.students;
+    this.latestGlobalPersons = synced.globalPersons;
+    this.cachedStats = this.computeRealtimeStats(this.latestTracksByCamera, this.latestUnifiedStudents, this.latestGlobalPersons);
+    this.broadcastTelemetry({
+      type: 'TELEMETRY_UPDATE',
+      timestamp: now,
+      tracks_by_camera: Object.fromEntries(this.latestTracksByCamera.entries()),
+      students: this.latestUnifiedStudents,
+      global_persons: this.latestGlobalPersons,
+      stats: this.cachedStats
+    });
     return true;
   }
 
   public async clearStudentWarning(studentId: string): Promise<boolean> {
+    const now = Date.now();
     this.unifiedStudentManager.clearStudentWarning(studentId);
     const student = this.unifiedStudentManager.getStudentRecord(studentId);
     const personId = student?.person_id || student?.global_person_id;
@@ -460,10 +474,63 @@ export class CVEngine {
         ) {
           t.warning_latched = false;
           t.current_score = 0;
-          t.warning_cleared_at = Date.now();
+          t.warning_cleared_at = now;
         }
       }
     }
+    const synced = this.unifiedStudentManager.syncScoresAfterBehavior(this.latestTracksByCamera, now);
+    this.latestUnifiedStudents = synced.students;
+    this.latestGlobalPersons = synced.globalPersons;
+    this.cachedStats = this.computeRealtimeStats(this.latestTracksByCamera, this.latestUnifiedStudents, this.latestGlobalPersons);
+    this.broadcastTelemetry({
+      type: 'TELEMETRY_UPDATE',
+      timestamp: now,
+      tracks_by_camera: Object.fromEntries(this.latestTracksByCamera.entries()),
+      students: this.latestUnifiedStudents,
+      global_persons: this.latestGlobalPersons,
+      stats: this.cachedStats
+    });
+    return true;
+  }
+
+  public async clearCandidateWarning(personId: string): Promise<boolean> {
+    const now = Date.now();
+    this.unifiedStudentManager.clearCandidateWarning(personId);
+
+    for (const tracker of this.trackers.values()) {
+      for (const trackId of tracker.getActiveTrackIds()) {
+        const track = tracker.getTrack(trackId);
+        const matches = track && (
+          track.person_id === personId ||
+          track.global_person_id === personId
+        );
+        if (matches) {
+          tracker.clearTrackWarning(trackId);
+          this.behaviorAnalyzer.clearTrackWarning(trackId);
+        }
+      }
+    }
+    for (const tracks of this.latestTracksByCamera.values()) {
+      for (const t of tracks) {
+        if (t.person_id === personId || t.global_person_id === personId) {
+          t.warning_latched = false;
+          t.current_score = 0;
+          t.warning_cleared_at = now;
+        }
+      }
+    }
+    const synced = this.unifiedStudentManager.syncScoresAfterBehavior(this.latestTracksByCamera, now);
+    this.latestUnifiedStudents = synced.students;
+    this.latestGlobalPersons = synced.globalPersons;
+    this.cachedStats = this.computeRealtimeStats(this.latestTracksByCamera, this.latestUnifiedStudents, this.latestGlobalPersons);
+    this.broadcastTelemetry({
+      type: 'TELEMETRY_UPDATE',
+      timestamp: now,
+      tracks_by_camera: Object.fromEntries(this.latestTracksByCamera.entries()),
+      students: this.latestUnifiedStudents,
+      global_persons: this.latestGlobalPersons,
+      stats: this.cachedStats
+    });
     return true;
   }
 
@@ -728,6 +795,19 @@ export class CVEngine {
   }
 
   public async deleteCandidate(personId: string): Promise<boolean> {
+    const gp = this.unifiedStudentManager.getGlobalPerson(personId);
+    let lastKnownBbox;
+    for (const tracks of this.latestTracksByCamera.values()) {
+      const match = tracks.find(t => t.global_person_id === personId || t.person_id === personId);
+      if (match) {
+        lastKnownBbox = match.bbox;
+        break;
+      }
+    }
+
+    // Suppress spatial footprint for 4000ms so 1-tick frame loops do not immediately recreate candidate
+    this.personDetector.suppressCandidate(personId, gp?.seat_id, lastKnownBbox, 4000);
+
     for (const tracker of this.trackers.values()) {
       tracker.removeTracksByPersonId(personId);
     }
@@ -758,6 +838,7 @@ export class CVEngine {
       tracker.reset();
     }
     this.personDetector.clearTemporalBuffer();
+    this.personDetector.clearSuppression();
     this.unifiedStudentManager.clearCurrentCandidates();
     this.cameraDetectionsQueue.clear();
     this.cameraPhonesQueue.clear();

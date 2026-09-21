@@ -1082,16 +1082,94 @@ async function startServer() {
     }
   });
 
-  // Camera Worker / Stream Ingestion Detection Hook
-  app.post('/api/cameras/:id/detections', (req, res) => {
+  // Clear Warning for Exam Candidate (Proctor Action)
+  app.post('/api/candidates/:id/clear-warning', requireAdminAuth, async (req, res) => {
     try {
-      const { detections } = req.body;
-      if (cvEngine) {
-        cvEngine.injectCameraDetections(req.params.id, Array.isArray(detections) ? detections : []);
-        res.json({ success: true, count: detections?.length || 0 });
-      } else {
-        res.status(503).json({ error: 'CV engine not initialized' });
+      const personId = req.params.id;
+      const now = Date.now();
+      if (!cvEngine) return res.status(503).json({ error: 'CV engine not initialized' });
+
+      const cleared = await cvEngine.clearCandidateWarning(personId);
+      if (!cleared) return res.status(404).json({ error: 'Candidate not found' });
+
+      await db.recordEvent({
+        id: `evt-clear-cand-${now}-${Math.floor(Math.random() * 1000)}`,
+        session_id: 'session-active',
+        event_type: 'WARNING_CLEARED',
+        timestamp: now,
+        confidence: 1.0,
+        score_contribution: 0,
+        severity: 'info',
+        description: `Proctor unlatched warning alert for exam candidate ${personId}. Cumulative audit score preserved.`
+      });
+
+      res.json({
+        success: true,
+        person_id: personId,
+        message: 'Exam candidate warning unlatched. Cumulative audit score preserved.'
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Camera Worker / Stream Ingestion Detection Hook
+  app.post('/api/cameras/:id/detections', async (req, res) => {
+    try {
+      const cameraId = req.params.id;
+      if (!cvEngine) return res.status(503).json({ error: 'CV engine not initialized' });
+
+      const cameras = await db.getCameras();
+      const camera = cameras.find(c => c.camera_id === cameraId);
+      if (!camera) {
+        return res.status(404).json({ error: `Camera ${cameraId} not found` });
       }
+      if (!camera.enabled) {
+        return res.status(400).json({ error: `Camera ${cameraId} is disabled` });
+      }
+
+      const { detections } = req.body;
+      if (!Array.isArray(detections)) {
+        return res.status(400).json({ error: 'Detections payload must be an array' });
+      }
+      if (detections.length > 100) {
+        return res.status(400).json({ error: 'Detections array exceeds limit of 100 items' });
+      }
+
+      const validatedDetections = [];
+      for (const d of detections) {
+        if (!d || typeof d !== 'object') continue;
+        const confidence = typeof d.confidence === 'number' && !isNaN(d.confidence) && isFinite(d.confidence)
+          ? Math.max(0, Math.min(1, d.confidence))
+          : 0;
+        
+        if (!d.bbox || typeof d.bbox !== 'object') continue;
+        let { x, y, width, height } = d.bbox;
+        if (typeof x !== 'number' || typeof y !== 'number' || typeof width !== 'number' || typeof height !== 'number') continue;
+        if (isNaN(x) || isNaN(y) || isNaN(width) || isNaN(height)) continue;
+        if (width <= 0 || height <= 0) continue;
+
+        x = Math.max(0, Math.min(1, x));
+        y = Math.max(0, Math.min(1, y));
+        width = Math.max(0.01, Math.min(1 - x, width));
+        height = Math.max(0.01, Math.min(1 - y, height));
+
+        const className = typeof d.class_name === 'string' && d.class_name.trim().length > 0
+          ? d.class_name.trim().toLowerCase()
+          : 'person';
+
+        validatedDetections.push({
+          class_name: className,
+          confidence,
+          bbox: { x, y, width, height },
+          center: { x: x + width / 2, y: y + height / 2 },
+          reid_embedding: Array.isArray(d.reid_embedding) ? d.reid_embedding : undefined,
+          pose: d.pose
+        });
+      }
+
+      cvEngine.injectCameraDetections(cameraId, validatedDetections);
+      res.json({ success: true, count: validatedDetections.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
