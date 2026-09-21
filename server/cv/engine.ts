@@ -528,6 +528,10 @@ export class CVEngine {
     this.syncCameras(cameras);
   }
 
+  public associatePersonWithStudent(personId: string, studentId: string | null): boolean {
+    return this.unifiedStudentManager.associatePersonWithStudent(personId, studentId);
+  }
+
   public registerClient(ws: WebSocket): void {
     this.wsClients.add(ws);
     this.sendInitialSync(ws).catch(err => {

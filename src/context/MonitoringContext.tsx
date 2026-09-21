@@ -47,6 +47,8 @@ interface MonitoringContextType {
   updateCameraConfig: (cameraId: string, updates: Partial<CameraConfig>) => Promise<boolean>;
   testCameraConnection: (cameraId: string) => Promise<any>;
   broadcastDetections: (cameraId: string, detections: CameraTrack[]) => void;
+  clearActivityEvents: () => Promise<boolean>;
+  associatePersonWithStudent: (personId: string, studentId: string | null) => Promise<boolean>;
 }
 
 const defaultStats: SystemStats = {
@@ -481,6 +483,53 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
+  // Clear Activity Events (Admin only - clears database events first)
+  const clearActivityEvents = useCallback(async (): Promise<boolean> => {
+    const adminToken = localStorage.getItem('admin_token') || '';
+    try {
+      const res = await fetch('/api/events/clear', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await res.json();
+      if (data.success) {
+        // Only clear frontend state after DB confirms successful deletion
+        setEvents([]);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to clear activity events:', err);
+      return false;
+    }
+  }, []);
+
+  // Associate Person ID with Student (Admin only)
+  const associatePersonWithStudent = useCallback(async (personId: string, studentId: string | null): Promise<boolean> => {
+    const adminToken = localStorage.getItem('admin_token') || '';
+    try {
+      const res = await fetch(`/api/persons/${encodeURIComponent(personId)}/associate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ student_id: studentId })
+      });
+      if (res.ok) {
+        await refreshData();
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to associate person with student:', err);
+      return false;
+    }
+  }, [refreshData]);
+
   return (
     <MonitoringContext.Provider
       value={{
@@ -510,7 +559,9 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
         deleteCamera,
         updateCameraConfig,
         testCameraConnection,
-        broadcastDetections
+        broadcastDetections,
+        clearActivityEvents,
+        associatePersonWithStudent
       }}
     >
       {children}

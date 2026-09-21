@@ -936,13 +936,40 @@ async function startServer() {
     }
   });
 
-  // Clear Events
-  app.post('/api/events/clear', requireAdminAuth, async (req, res) => {
+  // Person ID to Student Association (Admin Control)
+  app.post('/api/persons/:id/associate', requireAdminAuth, async (req, res) => {
     try {
-      await db.clearEvents();
-      res.json({ success: true });
+      const personId = req.params.id;
+      const { student_id } = req.body; // string or null
+      if (cvEngine) {
+        const success = cvEngine.associatePersonWithStudent(personId, student_id || null);
+        if (!success) {
+          return res.status(404).json({ error: 'Person ID not found or student ID invalid' });
+        }
+        res.json({ success: true, person_id: personId, student_id: student_id || null });
+      } else {
+        res.status(503).json({ error: 'CV engine not initialized' });
+      }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Clear Events (Preserves scores, tracks, and identities)
+  app.post('/api/events/clear', requireAdminAuth, async (_req, res) => {
+    try {
+      const result = await db.clearEvents();
+      res.json({
+        success: true,
+        cleared: true,
+        count: typeof result === 'number' ? result : undefined
+      });
+    } catch (err: any) {
+      console.error('[Events] Failed to clear activity:', err);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to clear activity'
+      });
     }
   });
 
@@ -970,9 +997,16 @@ async function startServer() {
       const students = await db.getStudents();
       const cameras = await db.getCameras();
       const events = await db.getEvents(100);
+      const settings = await db.getSettings();
 
-      const highRisk = students.filter(s => s.unified_suspicion_score >= 60);
-      const warnings = students.filter(s => s.unified_suspicion_score >= 35 && s.unified_suspicion_score < 60);
+      const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
+      const warningThreshold = settings?.thresholds?.warning_suspicion_threshold ?? 40;
+
+      const highRisk = students.filter(s => (s.cumulative_score ?? s.unified_suspicion_score) >= highThreshold);
+      const warnings = students.filter(s => {
+        const score = s.cumulative_score ?? s.unified_suspicion_score;
+        return score >= warningThreshold && score < highThreshold;
+      });
 
       res.json({
         generated_at: new Date().toISOString(),
@@ -983,7 +1017,9 @@ async function startServer() {
           flagged_count: highRisk.length,
           warning_count: warnings.length,
           total_events_logged: events.length,
-          cameras_monitored: cameras.length
+          cameras_monitored: cameras.length,
+          high_threshold: highThreshold,
+          warning_threshold: warningThreshold
         },
         students,
         cameras,
@@ -999,17 +1035,17 @@ async function startServer() {
       const students = await db.getStudents();
       const events = await db.getEvents(200);
 
-      let csv = 'STUDENT INCIDENT REPORT\\n';
-      csv += 'Student ID Number,Name,Status,Suspicion Score,Assigned Desk,Notes\\n';
+      let csv = 'STUDENT INCIDENT REPORT\n';
+      csv += 'Student ID Number,Name,Status,Current Risk,Cumulative Suspicion Score,Peak Score,Assigned Desk,Notes\n';
       for (const s of students) {
-        csv += `"${s.student_id_number}","${s.name}","${s.status}",${s.unified_suspicion_score},"${s.seat_id || 'N/A'}","${s.notes || ''}"\\n`;
+        csv += `"${s.student_id_number}","${s.name}","${s.status}",${s.current_score ?? 0},${s.cumulative_score ?? s.unified_suspicion_score},${s.max_score ?? s.unified_suspicion_score},"${s.seat_id || 'N/A'}","${s.notes || ''}"\n`;
       }
 
-      csv += '\\n\\nBEHAVIORAL EVENTS LOG\\n';
-      csv += 'Timestamp,Event Type,Severity,Student ID,Student Name,Camera,Score Contribution,Description\\n';
+      csv += '\n\nBEHAVIORAL EVENTS LOG\n';
+      csv += 'Timestamp,Event Type,Severity,Person ID,Track ID,Student ID,Student Name,Camera,Confidence,Score Contribution,Description\n';
       for (const e of events) {
         const timeStr = new Date(e.timestamp).toISOString();
-        csv += `"${timeStr}","${e.event_type}","${e.severity}","${e.student_id_number || ''}","${e.student_name || ''}","${e.camera_id}",${e.score_contribution},"${e.description.replace(/"/g, '""')}"\\n`;
+        csv += `"${timeStr}","${e.event_type}","${e.severity}","${e.global_person_id || ''}","${e.track_id || ''}","${e.student_id_number || ''}","${e.student_name || ''}","${e.camera_id || ''}",${e.confidence ?? 0},${e.score_contribution ?? 0},"${e.description.replace(/"/g, '""')}"\n`;
       }
 
       res.setHeader('Content-Type', 'text/csv');

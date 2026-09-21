@@ -159,8 +159,9 @@ export function AuditReportsView() {
           <table className="w-full text-left text-[12px]">
             <thead className="bg-[var(--system-fill)] text-[var(--system-text-secondary)] border-b border-[var(--system-separator)] font-mono-apple text-[11px]">
               <tr>
-                <th className="px-4 py-3 font-medium">Candidate</th>
-                <th className="px-4 py-3 font-medium">ID Number</th>
+                <th className="px-4 py-3 font-medium">Person ID</th>
+                <th className="px-4 py-3 font-medium">Student ID</th>
+                <th className="px-4 py-3 font-medium">Student Name</th>
                 <th className="px-4 py-3 font-medium">Desk</th>
                 <th className="px-4 py-3 font-medium">Attendance</th>
                 <th className="px-4 py-3 font-medium">Current Risk</th>
@@ -173,7 +174,7 @@ export function AuditReportsView() {
             <tbody className="divide-y divide-[var(--system-separator)] text-[var(--system-text-secondary)]">
               {students.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-[var(--system-text-tertiary)]">
+                  <td colSpan={10} className="px-4 py-8 text-center text-[var(--system-text-tertiary)]">
                     No candidates registered or present in this examination session.
                   </td>
                 </tr>
@@ -185,17 +186,21 @@ export function AuditReportsView() {
 
                 const isHigh = cumulativeScore >= highThreshold;
                 const isWarn = cumulativeScore >= warningThreshold && !isHigh;
+                const personId = s.global_person_id || s.person_id || '—';
 
                 return (
                   <tr key={s.id} className="hover:bg-[var(--system-fill-secondary)] transition-colors">
-                    <td className="px-4 py-3 font-semibold text-[var(--system-text-primary)]">
-                      {s.name}
+                    <td className="px-4 py-3 font-mono-apple font-bold text-indigo-400">
+                      {personId}
                     </td>
                     <td className="px-4 py-3 font-mono-apple text-[var(--system-text-secondary)]">
                       {s.student_id_number}
                     </td>
+                    <td className="px-4 py-3 font-semibold text-[var(--system-text-primary)]">
+                      {s.name}
+                    </td>
                     <td className="px-4 py-3 font-mono-apple text-[var(--system-accent)]">
-                      {s.seat_id ? s.seat_id.toUpperCase() : 'Unassigned'}
+                      {s.seat_id ? s.seat_id.toUpperCase() : '—'}
                     </td>
                     <td className="px-4 py-3">
                       <Badge variant={s.status === 'flagged' ? 'destructive' : s.status === 'present' ? 'success' : 'secondary'}>
@@ -268,16 +273,28 @@ export function AuditReportsView() {
           )}
           {events.slice(0, 20).map((e, idx) => (
             <div key={`${e.id}-${idx}`} className="p-3 flex items-center justify-between space-x-4">
-              <div className="flex items-center space-x-3">
+              <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                 <Badge variant={e.severity === 'high' ? 'destructive' : e.severity === 'warning' ? 'warning' : 'secondary'}>
                   {e.event_type}
                 </Badge>
                 {e.global_person_id && (
-                  <span className="font-mono-apple text-[10px] text-indigo-400 bg-indigo-950/80 px-1.5 py-0.5 rounded border border-indigo-800/60">
-                    {e.global_person_id}
+                  <span className="font-mono-apple text-[10px] text-indigo-300 bg-indigo-950/80 px-1.5 py-0.5 rounded border border-indigo-800/60 font-bold">
+                    PERSON {e.global_person_id}
                   </span>
                 )}
-                <span className="text-[var(--system-text-primary)] font-medium">{e.student_name || 'Candidate'}</span>
+                {e.track_id && (
+                  <span className="font-mono-apple text-[10px] text-sky-300 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">
+                    TRACK {e.track_id}
+                  </span>
+                )}
+                {e.student_id_number && (
+                  <span className="font-mono-apple text-[10px] text-slate-300 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">
+                    ID {e.student_id_number}
+                  </span>
+                )}
+                {e.student_name && (
+                  <span className="text-[var(--system-text-primary)] font-medium">{e.student_name}</span>
+                )}
                 <span className="text-[var(--system-text-secondary)]">{e.description}</span>
                 {e.confidence !== undefined && (
                   <span className="text-[10px] text-slate-400 font-mono-apple">
@@ -285,7 +302,7 @@ export function AuditReportsView() {
                   </span>
                 )}
               </div>
-              <div className="flex items-center space-x-3 text-[var(--system-text-tertiary)] font-mono-apple text-[11px]">
+              <div className="flex items-center space-x-3 text-[var(--system-text-tertiary)] font-mono-apple text-[11px] flex-shrink-0">
                 <span>{e.camera_id}</span>
                 <span>{new Date(e.timestamp).toLocaleTimeString()}</span>
               </div>

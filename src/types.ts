@@ -98,7 +98,8 @@ export interface SecondaryObjectDetection {
 export interface CameraTrack {
   track_id: string;            // Layer 2: Camera-scoped track ID: e.g. "CAM1-T001"
   camera_id: string;           // Parent camera ID
-  global_person_id?: string;   // Layer 3: Global Person ID across all cameras (e.g. "P-001")
+  person_id?: string;          // Layer 3: Person ID (e.g. "P-001")
+  global_person_id?: string;   // Backward-compatible alias for person_id
   bbox: BoundingBox;           // Bounding box in normalized coords (0 to 1)
   confidence: number;          // Detection confidence (0 - 1)
   appearance_embedding?: number[]; // Re-ID appearance descriptor vector
@@ -134,7 +135,8 @@ export interface GlobalPersonObservation {
 
 export interface GlobalPerson {
   id: string;                    // Primary Layer 3 ID (e.g. "P-001")
-  global_person_id?: string;     // Alias for id
+  person_id?: string;            // Layer 3 Person ID (e.g. "P-001")
+  global_person_id?: string;     // Alias for id / person_id
   classroom_id?: string;
   associated_student_id?: string;// Associated formal student record in DB
   associated_student_name?: string;
@@ -161,6 +163,8 @@ export interface GlobalPerson {
   status?: 'in_seat' | 'left_seat' | 'unassigned';
 }
 
+export type PersonIdentity = GlobalPerson;
+
 export interface StudentObservation {
   camera_id: string;
   track_id: string;
@@ -180,6 +184,8 @@ export interface StudentRecord {
   student_id_number: string;   // Formal academic ID (e.g., STU-2026-0812), editable by admin
   name: string;
   classroom_id: string;
+  person_id?: string;          // Associated Person ID (e.g., P-001)
+  global_person_id?: string;   // Backward-compatible alias for person_id
   seat_id?: string;
   status: 'present' | 'absent' | 'left_seat' | 'flagged';
   unified_suspicion_score: number; // Cross-camera integrated score (0 - 100)

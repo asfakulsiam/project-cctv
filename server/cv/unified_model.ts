@@ -361,8 +361,13 @@ export class UnifiedStudentManager {
           const studentRec = matchedStudentId ? this.students.get(matchedStudentId) : null;
           this.global_persons.set(globalPersonId, {
             id: globalPersonId,
+            person_id: globalPersonId,
+            global_person_id: globalPersonId,
             associated_student_id: matchedStudentId || undefined,
             associated_student_name: studentRec?.name,
+            student_id: studentRec?.id,
+            student_id_number: studentRec?.student_id_number,
+            student_name: studentRec?.name,
             seat_id: matchedSeatId || undefined,
             appearance_embedding: track.appearance_embedding ? [...track.appearance_embedding] : undefined,
             camera_tracks: [],
@@ -392,13 +397,19 @@ export class UnifiedStudentManager {
           if (gp && matchedStudentId && !gp.associated_student_id) {
             gp.associated_student_id = matchedStudentId;
             const studentRec = this.students.get(matchedStudentId);
-            if (studentRec) gp.associated_student_name = studentRec.name;
+            if (studentRec) {
+              gp.associated_student_name = studentRec.name;
+              gp.student_id = studentRec.id;
+              gp.student_id_number = studentRec.student_id_number;
+              gp.student_name = studentRec.name;
+            }
           }
         }
 
         // Enforce uniqueness per camera
         cameraAssignedGPs.add(globalPersonId);
         track.global_person_id = globalPersonId;
+        track.person_id = globalPersonId;
         const quality = this.computeObservationQuality(track, camera);
 
         // Record active link for Global Person
@@ -591,6 +602,41 @@ export class UnifiedStudentManager {
 
   public getGlobalPerson(globalPersonId: string): GlobalPerson | undefined {
     return this.global_persons.get(globalPersonId);
+  }
+
+  public associatePersonWithStudent(personId: string, studentId: string | null): boolean {
+    const gp = this.global_persons.get(personId);
+    if (!gp) return false;
+
+    if (!studentId) {
+      gp.associated_student_id = undefined;
+      gp.associated_student_name = undefined;
+      gp.student_id = undefined;
+      gp.student_id_number = undefined;
+      gp.student_name = undefined;
+      return true;
+    }
+
+    const student = this.students.get(studentId);
+    if (!student) return false;
+
+    // Sever previous associations for this student
+    for (const otherGp of this.global_persons.values()) {
+      if (otherGp.id !== personId && otherGp.associated_student_id === studentId) {
+        otherGp.associated_student_id = undefined;
+        otherGp.associated_student_name = undefined;
+        otherGp.student_id = undefined;
+        otherGp.student_id_number = undefined;
+        otherGp.student_name = undefined;
+      }
+    }
+
+    gp.associated_student_id = student.id;
+    gp.associated_student_name = student.name;
+    gp.student_id = student.id;
+    gp.student_id_number = student.student_id_number;
+    gp.student_name = student.name;
+    return true;
   }
 
   public getStudentRecord(studentId: string): StudentRecord | undefined {

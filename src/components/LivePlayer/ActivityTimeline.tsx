@@ -17,7 +17,8 @@ import {
   Clock, 
   Video,
   ChevronRight,
-  User
+  User,
+  Trash2
 } from 'lucide-react';
 import { Card } from '../ui/Card.js';
 import { Badge } from '../ui/Badge.js';
@@ -28,8 +29,22 @@ interface ActivityTimelineProps {
 }
 
 export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityTimelineProps) {
-  const { events, students, setFocusedCameraId } = useMonitoring();
+  const { events, students, setFocusedCameraId, clearActivityEvents } = useMonitoring();
   const [filterSeverity, setFilterSeverity] = useState<'all' | 'high' | 'warning' | 'info'>('all');
+  const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
+  const [isClearing, setIsClearing] = useState<boolean>(false);
+
+  const isAdmin = Boolean(localStorage.getItem('admin_token'));
+
+  const handleClearActivity = async () => {
+    setIsClearing(true);
+    try {
+      await clearActivityEvents();
+      setShowClearConfirm(false);
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   const filteredEvents = events.filter(e => {
     if (filterSeverity === 'all') return true;
@@ -92,23 +107,58 @@ export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityT
           </span>
         </div>
 
-        {/* Segmented Filter */}
-        <div className="flex items-center bg-[var(--system-fill)] p-0.5 rounded-[9px] border border-[var(--system-chrome-border)] text-[11px]">
-          {(['all', 'high', 'warning', 'info'] as const).map(sev => (
+        <div className="flex items-center space-x-2">
+          {/* Segmented Filter */}
+          <div className="flex items-center bg-[var(--system-fill)] p-0.5 rounded-[9px] border border-[var(--system-chrome-border)] text-[11px]">
+            {(['all', 'high', 'warning', 'info'] as const).map(sev => (
+              <button
+                key={sev}
+                onClick={() => setFilterSeverity(sev)}
+                className={`px-2 py-1 rounded-[7px] font-medium transition-all cursor-pointer capitalize ${
+                  filterSeverity === sev
+                    ? 'bg-[var(--system-secondary-bg)] text-[var(--system-text-primary)] shadow-sm font-semibold'
+                    : 'text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)]'
+                }`}
+              >
+                {sev}
+              </button>
+            ))}
+          </div>
+
+          {/* Admin Clear Activity Button */}
+          {isAdmin && (
             <button
-              key={sev}
-              onClick={() => setFilterSeverity(sev)}
-              className={`px-2 py-1 rounded-[7px] font-medium transition-all cursor-pointer capitalize ${
-                filterSeverity === sev
-                  ? 'bg-[var(--system-secondary-bg)] text-[var(--system-text-primary)] shadow-sm font-semibold'
-                  : 'text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)]'
-              }`}
+              onClick={() => setShowClearConfirm(true)}
+              className="p-1.5 rounded-[7px] bg-[var(--system-fill)] hover:bg-rose-950/40 text-[var(--system-text-secondary)] hover:text-rose-400 border border-[var(--system-chrome-border)] transition-colors cursor-pointer"
+              title="Clear Activity Events"
             >
-              {sev}
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
-          ))}
+          )}
         </div>
       </div>
+
+      {/* Clear Confirmation Modal / Banner */}
+      {showClearConfirm && (
+        <div className="p-3 bg-rose-950/30 border-b border-rose-800/40 flex items-center justify-between gap-2 text-[12px]">
+          <span className="text-rose-200">Clear all recorded activity events? Scores and tracks are preserved.</span>
+          <div className="flex items-center space-x-1.5">
+            <button
+              onClick={handleClearActivity}
+              disabled={isClearing}
+              className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-medium text-[11px] transition-colors"
+            >
+              {isClearing ? 'Clearing...' : 'Confirm Clear'}
+            </button>
+            <button
+              onClick={() => setShowClearConfirm(false)}
+              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-[11px] transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Events Feed */}
       <div className="divide-y divide-[var(--system-separator)] overflow-y-auto max-h-[520px]">
@@ -122,7 +172,8 @@ export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityT
             const foundStudent = students.find(s => s.id === event.student_id);
             const studentIdDisplay = event.student_id_number || foundStudent?.student_id_number;
             const studentNameDisplay = event.student_name || foundStudent?.name;
-            const trackIdDisplay = event.track_id || `${event.camera_id.toUpperCase().replace(/[^A-Z0-9]/g, '')}-S001`;
+            const trackIdDisplay = event.track_id || 'UNASSIGNED';
+            const personIdDisplay = event.global_person_id || 'UNASSIGNED';
 
             return (
               <div
@@ -135,25 +186,30 @@ export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityT
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    {/* Top line: Track ID Pill + Student Badge + Event Title + Severity Badge */}
+                    {/* Top line: Person ID + Track ID + Student ID (if assigned) + Event Title + Severity Badge */}
                     <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
-                      {/* Fixed Camera Track ID */}
-                      <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-bold bg-slate-800 text-sky-400 border border-slate-700">
-                        {trackIdDisplay}
+                      {/* Person ID Pill */}
+                      <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-bold bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">
+                        PERSON {personIdDisplay}
                       </span>
 
-                      {/* Global Person ID */}
-                      {event.global_person_id && (
-                        <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-bold bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">
-                          {event.global_person_id}
-                        </span>
-                      )}
+                      {/* Camera Track ID Pill */}
+                      <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-bold bg-slate-800 text-sky-400 border border-slate-700">
+                        TRACK {trackIdDisplay}
+                      </span>
 
-                      {/* Student Identification */}
+                      {/* Student Identification (Only if associated) */}
                       {studentIdDisplay && (
                         <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-semibold bg-slate-800/80 text-slate-300 border border-slate-700/60 flex items-center space-x-1">
                           <User className="w-2.5 h-2.5 text-slate-400" />
-                          <span>{studentIdDisplay}</span>
+                          <span>ID {studentIdDisplay}</span>
+                        </span>
+                      )}
+
+                      {/* Real Student Name (Only if associated) */}
+                      {studentNameDisplay && (
+                        <span className="font-semibold text-slate-200 text-[11px]">
+                          {studentNameDisplay}
                         </span>
                       )}
 

@@ -257,9 +257,11 @@ export function drawCameraFeed(
     // (Small, sleek, and moves frame-by-frame on top of the bounding box)
     // -------------------------------------------------------------
     const student = students.find(s => s.id === track.associated_student_id);
-    const studentIdText = student?.student_id_number ? ` [${student.student_id_number}]` : '';
+    const personId = track.global_person_id || track.person_id;
+    const personIdText = personId ? ` | ${personId}` : '';
+    const studentIdText = student?.student_id_number ? ` [${student.student_id_number}]` : (student?.name ? ` [${student.name}]` : '');
     const statusPrefix = isCritical ? '🚨 ' : (isWarning ? '⚠️ ' : '');
-    const tagText = `${statusPrefix}${track.track_id}${studentIdText} • ${score}`;
+    const tagText = `${statusPrefix}${track.track_id}${personIdText}${studentIdText} • ${score}`;
     
     // Sleek small font to avoid blocking camera views
     ctx.font = 'bold 8.5px "JetBrains Mono", monospace';

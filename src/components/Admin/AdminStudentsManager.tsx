@@ -7,13 +7,13 @@
  * student ID number and student information for clearer identification."
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
 import { StudentRecord } from '../../types.js';
-import { Users, Edit3, Trash2, Plus, Check, X, AlertCircle } from 'lucide-react';
+import { Users, Edit3, Trash2, Plus, Check, X, AlertCircle, Link2, Unlink } from 'lucide-react';
 
 export function AdminStudentsManager() {
-  const { students, refreshData, settings } = useMonitoring();
+  const { students, tracksByCamera, refreshData, settings, associatePersonWithStudent } = useMonitoring();
   const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
 
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
@@ -28,7 +28,39 @@ export function AdminStudentsManager() {
   const [newSeatId, setNewSeatId] = useState<string>('');
   const [newClassroom, setNewClassroom] = useState<string>('');
 
+  const [selectedStudentForPerson, setSelectedStudentForPerson] = useState<Record<string, string>>({});
+  const [customPersonId, setCustomPersonId] = useState<string>('');
+  const [customAssignStudentId, setCustomAssignStudentId] = useState<string>('');
+
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const detectedPersonIds = useMemo(() => {
+    const set = new Set<string>();
+    Object.values(tracksByCamera || {}).forEach(tracks => {
+      tracks.forEach(t => {
+        const pid = t.global_person_id || t.person_id;
+        if (pid) set.add(pid);
+      });
+    });
+    students.forEach(s => {
+      if (s.global_person_id) set.add(s.global_person_id);
+      if (s.person_id) set.add(s.person_id);
+    });
+    return Array.from(set).sort();
+  }, [tracksByCamera, students]);
+
+  const handleAssignPerson = async (personId: string, studentId: string | null) => {
+    const success = await associatePersonWithStudent(personId, studentId);
+    if (success) {
+      setFeedback({ 
+        type: 'success', 
+        message: studentId ? `Associated ${personId} with student.` : `Unassigned student from ${personId}.` 
+      });
+      setTimeout(() => setFeedback(null), 3000);
+    } else {
+      setFeedback({ type: 'error', message: 'Failed to update person association.' });
+    }
+  };
 
   const startEdit = (student: StudentRecord) => {
     setEditingStudentId(student.id);
@@ -346,6 +378,153 @@ export function AdminStudentsManager() {
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Detected Person ID to Student Association Section (Admin Control) */}
+      <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Link2 className="w-4 h-4 text-indigo-400" />
+            <div>
+              <h3 className="text-sm font-bold text-white">Person ID &amp; Student Association</h3>
+              <p className="text-xs text-slate-400">Map detected physical persons across cameras to enrolled exam candidates</p>
+            </div>
+          </div>
+          <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-1 rounded">
+            {detectedPersonIds.length} Detected Identity{detectedPersonIds.length === 1 ? '' : 'ies'}
+          </span>
+        </div>
+
+        {/* Manual Association Quick Form */}
+        <div className="p-4 bg-slate-900/40 border-b border-slate-800 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-slate-300">Assign Specific Person ID:</span>
+          <input
+            type="text"
+            placeholder="e.g. P-001"
+            value={customPersonId}
+            onChange={e => setCustomPersonId(e.target.value)}
+            className="px-2.5 py-1 bg-slate-900 border border-slate-700 rounded text-xs text-white font-mono w-28"
+          />
+          <select
+            value={customAssignStudentId}
+            onChange={e => setCustomAssignStudentId(e.target.value)}
+            className="px-2.5 py-1 bg-slate-900 border border-slate-700 rounded text-xs text-slate-200"
+          >
+            <option value="">-- Select Candidate --</option>
+            {students.map(s => (
+              <option key={s.id} value={s.id}>
+                {s.student_id_number} - {s.name} ({s.seat_id || 'No seat'})
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => {
+              if (customPersonId.trim() && customAssignStudentId) {
+                handleAssignPerson(customPersonId.trim().toUpperCase(), customAssignStudentId);
+                setCustomPersonId('');
+                setCustomAssignStudentId('');
+              }
+            }}
+            disabled={!customPersonId.trim() || !customAssignStudentId}
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded text-xs font-medium transition-colors cursor-pointer"
+          >
+            Assign
+          </button>
+        </div>
+
+        {/* Person Association Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase font-mono text-[10px]">
+              <tr>
+                <th className="px-4 py-3">Person ID</th>
+                <th className="px-4 py-3">Associated Student ID</th>
+                <th className="px-4 py-3">Student Name</th>
+                <th className="px-4 py-3">Assigned Desk</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Association Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80 text-slate-300">
+              {detectedPersonIds.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500 text-xs">
+                    No physical person identities currently active in camera feeds. Use the quick form above to pre-assign an ID.
+                  </td>
+                </tr>
+              ) : (
+                detectedPersonIds.map(personId => {
+                  const associatedStudent = students.find(s => s.global_person_id === personId || s.person_id === personId);
+                  const selectedStudent = selectedStudentForPerson[personId] || '';
+
+                  return (
+                    <tr key={personId} className="hover:bg-slate-900/50 transition-colors">
+                      <td className="px-4 py-3 font-mono font-bold text-indigo-400">
+                        {personId}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-slate-300">
+                        {associatedStudent ? associatedStudent.student_id_number : <span className="text-slate-500">—</span>}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-white">
+                        {associatedStudent ? associatedStudent.name : <span className="text-slate-500 text-xs font-normal">Not assigned</span>}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-cyan-400">
+                        {associatedStudent?.seat_id ? associatedStudent.seat_id.toUpperCase() : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {associatedStudent ? (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-950 text-emerald-300 border border-emerald-800/60">
+                            Assigned
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-400">
+                            Unassigned
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end space-x-2">
+                          <select
+                            value={selectedStudent}
+                            onChange={e => setSelectedStudentForPerson(prev => ({ ...prev, [personId]: e.target.value }))}
+                            className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-300 text-xs"
+                          >
+                            <option value="">Select Candidate...</option>
+                            {students.map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.student_id_number} - {s.name}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => {
+                              if (selectedStudent) {
+                                handleAssignPerson(personId, selectedStudent);
+                              }
+                            }}
+                            disabled={!selectedStudent}
+                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded text-xs font-medium cursor-pointer transition-colors"
+                          >
+                            Assign
+                          </button>
+                          {associatedStudent && (
+                            <button
+                              onClick={() => handleAssignPerson(personId, null)}
+                              className="px-2.5 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded text-xs font-medium cursor-pointer transition-colors"
+                              title="Unassign Student from this Person ID"
+                            >
+                              Unassign
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
