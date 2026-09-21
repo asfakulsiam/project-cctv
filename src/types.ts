@@ -57,12 +57,25 @@ export interface CandidateEvidence {
   detectorAgreement: number;
 }
 
+export type WarningLevel = 'normal' | 'warning' | 'critical';
+
+export function getWarningLevel(
+  score: number,
+  thresholds?: MonitoringThresholds
+): WarningLevel {
+  const high = thresholds?.high_suspicion_threshold ?? 65;
+  const warning = thresholds?.warning_suspicion_threshold ?? 40;
+  if (score >= high) return 'critical';
+  if (score >= warning) return 'warning';
+  return 'normal';
+}
+
 export interface HumanDetection {
-  detection_id?: string;       // Layer 1: Ephemeral detection ID (e.g. "det-001049")
+  detection_id?: string;       // Layer 1: Ephemeral detection ID (e.g. "det-000001")
   class_name: 'person';
   confidence: number;
   bbox: BoundingBox;
-  appearance_embedding?: number[]; // Re-ID visual descriptor vector
+  appearance_embedding?: number[]; // Re-ID visual descriptor vector (undefined until real encoder is connected)
   head_pose?: HeadPoseData;
   face_visible?: boolean;
   face_confidence?: number;
@@ -75,10 +88,11 @@ export interface HumanDetection {
 }
 
 export interface SecondaryObjectDetection {
-  detection_id: string;
+  detection_id: string;        // e.g. "phone-det-000001"
   class_name: 'cell phone';
   confidence: number;
   bbox: BoundingBox;
+  associated_track_id?: string;
 }
 
 export interface CameraTrack {
@@ -99,9 +113,10 @@ export interface CameraTrack {
   seat_id?: string;
   associated_student_id?: string;
   suspicion_score: number;     // Suspicion score (0 - 100)
-  current_score?: number;      // Current immediate behavioral anomaly risk window (0 - 100)
+  current_score?: number;      // Current immediate behavioral anomaly risk window (0 - 100, resettable)
   cumulative_score?: number;   // Cumulative non-decreasing suspicion score for audit (0 - 100)
   max_score?: number;          // Peak instantaneous current_score reached
+  warning_level?: WarningLevel;// Centralized warning level (normal | warning | critical)
   warning_latched?: boolean;   // Latched warning state until explicit admin clearance
   warning_cleared_at?: number;
   last_seen_timestamp: number;
@@ -171,6 +186,7 @@ export interface StudentRecord {
   current_score?: number;          // Current behavioral anomaly risk (0 - 100)
   cumulative_score?: number;       // Monotonically non-decreasing audit score (0 - 100)
   max_score?: number;              // Peak score reached
+  warning_level?: WarningLevel;    // Centralized warning level (normal | warning | critical)
   active_observations: StudentObservation[];
   notes?: string;
   last_activity?: string;
@@ -235,6 +251,12 @@ export interface BehaviorEvent {
   severity: EventSeverity;
   description: string;
   metadata?: Record<string, any>;
+  evidence?: {
+    bbox?: BoundingBox;
+    detector_confidence?: number;
+    duration_ms?: number;
+    snapshot_url?: string;
+  };
 }
 
 export interface ExamSession {
@@ -284,7 +306,9 @@ export interface AppSettings {
 export interface SystemStats {
   total_cameras: number;
   online_cameras: number;
-  detected_persons: number;
+  detected_persons: number;        // Unique global persons
+  active_tracks?: number;          // Total active camera tracks across all cameras
+  unique_global_persons?: number;  // Explicit alias for unique global persons
   present_students: number;
   students_moving: number;
   warning_count: number;

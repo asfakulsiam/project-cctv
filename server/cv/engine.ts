@@ -1,145 +1,211 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Live Multi-Camera Computer Vision Engine & Video Pipeline
+ * Multi-Camera Computer Vision & Behavioral Analysis Orchestration Engine
  * 
- * Manages independent camera pipelines, live frame loops, real-time CV detection,
- * tracking, behavior analysis, and WebSocket state broadcasts.
+ * ARCHITECTURAL INVARIANTS:
+ * 1. ZERO FAKE PEOPLE:
+ *    Empty cameras produce ZERO detections, ZERO tracks, and ZERO global persons.
+ *    No artificial human synthesis from seat rectangles.
+ * 2. Independent Camera Pipelines:
+ *    Each camera runs an independent CameraTracker (CAM1 -> tracker1, CAM2 -> tracker2).
+ *    Background processing is continuous across all online cameras; UI focus does NOT gate processing.
+ * 3. FrameSource Abstraction:
+ *    Every camera owns its own FrameSource stream.
+ * 4. Resilient Camera Failure Behavior:
+ *    When a camera disconnects, its tracks transition ACTIVE -> LOST -> TERMINATED.
+ *    No false detections are produced during camera outages.
+ * 5. Explainable Real-Time Telemetry:
+ *    - detected_persons: Unique global persons
+ *    - active_tracks: Sum of active camera tracks across all cameras
+ *    - processing_fps: Measured real-time processing FPS
+ *    - Cross-camera event deduplication
  */
 
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { 
   AppSettings, 
+  BehaviorEvent, 
   CameraConfig, 
   CameraTrack, 
-  BehaviorEvent, 
+  GlobalPerson,
   RealtimeStateMessage, 
   SeatRecord, 
   StudentRecord, 
-  SystemStats,
-  HumanDetection,
-  SecondaryObjectDetection
+  SystemStats 
 } from '../../src/types.js';
 import { db } from '../db.js';
-import { CameraTracker } from './tracker.js';
 import { BehaviorAnalyzer } from './behavior.js';
-import { UnifiedStudentManager } from './unified_model.js';
 import { RealPersonDetector } from './personDetector.js';
+import { CameraTracker } from './tracker.js';
+import { UnifiedStudentManager } from './unified_model.js';
 
-export class MultiCameraCVEngine {
-  private cameras: Map<string, CameraConfig> = new Map();
-  private trackers: Map<string, CameraTracker> = new Map();
-  private personDetector: RealPersonDetector;
-  private behaviorAnalyzer: BehaviorAnalyzer;
-  private unifiedStudentManager: UnifiedStudentManager;
-  private settings: AppSettings;
-  private seats: SeatRecord[] = [];
-  private wsClients: Set<WebSocket> = new Set();
+export interface FrameSource {
+  open(): Promise<void>;
+  readFrame(): Promise<any | null>;
+  close(): Promise<void>;
+  getStatus(): {
+    connected: boolean;
+    fps: number;
+    error?: string;
+  };
+}
+
+export class StandardFrameSource implements FrameSource {
+  private camera: CameraConfig;
+  private isConnected = false;
+
+  constructor(camera: CameraConfig) {
+    this.camera = camera;
+  }
+
+  public async open(): Promise<void> {
+    this.isConnected = this.camera.status === 'online' && this.camera.enabled !== false;
+  }
+
+  public async readFrame(): Promise<any | null> {
+    if (!this.isConnected || this.camera.status !== 'online') return null;
+    return { timestamp: Date.now(), cameraId: this.camera.camera_id };
+  }
+
+  public async close(): Promise<void> {
+    this.isConnected = false;
+  }
+
+  public getStatus(): { connected: boolean; fps: number; error?: string } {
+    return {
+      connected: this.isConnected,
+      fps: (this.camera as any).fps || 15,
+      error: this.camera.status === 'offline' ? 'Camera offline' : undefined
+    };
+  }
+}
+
+export { CVEngine as MultiCameraCVEngine };
+
+export class CVEngine {
   private isRunning = false;
   private loopTimer: NodeJS.Timeout | null = null;
-  private cameraDetectionsQueue: Map<string, any[]> = new Map();
-  private lastStatsCalcTime = 0;
-  private cachedStats: SystemStats = {
-    total_cameras: 0,
-    online_cameras: 0,
-    detected_persons: 0,
-    present_students: 0,
-    students_moving: 0,
-    warning_count: 0,
-    high_suspicion_count: 0,
-    active_alerts: 0,
-    processing_fps: 0,
-    system_health: 'offline'
-  };
+  private settings: AppSettings;
+  private cameras: Map<string, CameraConfig> = new Map();
+  private cameraSources: Map<string, FrameSource> = new Map();
+  private seats: SeatRecord[] = [];
+  
+  // Vision Components
+  private personDetector: RealPersonDetector;
+  private trackers: Map<string, CameraTracker> = new Map();
+  private unifiedStudentManager: UnifiedStudentManager;
+  private behaviorAnalyzer: BehaviorAnalyzer;
 
-  private latestTracksByCamera = new Map<string, CameraTrack[]>();
+  // Injected Detections Queue (real video detections or integration streams)
+  private cameraDetectionsQueue: Map<string, any[]> = new Map();
+  private cameraPhonesQueue: Map<string, any[]> = new Map();
+
+  // WebSockets & Telemetry
+  private wss: WebSocketServer | null = null;
+  private wsClients: Set<WebSocket> = new Set();
+  private latestTracksByCamera: Map<string, CameraTrack[]> = new Map();
   private latestUnifiedStudents: StudentRecord[] = [];
+  private latestGlobalPersons: GlobalPerson[] = [];
+  private cachedStats: SystemStats;
+
+  // Measured FPS tracking
+  private frameCount = 0;
+  private lastFpsCalcTime = Date.now();
+  private currentMeasuredFps = 0;
 
   constructor(
-    initialSettings: AppSettings,
+    settings: AppSettings,
     initialCameras: CameraConfig[],
     initialStudents: StudentRecord[],
     initialSeats: SeatRecord[]
   ) {
-    this.settings = initialSettings;
+    this.settings = settings;
     this.seats = initialSeats;
 
-    // Initialize Real Person Detector (YOLO-aligned class gating and morphology)
-    this.personDetector = new RealPersonDetector(initialSettings.thresholds?.min_person_confidence || 0.50);
-
-    // Initialize Behavior Engine
-    this.behaviorAnalyzer = new BehaviorAnalyzer(
-      'session-active',
-      initialSettings.thresholds,
-      initialSettings.suspicion_weights
+    this.personDetector = new RealPersonDetector(
+      settings.thresholds.min_person_confidence ?? 0.50
     );
 
-    // Initialize Unified Student Model
     this.unifiedStudentManager = new UnifiedStudentManager(
-      initialStudents, 
+      initialStudents,
       initialSeats,
       {
-        warning_suspicion_threshold: initialSettings.thresholds?.warning_suspicion_threshold || 40,
-        high_suspicion_threshold: initialSettings.thresholds?.high_suspicion_threshold || 65
+        warning_suspicion_threshold: settings.thresholds.warning_suspicion_threshold,
+        high_suspicion_threshold: settings.thresholds.high_suspicion_threshold,
+        reid_similarity_threshold: 0.70
       }
     );
 
-    // Register Cameras and create independent trackers
-    for (const cam of initialCameras) {
-      this.cameras.set(cam.camera_id, { ...cam });
-      this.trackers.set(cam.camera_id, new CameraTracker(cam.camera_id));
-    }
+    this.behaviorAnalyzer = new BehaviorAnalyzer(
+      'session-active',
+      settings.thresholds,
+      settings.suspicion_weights
+    );
+
+    this.cachedStats = {
+      total_cameras: initialCameras.length,
+      online_cameras: initialCameras.filter(c => c.status === 'online').length,
+      detected_persons: 0,
+      active_tracks: 0,
+      unique_global_persons: 0,
+      present_students: 0,
+      students_moving: 0,
+      warning_count: 0,
+      high_suspicion_count: 0,
+      active_alerts: 0,
+      processing_fps: 0,
+      system_health: 'optimal'
+    };
+
+    this.syncCameras(initialCameras);
   }
 
-  public registerClient(ws: WebSocket): void {
-    this.wsClients.add(ws);
-    // Send immediate initial sync payload
-    this.sendInitialSync(ws);
-  }
+  public syncCameras(cameras: CameraConfig[]): void {
+    const currentCameraIds = new Set(cameras.map(c => c.camera_id));
 
-  public unregisterClient(ws: WebSocket): void {
-    this.wsClients.delete(ws);
-  }
-
-  public async reloadConfiguration(): Promise<void> {
-    this.settings = await db.getSettings();
-    this.seats = await db.getSeats();
-    const students = await db.getStudents();
-    const cameras = await db.getCameras();
-
-    this.behaviorAnalyzer.updateConfig(this.settings.thresholds, this.settings.suspicion_weights);
-    this.personDetector = new RealPersonDetector(this.settings.thresholds?.min_person_confidence || 0.50);
-    this.unifiedStudentManager.updateSeats(this.seats);
-    this.unifiedStudentManager.updateStudentList(students);
-    this.unifiedStudentManager.setThresholds({
-      warning_suspicion_threshold: this.settings.thresholds?.warning_suspicion_threshold || 40,
-      high_suspicion_threshold: this.settings.thresholds?.high_suspicion_threshold || 65
-    });
-
-    // Sync cameras
-    const existingCamIds = new Set(this.cameras.keys());
-    for (const cam of cameras) {
-      this.cameras.set(cam.camera_id, { ...cam });
-      if (!this.trackers.has(cam.camera_id)) {
-        this.trackers.set(cam.camera_id, new CameraTracker(cam.camera_id));
+    // Initialize or update camera trackers & sources
+    for (const camera of cameras) {
+      this.cameras.set(camera.camera_id, camera);
+      
+      if (!this.trackers.has(camera.camera_id)) {
+        this.trackers.set(
+          camera.camera_id, 
+          new CameraTracker(camera.camera_id, this.settings.thresholds)
+        );
+      } else {
+        this.trackers.get(camera.camera_id)!.setThresholds(this.settings.thresholds);
       }
-      existingCamIds.delete(cam.camera_id);
+
+      if (!this.cameraSources.has(camera.camera_id)) {
+        const source = new StandardFrameSource(camera);
+        source.open();
+        this.cameraSources.set(camera.camera_id, source);
+      }
     }
-    // Delete removed cameras
-    for (const staleId of existingCamIds) {
-      this.cameras.delete(staleId);
-      this.trackers.delete(staleId);
-      this.cameraDetectionsQueue.delete(staleId);
+
+    // Prune removed cameras
+    for (const staleId of this.cameras.keys()) {
+      if (!currentCameraIds.has(staleId)) {
+        this.cameras.delete(staleId);
+        this.trackers.delete(staleId);
+        this.cameraSources.delete(staleId);
+        this.cameraDetectionsQueue.delete(staleId);
+        this.cameraPhonesQueue.delete(staleId);
+      }
     }
   }
 
-  public injectCameraDetections(cameraId: string, detections: any[]): void {
+  public injectCameraDetections(cameraId: string, detections: any[], phones: any[] = []): void {
     this.cameraDetectionsQueue.set(cameraId, detections);
+    if (phones.length > 0) {
+      this.cameraPhonesQueue.set(cameraId, phones);
+    }
   }
 
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
-    console.log('[CV Engine] Multi-camera processing engine started at', this.settings.processing_fps, 'FPS');
+    console.log('[CV Engine] Multi-camera processing engine started at target', this.settings.processing_fps, 'FPS');
     this.scheduleNextTick();
   }
 
@@ -174,30 +240,42 @@ export class MultiCameraCVEngine {
     const newEvents: BehaviorEvent[] = [];
     const allActiveTrackIds = new Set<string>();
 
+    // Measure FPS
+    this.frameCount++;
+    const elapsedFpsTime = (now - this.lastFpsCalcTime) / 1000;
+    if (elapsedFpsTime >= 1.0) {
+      this.currentMeasuredFps = Math.round((this.frameCount / elapsedFpsTime) * 10) / 10;
+      this.frameCount = 0;
+      this.lastFpsCalcTime = now;
+    }
+
     const registeredStudents = this.unifiedStudentManager.getStudents();
 
     // Run independent per-camera detection & tracking
     for (const [cameraId, camera] of this.cameras.entries()) {
-      if (camera.status !== 'online' || camera.enabled === false) {
-        cameraTracksMap.set(cameraId, []);
-        continue;
-      }
-
       const tracker = this.trackers.get(cameraId);
       if (!tracker) continue;
 
-      // Ingest detections from real camera vision detector (RealPersonDetector)
-      let confirmedHumans: HumanDetection[] = [];
-      if (this.cameraDetectionsQueue.has(cameraId)) {
-        const rawDetections = this.cameraDetectionsQueue.get(cameraId) || [];
-        this.cameraDetectionsQueue.delete(cameraId);
-        confirmedHumans = this.personDetector.processDetections(rawDetections);
-      } else {
-        // Continuous server-side visual detection pipeline
-        confirmedHumans = this.generateAutonomousCameraDetections(camera, cameraId, registeredStudents, now);
+      // Handle offline or disabled camera
+      if (camera.status !== 'online' || camera.enabled === false) {
+        const remainingLostTracks = tracker.handleNoFrame(now);
+        cameraTracksMap.set(cameraId, remainingLostTracks);
+        continue;
       }
 
-      // INDEPENDENT PER-CAMERA TRACKING: If no humans detected, tracks are 0
+      // Real Detection Gatekeeper:
+      // Ingest real detections from queue (if injected) or process frame.
+      // ZERO fake people: If queue has no detections and no frame, confirmedHumans is empty!
+      let confirmedHumans: any[] = [];
+      if (this.cameraDetectionsQueue.has(cameraId)) {
+        const rawDetections = this.cameraDetectionsQueue.get(cameraId) || [];
+        const rawPhones = this.cameraPhonesQueue.get(cameraId) || [];
+        this.cameraDetectionsQueue.delete(cameraId);
+        this.cameraPhonesQueue.delete(cameraId);
+        confirmedHumans = this.personDetector.processDetections(rawDetections, rawPhones);
+      }
+
+      // Update independent per-camera tracker
       const tracks = tracker.updateDetections(confirmedHumans, now);
 
       // Evaluate temporal behavior and scoring for each real track
@@ -220,12 +298,19 @@ export class MultiCameraCVEngine {
         track.max_score = max_score;
         tracker.setTrackSuspicion(track.track_id, cumulative_score, current_score, max_score);
 
+        // Cross-camera event deduplication
         for (const evt of events) {
           if (track.global_person_id) {
             evt.global_person_id = track.global_person_id;
           }
-          newEvents.push(evt);
-          await db.recordEvent(evt);
+          const shouldEmit = track.global_person_id
+            ? this.unifiedStudentManager.shouldEmitCrossCameraEvent(track.global_person_id, evt.event_type, now)
+            : true;
+
+          if (shouldEmit) {
+            newEvents.push(evt);
+            await db.recordEvent(evt);
+          }
         }
       }
 
@@ -243,10 +328,11 @@ export class MultiCameraCVEngine {
     );
 
     // Calculate Real-Time Stats
-    const stats = this.computeRealtimeStats(cameraTracksMap, unifiedStudents, newEvents.length);
+    const stats = this.computeRealtimeStats(cameraTracksMap, unifiedStudents, globalPersons);
 
     this.latestTracksByCamera = cameraTracksMap;
     this.latestUnifiedStudents = unifiedStudents;
+    this.latestGlobalPersons = globalPersons;
 
     // Broadcast Real-Time State over WebSockets
     this.broadcastTelemetry({
@@ -258,57 +344,6 @@ export class MultiCameraCVEngine {
       stats,
       new_event: newEvents.length > 0 ? newEvents[newEvents.length - 1] : undefined
     });
-  }
-
-  /**
-   * Autonomous server-side camera detection generator:
-   * Continuous surveillance of registered classroom seats and subjects
-   * passing through RealPersonDetector (class gating, morphological geometry, Re-ID embedding).
-   */
-  private generateAutonomousCameraDetections(
-    camera: CameraConfig,
-    cameraId: string,
-    registeredStudents: StudentRecord[],
-    now: number
-  ): HumanDetection[] {
-    const rawProposals: Array<{
-      class_name: string;
-      confidence: number;
-      bbox: { x: number; y: number; width: number; height: number };
-      seat_id?: string;
-      associated_student_id?: string;
-    }> = [];
-
-    // Monitored seats with mapped optical regions for this camera
-    const seatsForCamera = this.seats.filter(s => s.camera_regions && s.camera_regions[cameraId]);
-
-    seatsForCamera.forEach((seat, idx) => {
-      const region = seat.camera_regions[cameraId];
-      if (!region) return;
-
-      const student = registeredStudents.find(s => s.id === seat.assigned_student_id || s.seat_id === seat.id);
-      
-      // Slight natural respiratory micro-shift to simulate live video feed
-      const jitterX = Math.sin((now / 4000) + idx) * 0.002;
-      const jitterY = Math.cos((now / 5000) + idx) * 0.002;
-
-      rawProposals.push({
-        class_name: 'person',
-        confidence: 0.91 + Math.sin((now / 9000) + idx) * 0.04,
-        bbox: {
-          x: Math.max(0, Math.min(1 - region.width, region.x + jitterX)),
-          y: Math.max(0, Math.min(1 - region.height, region.y + jitterY)),
-          width: region.width,
-          height: region.height
-        },
-        seat_id: seat.id,
-        associated_student_id: student?.id
-      });
-    });
-
-    // Pass through RealPersonDetector for class validation, anatomical aspect ratio check,
-    // and appearance embedding generation
-    return this.personDetector.processDetections(rawProposals);
   }
 
   public async clearTrackWarning(trackId: string): Promise<boolean> {
@@ -323,17 +358,16 @@ export class MultiCameraCVEngine {
     this.unifiedStudentManager.clearStudentWarning(studentId);
     for (const tracker of this.trackers.values()) {
       for (const trackId of tracker.getActiveTrackIds()) {
-        tracker.clearTrackWarning(trackId);
+        const track = tracker.getTrack(trackId);
+        if (track && track.associated_student_id === studentId) {
+          tracker.clearTrackWarning(trackId);
+          this.behaviorAnalyzer.clearTrackWarning(trackId);
+        }
       }
     }
     return true;
   }
 
-
-
-  /**
-   * Toggle camera status (e.g., simulate camera disconnect / reconnect).
-   */
   public async toggleCameraStatus(cameraId: string): Promise<CameraConfig | null> {
     const cam = this.cameras.get(cameraId);
     if (!cam) return null;
@@ -370,48 +404,45 @@ export class MultiCameraCVEngine {
   private computeRealtimeStats(
     tracksByCamera: Map<string, CameraTrack[]>,
     students: StudentRecord[],
-    newEventsCount: number
+    globalPersons: GlobalPerson[]
   ): SystemStats {
     let totalOnline = 0;
     for (const cam of this.cameras.values()) {
       if (cam.status === 'online' && cam.enabled !== false) totalOnline++;
     }
 
-    // Deduplicated count across all camera tracking contexts
     const presentStudentsCount = students.filter(s => s.status === 'present' || s.status === 'flagged').length;
     
-    // Moving students
+    let totalActiveTracks = 0;
     let movingCount = 0;
     for (const tracks of tracksByCamera.values()) {
+      totalActiveTracks += tracks.length;
       for (const t of tracks) {
         if (t.is_moving) movingCount++;
       }
     }
 
-    // High suspicion / warning counts
     const highSuspicionCount = students.filter(s => s.unified_suspicion_score >= this.settings.thresholds.high_suspicion_threshold).length;
     const warningCount = students.filter(s => 
       s.unified_suspicion_score >= this.settings.thresholds.warning_suspicion_threshold && 
       s.unified_suspicion_score < this.settings.thresholds.high_suspicion_threshold
     ).length;
 
-    // Total detected tracks on primary camera
-    const primaryCamId = this.settings.default_primary_camera || (this.cameras.keys().next().value || '');
-    const primaryTracks = tracksByCamera.get(primaryCamId) || [];
-
     const totalCameras = this.cameras.size;
-    const isAnyCameraOnline = totalOnline > 0;
+    const uniqueGlobalPersonsCount = globalPersons.length;
 
     const stats: SystemStats = {
       total_cameras: totalCameras,
       online_cameras: totalOnline,
-      detected_persons: primaryTracks.length,
+      detected_persons: uniqueGlobalPersonsCount,
+      active_tracks: totalActiveTracks,
+      unique_global_persons: uniqueGlobalPersonsCount,
       present_students: presentStudentsCount,
       students_moving: Math.min(presentStudentsCount, movingCount),
       warning_count: warningCount,
       high_suspicion_count: highSuspicionCount,
       active_alerts: warningCount + highSuspicionCount,
-      processing_fps: isAnyCameraOnline ? this.settings.processing_fps : 0,
+      processing_fps: totalOnline > 0 ? this.currentMeasuredFps : 0,
       system_health: totalCameras === 0 ? 'offline' : (totalOnline === totalCameras ? 'optimal' : (totalOnline > 0 ? 'warning' : 'offline'))
     };
 
@@ -429,6 +460,7 @@ export class MultiCameraCVEngine {
       timestamp: Date.now(),
       cameras,
       students,
+      global_persons: this.latestGlobalPersons,
       events: recentEvents,
       stats: this.cachedStats
     };
@@ -448,82 +480,132 @@ export class MultiCameraCVEngine {
     }
   }
 
+  public setupWebSocketServer(wss: WebSocketServer): void {
+    this.wss = wss;
+    wss.on('connection', (ws: WebSocket) => {
+      this.wsClients.add(ws);
+      this.sendInitialSync(ws).catch(err => {
+        console.error('[CV Engine] Error sending initial sync:', err);
+      });
+
+      ws.on('message', (data: string) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'PING') {
+            ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
+          }
+        } catch (e) {
+          // ignore non-json messages
+        }
+      });
+
+      ws.on('close', () => {
+        this.wsClients.delete(ws);
+      });
+
+      ws.on('error', () => {
+        this.wsClients.delete(ws);
+      });
+    });
+  }
+
+  public async reloadConfiguration(): Promise<void> {
+    const [cameras, students, seats, settings] = await Promise.all([
+      db.getCameras(),
+      db.getStudents(),
+      db.getSeats(),
+      db.getSettings()
+    ]);
+    this.settings = settings;
+    this.seats = seats;
+    this.unifiedStudentManager.updateSeats(seats);
+    this.unifiedStudentManager.updateStudentList(students);
+    this.unifiedStudentManager.setThresholds({
+      warning_suspicion_threshold: settings.thresholds.warning_suspicion_threshold,
+      high_suspicion_threshold: settings.thresholds.high_suspicion_threshold
+    });
+    this.behaviorAnalyzer.updateConfig(settings.thresholds, settings.suspicion_weights);
+    this.syncCameras(cameras);
+  }
+
+  public registerClient(ws: WebSocket): void {
+    this.wsClients.add(ws);
+    this.sendInitialSync(ws).catch(err => {
+      console.error('[CV Engine] Error sending initial sync:', err);
+    });
+  }
+
+  public unregisterClient(ws: WebSocket): void {
+    this.wsClients.delete(ws);
+  }
+
+  public getCurrentTelemetry(): RealtimeStateMessage {
+    return {
+      type: 'TELEMETRY_UPDATE',
+      timestamp: Date.now(),
+      tracks_by_camera: Object.fromEntries(this.latestTracksByCamera.entries()),
+      students: this.latestUnifiedStudents,
+      global_persons: this.latestGlobalPersons,
+      stats: this.cachedStats
+    };
+  }
+
   public getStats(): SystemStats {
     return this.cachedStats;
   }
 
-  public getCurrentTelemetry(): {
-    timestamp: number;
+  public getCameraSvgFrame(cameraId: string): string | null {
+    const cam = this.cameras.get(cameraId);
+    if (!cam) return null;
+    const tracks = this.latestTracksByCamera.get(cameraId) || [];
+    const statusColor = cam.status === 'online' ? '#10b981' : '#ef4444';
+    const timestamp = new Date().toLocaleTimeString();
+    
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360">
+      <rect width="640" height="360" fill="#090d16" />
+      <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+      </pattern>
+      <rect width="640" height="360" fill="url(#grid)" />
+      <circle cx="20" cy="20" r="5" fill="${statusColor}" />
+      <text x="32" y="24" fill="#f8fafc" font-family="monospace" font-size="12" font-weight="bold">${cam.name} [${cam.camera_id}]</text>
+      <text x="620" y="24" fill="#94a3b8" font-family="monospace" font-size="11" text-anchor="end">${timestamp}</text>
+      ${tracks.map(t => {
+        const x = t.bbox.x * 640;
+        const y = t.bbox.y * 360;
+        const w = t.bbox.width * 640;
+        const h = t.bbox.height * 360;
+        const color = t.warning_latched || (t.suspicion_score || 0) >= 65 ? '#ef4444' : ((t.suspicion_score || 0) >= 35 ? '#eab308' : '#10b981');
+        return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="${color}" stroke-width="1.5"/>
+        <rect x="${x}" y="${Math.max(0, y - 14)}" width="${Math.min(100, w)}" height="14" fill="${color}"/>
+        <text x="${x + 4}" y="${Math.max(10, y - 3)}" fill="#000" font-family="monospace" font-size="9" font-weight="bold">${t.track_id} (${Math.round(t.suspicion_score || 0)})</text>`;
+      }).join('')}
+    </svg>`;
+  }
+
+  public getSnapshot(): {
     tracks_by_camera: Record<string, CameraTrack[]>;
     students: StudentRecord[];
+    global_persons: GlobalPerson[];
     stats: SystemStats;
-    cameras: CameraConfig[];
   } {
     return {
-      timestamp: Date.now(),
       tracks_by_camera: Object.fromEntries(this.latestTracksByCamera.entries()),
-      students: this.latestUnifiedStudents.length > 0 ? this.latestUnifiedStudents : this.unifiedStudentManager.getStudents(),
-      stats: this.cachedStats,
-      cameras: Array.from(this.cameras.values())
+      students: this.latestUnifiedStudents,
+      global_persons: this.latestGlobalPersons,
+      stats: this.cachedStats
     };
   }
 
-  /**
-   * Generates a clean, high-resolution vector video frame representing the camera's
-   * optical surveillance stream of the classroom, strictly separate from detection metadata.
-   * Does NOT generate fake student actors or fake bounding boxes.
-   */
-  public getCameraSvgFrame(cameraId: string): string {
-    const cam = this.cameras.get(cameraId);
-    const cameraName = cam ? cam.name : cameraId.toUpperCase();
-    const isOnline = cam ? cam.status === 'online' && cam.enabled !== false : false;
-    const now = new Date();
-    const timeString = now.toISOString().replace('T', ' ').substring(0, 19);
-
-    if (!cam || !isOnline) {
-      return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="100%" height="100%">
-        <rect width="960" height="540" fill="#020617"/>
-        <text x="480" y="250" fill="#ef4444" font-family="monospace" font-size="20" font-weight="bold" text-anchor="middle">CAMERA OFFLINE / DISCONNECTED</text>
-        <text x="480" y="285" fill="#64748b" font-family="monospace" font-size="14" text-anchor="middle">${cameraName} • No signal from stream source</text>
-        <text x="480" y="315" fill="#475569" font-family="monospace" font-size="12" text-anchor="middle">Verify RTSP / USB stream credentials in Admin Console</text>
-      </svg>`;
+  public reset(): void {
+    for (const tracker of this.trackers.values()) {
+      tracker.reset();
     }
-
-    const resWidth = cam.resolution?.width || 1920;
-    const resHeight = cam.resolution?.height || 1080;
-    const fps = cam.actual_fps || cam.target_fps || 15;
-    const sourceType = (cam.source_type || 'RTSP').toUpperCase();
-
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="100%" height="100%">
-      <defs>
-        <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stop-color="#0f172a"/>
-          <stop offset="100%" stop-color="#020617"/>
-        </linearGradient>
-      </defs>
-      <!-- Background Optical Floor -->
-      <rect width="960" height="540" fill="url(#bgGrad)"/>
-      
-      <!-- Surveillance Grid Lines -->
-      <path d="M0,180 L960,180 M0,270 L960,270 M0,360 L960,360 M0,450 L960,450" stroke="#334155" stroke-width="0.75" opacity="0.4"/>
-      <path d="M240,120 L240,540 M480,120 L480,540 M720,120 L720,540" stroke="#334155" stroke-width="0.75" opacity="0.3"/>
-
-      <!-- Clean CCTV Surveillance OSD HUD (Watermark) -->
-      <g opacity="0.9" font-family="'JetBrains Mono', monospace" font-size="11">
-        <rect x="16" y="16" width="310" height="28" rx="4" fill="#020617" fill-opacity="0.8" stroke="#334155" stroke-width="1"/>
-        <circle cx="32" cy="30" r="4" fill="#10b981"/>
-        <text x="44" y="34" fill="#f8fafc" font-weight="bold">● LIVE</text>
-        <text x="95" y="34" fill="#38bdf8">${cameraId.toUpperCase()}</text>
-        <text x="155" y="34" fill="#94a3b8">|</text>
-        <text x="170" y="34" fill="#e2e8f0">${timeString}</text>
-
-        <!-- Right Side Camera Metrics -->
-        <rect x="730" y="16" width="214" height="28" rx="4" fill="#020617" fill-opacity="0.8" stroke="#334155" stroke-width="1"/>
-        <text x="742" y="34" fill="#38bdf8">${resWidth}x${resHeight}</text>
-        <text x="825" y="34" fill="#94a3b8">@</text>
-        <text x="840" y="34" fill="#10b981" font-weight="bold">${fps.toFixed(1)} FPS</text>
-        <text x="900" y="34" fill="#06b6d4">${sourceType}</text>
-      </g>
-    </svg>`;
+    this.unifiedStudentManager.reset();
+    this.cameraDetectionsQueue.clear();
+    this.cameraPhonesQueue.clear();
+    this.latestTracksByCamera.clear();
+    this.latestUnifiedStudents = this.unifiedStudentManager.getStudents();
+    this.latestGlobalPersons = [];
   }
 }

@@ -142,6 +142,13 @@ export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityT
                         {trackIdDisplay}
                       </span>
 
+                      {/* Global Person ID */}
+                      {event.global_person_id && (
+                        <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-bold bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">
+                          {event.global_person_id}
+                        </span>
+                      )}
+
                       {/* Student Identification */}
                       {studentIdDisplay && (
                         <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-semibold bg-slate-800/80 text-slate-300 border border-slate-700/60 flex items-center space-x-1">

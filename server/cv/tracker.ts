@@ -1,27 +1,39 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Production Multi-Person Computer Vision Tracker (BoT-SORT Architecture)
+ * Production Multi-Person Computer Vision Tracker (BoT-SORT-inspired association layer)
  * 
  * ARCHITECTURAL INVARIANTS:
- * 1. Human Detection is the Gatekeeper: Only confirmed class == 'person' detections enter the tracker.
- * 2. Independent Per-Camera Context: All track IDs are strictly camera-scoped (e.g. CAM1-T001).
+ * 1. Human Detection is the Gatekeeper:
+ *    Only confirmed class == 'person' detections enter the tracker.
+ * 2. Independent Per-Camera Context:
+ *    All track IDs are strictly camera-scoped (e.g. CAM1-T001, CAM2-T004).
  *    Camera Tracker NEVER allocates Global Person IDs (P-001); that is the exclusive role of GlobalIdentityManager.
- * 3. BoT-SORT Association:
- *    - Motion state & Kalman kinematics prediction
- *    - Visual Re-ID appearance cosine similarity
- *    - Two-stage association (Stage 1: High confidence + Re-ID, Stage 2: Remaining + IoU)
+ * 3. BoT-SORT-inspired Association:
+ *    - Motion state & linear kinematics prediction
+ *    - Visual Re-ID appearance cosine similarity when appearance is available
+ *    - Two-stage association (Stage 1: High confidence + spatial/visual affinity, Stage 2: Remaining + IoU/distance affinity)
  * 4. Multi-Frame Candidate Evidence Accumulation:
- *    Evaluates CandidateEvidence (detectionCount, confidenceMean, centerVariance, sizeVariance, appearanceConsistency).
- *    Candidates must achieve 4+ consistent frames before permanent track promotion.
+ *    Evaluates CandidateEvidence (detectionCount >= 4, duration >= 0.20s, confidenceMean >= 0.50, confidenceMin >= 0.35).
+ *    Candidates must achieve required temporal evidence before permanent track promotion.
  * 5. Stationary Persistence:
  *    Stationary students (velocity -> 0) maintain track continuity without cycling or vanishing.
- * 6. Dual Score & Max Score:
+ * 6. Lost Track vs Terminated Track:
+ *    Missing detections transition track ACTIVE -> LOST -> TERMINATED only after max_missed_frames timeout.
+ * 7. Dual Score & Max Score:
  *    - current_score: Immediate behavioral risk window (resettable)
  *    - cumulative_score: Monotonically non-decreasing audit score
  *    - max_score: Peak score ever recorded
  */
 
-import { BoundingBox, CameraTrack, CandidateEvidence, HeadPoseData, HumanDetection } from '../../src/types.js';
+import { 
+  BoundingBox, 
+  CameraTrack, 
+  CandidateEvidence, 
+  HeadPoseData, 
+  HumanDetection,
+  getWarningLevel,
+  MonitoringThresholds
+} from '../../src/types.js';
 import { RealPersonDetector } from './personDetector.js';
 
 export type TrackStatus = 'candidate' | 'active' | 'lost' | 'terminated';
@@ -36,14 +48,14 @@ export interface InternalTrackState {
   confidence: number;
   appearance_embedding?: number[];
   
-  // Kinematics & Kalman-like Prediction
+  // Kinematics & Linear Prediction
   velocity_x: number; // Normalized coordinate delta per second
   velocity_y: number;
   last_update_time: number;
   hits: number;
   missed_frames: number;
 
-  // Observation attributes
+  // Observation attributes (secondary evidence)
   head_pose: HeadPoseData;
   face_visible: boolean;
   face_confidence: number;
@@ -56,7 +68,7 @@ export interface InternalTrackState {
   associated_student_id?: string;
   
   // Scoring Architecture
-  current_score: number;      // Immediate anomaly window (0 - 100)
+  current_score: number;      // Immediate anomaly window (0 - 100, resettable)
   cumulative_score: number;   // Monotonically non-decreasing lifetime score (0 - 100)
   max_score: number;          // Peak score recorded (0 - 100)
   suspicion_score: number;
@@ -84,17 +96,23 @@ export class CameraTracker {
   private active_tracks: Map<string, InternalTrackState> = new Map();
   private candidate_tracks: Map<string, InternalTrackState> = new Map();
   private next_candidate_number = 1;
+  private thresholds?: MonitoringThresholds;
 
-  // BoT-SORT Configuration Parameters
+  // Association & Lifecycle Parameters
   private readonly confirmation_hits_required = 4; // Multi-frame confirmation
-  private readonly max_missed_frames = 25;         // Stationary persistence through ~1.8s occlusion
-  private readonly iou_threshold = 0.15;           // Association threshold
-  private readonly appearance_weight = 0.45;       // BoT-SORT combined cost weight
+  private readonly max_missed_frames = 25;         // Stationary persistence through occlusion
+  private readonly iou_threshold = 0.15;           // Spatial association threshold
+  private readonly appearance_weight = 0.45;       // Combined cost weight when embeddings exist
 
-  constructor(camera_id: string) {
+  constructor(camera_id: string, thresholds?: MonitoringThresholds) {
     this.camera_id = camera_id;
-    // Derive clean uppercase camera prefix: "cam-1" -> "CAM1"
+    this.thresholds = thresholds;
+    // Clean uppercase camera prefix: "cam-1" -> "CAM1"
     this.camera_prefix = camera_id.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  }
+
+  public setThresholds(thresholds: MonitoringThresholds): void {
+    this.thresholds = thresholds;
   }
 
   /**
@@ -135,7 +153,7 @@ export class CameraTracker {
   }
 
   /**
-   * Predict bounding box location using Kalman-like linear velocity.
+   * Predict bounding box location using linear velocity.
    * If velocity is near zero (stationary student), predictions lock firmly in place.
    */
   private predictBoundingBox(track: InternalTrackState, dtSec: number): BoundingBox {
@@ -152,7 +170,8 @@ export class CameraTracker {
   }
 
   /**
-   * Compute BoT-SORT combined affinity score using motion, IoU, and Re-ID appearance embedding.
+   * Compute BoT-SORT-inspired combined affinity score using motion, IoU, and Re-ID appearance embedding.
+   * When appearance embeddings are undefined, strictly uses conservative spatial affinity.
    */
   private computeCombinedAffinity(
     trackBox: BoundingBox,
@@ -164,9 +183,10 @@ export class CameraTracker {
     const centerDist = this.computeCenterDistance(trackBox, detBox);
     const maxDist = Math.max(0.20, Math.hypot(trackBox.width, trackBox.height) * 1.3);
 
-    const spatialAffinity = (iou * 0.6) + (Math.max(0, 1 - centerDist / maxDist) * 0.4);
+    const distanceAffinity = Math.max(0, 1 - centerDist / maxDist);
+    const spatialAffinity = (iou * 0.6) + (distanceAffinity * 0.4);
 
-    if (trackEmb && detEmb) {
+    if (trackEmb && detEmb && trackEmb.length > 0 && detEmb.length > 0) {
       const cosineSim = RealPersonDetector.computeCosineSimilarity(trackEmb, detEmb);
       return (1 - this.appearance_weight) * spatialAffinity + (this.appearance_weight * cosineSim);
     }
@@ -209,14 +229,17 @@ export class CameraTracker {
     }
     sizeVar = sizeVar / Math.max(1, count);
 
-    // Appearance consistency
-    let appSimSum = 0;
-    let appPairs = 0;
-    for (let i = 0; i < ev.embeddings.length - 1; i++) {
-      appSimSum += RealPersonDetector.computeCosineSimilarity(ev.embeddings[i], ev.embeddings[i + 1]);
-      appPairs++;
+    // Appearance consistency (if embeddings exist)
+    let appearanceConsistency: number | undefined = undefined;
+    if (ev.embeddings.length >= 2) {
+      let appSimSum = 0;
+      let appPairs = 0;
+      for (let i = 0; i < ev.embeddings.length - 1; i++) {
+        appSimSum += RealPersonDetector.computeCosineSimilarity(ev.embeddings[i], ev.embeddings[i + 1]);
+        appPairs++;
+      }
+      appearanceConsistency = appPairs > 0 ? (appSimSum / appPairs) : undefined;
     }
-    const appearanceConsistency = appPairs > 0 ? (appSimSum / appPairs) : 0.85;
 
     return {
       detectionCount: count,
@@ -232,7 +255,23 @@ export class CameraTracker {
   }
 
   /**
-   * Main BoT-SORT Multi-Object Tracking Step
+   * Candidate confirmation logic evaluating multi-frame temporal evidence.
+   */
+  private shouldConfirmCandidate(evidence: CandidateEvidence, now: number): boolean {
+    const duration = (evidence.lastSeen - evidence.firstSeen) / 1000;
+    return (
+      evidence.detectionCount >= this.confirmation_hits_required &&
+      duration >= 0.20 &&
+      evidence.confidenceMean >= 0.50 &&
+      evidence.confidenceMin >= 0.35 &&
+      (evidence.appearanceConsistency === undefined || evidence.appearanceConsistency >= 0.60) &&
+      evidence.centerVariance <= 0.08 &&
+      evidence.sizeVariance <= 0.06
+    );
+  }
+
+  /**
+   * Main BoT-SORT-inspired Multi-Object Tracking Step.
    */
   public update(humanDetections: HumanDetection[], now: number = Date.now()): CameraTrack[] {
     const matchedConfirmedIds = new Set<string>();
@@ -240,7 +279,7 @@ export class CameraTracker {
     const unmatchedDetections: HumanDetection[] = [];
 
     // -------------------------------------------------------------
-    // STAGE 1: Associate High-Confidence Human Detections (BoT-SORT Stage 1)
+    // STAGE 1: Associate High-Confidence Human Detections
     // -------------------------------------------------------------
     const highConfDetections = humanDetections.filter(d => d.confidence >= 0.55);
     const lowConfDetections = humanDetections.filter(d => d.confidence < 0.55);
@@ -276,7 +315,8 @@ export class CameraTracker {
     }
 
     // -------------------------------------------------------------
-    // STAGE 2: Associate Remaining Active Tracks with Low-Confidence Detections (BoT-SORT Stage 2)
+    // STAGE 2: Associate Remaining Active Tracks with Low-Confidence Detections
+    // FIX: Spatial score incorporating distance affinity so IoU=0 doesn't fail
     // -------------------------------------------------------------
     const remainingDets = [...unmatchedDetections, ...lowConfDetections];
     const secondUnmatchedDetections: HumanDetection[] = [];
@@ -292,10 +332,16 @@ export class CameraTracker {
         const predictedBox = this.predictBoundingBox(track, dtSec);
         const iou = this.computeIoU(predictedBox, det.bbox);
         const dist = this.computeCenterDistance(predictedBox, det.bbox);
-        const maxDist = Math.hypot(track.bbox.width, track.bbox.height) * 0.9;
+        const maxDist = Math.max(0.20, Math.hypot(track.bbox.width, track.bbox.height) * 1.1);
 
-        if ((iou >= this.iou_threshold || dist <= maxDist) && iou > highestScore) {
-          highestScore = iou;
+        const distanceAffinity = Math.max(0, 1 - dist / Math.max(maxDist, 0.001));
+        const spatialScore = Math.max(iou, distanceAffinity * 0.7);
+
+        if (
+          (iou >= this.iou_threshold || dist <= maxDist) &&
+          spatialScore > highestScore
+        ) {
+          highestScore = spatialScore;
           bestMatchId = trackId;
         }
       }
@@ -357,9 +403,7 @@ export class CameraTracker {
 
         // EVALUATE TEMPORAL CONFIRMATION GATE
         const evidence = this.evaluateCandidateEvidence(cand);
-        const isStable = evidence.centerVariance <= 0.08 && evidence.sizeVariance <= 0.06;
-
-        if (evidence.detectionCount >= this.confirmation_hits_required && evidence.confidenceMean >= 0.50 && isStable) {
+        if (this.shouldConfirmCandidate(evidence, now)) {
           // PROMOTE CANDIDATE TO CONFIRMED PERMANENT TRACK
           const confirmedTrackId = this.generateTrackId();
           const confirmedTrack: InternalTrackState = {
@@ -400,9 +444,9 @@ export class CameraTracker {
         last_update_time: now,
         hits: 1,
         missed_frames: 0,
-        head_pose: det.head_pose || { yaw: 0, pitch: 0, direction: 'center', confidence: 0.9 },
-        face_visible: det.face_visible !== undefined ? det.face_visible : true,
-        face_confidence: det.face_confidence ?? 0.88,
+        head_pose: det.head_pose || { yaw: 0, pitch: 0, direction: 'center', confidence: 0 },
+        face_visible: det.face_visible ?? false,
+        face_confidence: det.face_confidence ?? 0,
         phone_detected: det.phone_detected ?? false,
         phone_confidence: det.phone_confidence ?? 0,
         movement_magnitude: 0,
@@ -467,7 +511,36 @@ export class CameraTracker {
   }
 
   /**
-   * Updates an active confirmed track with observation state and Kalman kinematics.
+   * Handles empty camera ticks or camera disconnection.
+   * Increments missed frames, transitions active tracks to 'lost',
+   * and terminates tracks that exceed the timeout.
+   */
+  public handleNoFrame(now: number = Date.now()): CameraTrack[] {
+    for (const [candId] of this.candidate_tracks.entries()) {
+      this.candidate_tracks.delete(candId);
+    }
+
+    for (const [trackId, track] of this.active_tracks.entries()) {
+      track.missed_frames++;
+      track.status = 'lost';
+      track.movement_magnitude = 0;
+      track.is_moving = false;
+      track.last_update_time = now;
+
+      if (track.missed_frames > this.max_missed_frames) {
+        track.status = 'terminated';
+        this.active_tracks.delete(trackId);
+      }
+    }
+
+    return Array.from(this.active_tracks.values())
+      .filter(t => t.status === 'active' || (t.status === 'lost' && t.missed_frames <= 6))
+      .map(t => this.toPublicTrack(t));
+  }
+
+  /**
+   * Updates an active confirmed track with observation state and linear kinematics.
+   * Sitting completely still (displacement -> 0) maintains track continuity!
    */
   private updateConfirmedTrack(trackId: string, det: HumanDetection, now: number): void {
     const track = this.active_tracks.get(trackId)!;
@@ -492,7 +565,7 @@ export class CameraTracker {
       height: track.bbox.height * (1 - posAlpha) + det.bbox.height * posAlpha
     };
 
-    // Running appearance embedding update
+    // Running appearance embedding update if real embedding provided
     if (det.appearance_embedding) {
       if (!track.appearance_embedding) {
         track.appearance_embedding = [...det.appearance_embedding];
@@ -559,6 +632,7 @@ export class CameraTracker {
       current_score: t.current_score,
       cumulative_score: t.cumulative_score,
       max_score: t.max_score,
+      warning_level: getWarningLevel(t.current_score, this.thresholds),
       warning_latched: t.warning_latched,
       warning_cleared_at: t.warning_cleared_at,
       last_seen_timestamp: t.last_seen_timestamp,
@@ -590,7 +664,8 @@ export class CameraTracker {
       track.suspicion_score = cumulative;
       track.current_score = current;
       track.max_score = maxScore ?? Math.max(track.max_score || 0, current, cumulative);
-      if (cumulative >= 40 || current >= 40) {
+      const warnThreshold = this.thresholds?.warning_suspicion_threshold ?? 40;
+      if (cumulative >= warnThreshold || current >= warnThreshold) {
         track.warning_latched = true;
       }
     }

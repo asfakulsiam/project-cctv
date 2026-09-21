@@ -10,7 +10,8 @@ import {
   Download, 
   CheckCircle2, 
   AlertTriangle, 
-  Users
+  Users,
+  ShieldAlert
 } from 'lucide-react';
 import { Card } from '../ui/Card.js';
 import { Badge } from '../ui/Badge.js';
@@ -52,8 +53,11 @@ export function AuditReportsView() {
     URL.revokeObjectURL(url);
   };
 
-  const highRisk = students.filter(s => s.unified_suspicion_score >= highThreshold);
-  const warnings = students.filter(s => s.unified_suspicion_score >= warningThreshold && s.unified_suspicion_score < highThreshold);
+  const highRisk = students.filter(s => (s.cumulative_score ?? s.unified_suspicion_score) >= highThreshold);
+  const warnings = students.filter(s => {
+    const score = s.cumulative_score ?? s.unified_suspicion_score;
+    return score >= warningThreshold && score < highThreshold;
+  });
 
   return (
     <div className="space-y-6">
@@ -70,7 +74,7 @@ export function AuditReportsView() {
             </span>
           </div>
           <h1 className="text-[22px] font-semibold text-[var(--system-text-primary)] tracking-tight mt-1.5">
-            Exam Behavioral Audit & Incident Summary
+            Exam Behavioral Audit &amp; Incident Summary
           </h1>
           <p className="text-[13px] text-[var(--system-text-secondary)] mt-0.5">
             {session ? `${session.title} • ${session.course_code}` : 'Live examination surveillance record'}
@@ -110,22 +114,22 @@ export function AuditReportsView() {
         </Card>
 
         <Card padding="sm">
-          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Elevated Monitoring</span>
+          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Critical Threshold</span>
           <div className="text-[22px] font-bold font-mono-apple text-[var(--system-destructive)] mt-1">
             {highRisk.length}
           </div>
           <span className="text-[11px] text-[var(--system-destructive)] font-mono-apple mt-0.5 block opacity-80">
-            Score &ge; 60 pts
+            Score &ge; {highThreshold} pts
           </span>
         </Card>
 
         <Card padding="sm">
-          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Attention Warnings</span>
+          <span className="text-[11px] text-[var(--system-text-secondary)] uppercase font-medium">Warning Threshold</span>
           <div className="text-[22px] font-bold font-mono-apple text-[var(--system-warning)] mt-1">
             {warnings.length}
           </div>
           <span className="text-[11px] text-[var(--system-warning)] font-mono-apple mt-0.5 block opacity-80">
-            Score 35 - 59 pts
+            Score {warningThreshold} - {highThreshold - 1} pts
           </span>
         </Card>
 
@@ -144,10 +148,10 @@ export function AuditReportsView() {
       <Card padding="none" className="overflow-hidden">
         <div className="p-4 bg-[var(--system-chrome-bg)] backdrop-blur-md border-b border-[var(--system-chrome-border)] flex items-center justify-between">
           <h2 className="text-[13px] font-semibold text-[var(--system-text-primary)]">
-            Candidate Incident Breakdown & Monitoring Status
+            Candidate Incident Breakdown &amp; Dual Scoring Audit
           </h2>
           <span className="text-[11px] text-[var(--system-text-tertiary)] font-mono-apple">
-            Unified Identity Mapping
+            Current / Cumulative / Peak Risk
           </span>
         </div>
 
@@ -159,22 +163,28 @@ export function AuditReportsView() {
                 <th className="px-4 py-3 font-medium">ID Number</th>
                 <th className="px-4 py-3 font-medium">Desk</th>
                 <th className="px-4 py-3 font-medium">Attendance</th>
-                <th className="px-4 py-3 font-medium">Suspicion Index</th>
-                <th className="px-4 py-3 font-medium">Coverage</th>
+                <th className="px-4 py-3 font-medium">Current Risk</th>
+                <th className="px-4 py-3 font-medium">Cumulative Audit</th>
+                <th className="px-4 py-3 font-medium">Peak Score</th>
+                <th className="px-4 py-3 font-medium">Camera Angles</th>
                 <th className="px-4 py-3 font-medium">Assessment</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--system-separator)] text-[var(--system-text-secondary)]">
               {students.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-[var(--system-text-tertiary)]">
+                  <td colSpan={9} className="px-4 py-8 text-center text-[var(--system-text-tertiary)]">
                     No candidates registered or present in this examination session.
                   </td>
                 </tr>
               )}
               {students.map(s => {
-                const isHigh = s.unified_suspicion_score >= highThreshold;
-                const isWarn = s.unified_suspicion_score >= warningThreshold && !isHigh;
+                const currentScore = s.current_score ?? 0;
+                const cumulativeScore = s.cumulative_score ?? s.unified_suspicion_score ?? 0;
+                const peakScore = s.max_score ?? Math.max(currentScore, cumulativeScore);
+
+                const isHigh = cumulativeScore >= highThreshold;
+                const isWarn = cumulativeScore >= warningThreshold && !isHigh;
 
                 return (
                   <tr key={s.id} className="hover:bg-[var(--system-fill-secondary)] transition-colors">
@@ -192,13 +202,21 @@ export function AuditReportsView() {
                         {s.status}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 font-mono-apple font-semibold">
-                      <span className={isHigh ? 'text-[var(--system-destructive)]' : isWarn ? 'text-[var(--system-warning)]' : 'text-[var(--system-text-primary)]'}>
-                        {s.unified_suspicion_score} pts
+                    <td className="px-4 py-3 font-mono-apple">
+                      <span className={currentScore >= warningThreshold ? 'text-[var(--system-warning)] font-bold' : 'text-[var(--system-text-tertiary)]'}>
+                        {currentScore}
                       </span>
                     </td>
+                    <td className="px-4 py-3 font-mono-apple font-semibold">
+                      <span className={isHigh ? 'text-[var(--system-destructive)] font-bold' : isWarn ? 'text-[var(--system-warning)] font-bold' : 'text-[var(--system-text-primary)]'}>
+                        {cumulativeScore} pts
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-mono-apple text-amber-400">
+                      {peakScore}
+                    </td>
                     <td className="px-4 py-3">
-                      {s.active_observations.length > 0 ? (
+                      {s.active_observations && s.active_observations.length > 0 ? (
                         <span className="font-mono-apple text-[11px] text-[var(--system-accent)]">
                           {s.active_observations.map(o => o.camera_id).join(', ')}
                         </span>
@@ -238,7 +256,7 @@ export function AuditReportsView() {
             Recorded Examination Incident Log
           </h2>
           <span className="text-[11px] text-[var(--system-text-tertiary)] font-mono-apple">
-            Audit Stream
+            Audit Stream ({events.length} events)
           </span>
         </div>
 
@@ -248,14 +266,24 @@ export function AuditReportsView() {
               No behavioral incidents or system warnings logged for this session.
             </div>
           )}
-          {events.slice(0, 15).map((e, idx) => (
+          {events.slice(0, 20).map((e, idx) => (
             <div key={`${e.id}-${idx}`} className="p-3 flex items-center justify-between space-x-4">
               <div className="flex items-center space-x-3">
                 <Badge variant={e.severity === 'high' ? 'destructive' : e.severity === 'warning' ? 'warning' : 'secondary'}>
                   {e.event_type}
                 </Badge>
+                {e.global_person_id && (
+                  <span className="font-mono-apple text-[10px] text-indigo-400 bg-indigo-950/80 px-1.5 py-0.5 rounded border border-indigo-800/60">
+                    {e.global_person_id}
+                  </span>
+                )}
                 <span className="text-[var(--system-text-primary)] font-medium">{e.student_name || 'Candidate'}</span>
                 <span className="text-[var(--system-text-secondary)]">{e.description}</span>
+                {e.confidence !== undefined && (
+                  <span className="text-[10px] text-slate-400 font-mono-apple">
+                    ({Math.round(e.confidence * 100)}% conf)
+                  </span>
+                )}
               </div>
               <div className="flex items-center space-x-3 text-[var(--system-text-tertiary)] font-mono-apple text-[11px]">
                 <span>{e.camera_id}</span>

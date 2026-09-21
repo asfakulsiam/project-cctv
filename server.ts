@@ -346,7 +346,17 @@ async function startServer() {
   // Edit / Add Student
   app.put('/api/students/:id', requireAdminAuth, async (req, res) => {
     try {
-      const updated = await db.updateStudent(req.params.id, req.body);
+      // Whitelist only editable profile fields: student_id_number, name, seat_id, notes, classroom_id
+      // CV state (current_score, cumulative_score, max_score, warning_latched, global_person_id) remains owned by CV engine
+      const { student_id_number, name, seat_id, notes, classroom_id } = req.body;
+      const allowedUpdates: any = {};
+      if (student_id_number !== undefined) allowedUpdates.student_id_number = student_id_number;
+      if (name !== undefined) allowedUpdates.name = name;
+      if (seat_id !== undefined) allowedUpdates.seat_id = seat_id;
+      if (notes !== undefined) allowedUpdates.notes = notes;
+      if (classroom_id !== undefined) allowedUpdates.classroom_id = classroom_id;
+
+      const updated = await db.updateStudent(req.params.id, allowedUpdates);
       if (!updated) return res.status(404).json({ error: 'Student not found' });
       if (cvEngine) await cvEngine.reloadConfiguration();
       res.json(updated);

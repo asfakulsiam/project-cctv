@@ -11,66 +11,57 @@
  *    person bounding box (hand/desk zone). Phones NEVER create a person track.
  * 3. Secondary Face & Pose Estimator:
  *    Evaluates head pose and face visibility on the person box. Never creates a person track.
- * 4. Appearance Embedding Extraction (Re-ID):
- *    Extracts normalized appearance feature vectors for BoT-SORT association and cross-camera Re-ID.
+ *    If no face/pose detector is available, confidence is 0 and face_visible is false.
+ * 4. Appearance Encoder (Re-ID):
+ *    Interface for deep visual feature embeddings. Until an actual vision encoder is connected,
+ *    appearance_embedding is strictly undefined — no synthetic positional vectors.
+ * 5. Clean Interface Boundary:
+ *    PersonDetectorInput -> Frame -> Detection -> Temporal Confirmation -> CameraTracker
  */
 
-import { BoundingBox, HeadDirection, HeadPoseData, HumanDetection, SecondaryObjectDetection } from '../../src/types.js';
+import { 
+  BoundingBox, 
+  HeadDirection, 
+  HeadPoseData, 
+  HumanDetection, 
+  SecondaryObjectDetection 
+} from '../../src/types.js';
 
-export interface DetectionResult {
+export interface PersonDetectorInput {
+  frame: unknown;
+  timestamp: number;
+  camera_id: string;
+}
+
+export interface DetectorOutput {
   humans: HumanDetection[];
   phones: SecondaryObjectDetection[];
   timestamp: number;
 }
 
+export interface AppearanceEncoder {
+  encode(
+    frame: unknown,
+    bbox: BoundingBox
+  ): Promise<number[] | undefined>;
+}
+
+export interface IdentityEvidence {
+  appearance_similarity?: number;
+  spatial_similarity?: number;
+  seat_match?: boolean;
+  temporal_similarity?: number;
+}
+
 export class RealPersonDetector {
   private detectionCounter = 1;
+  private phoneDetectionCounter = 1;
   private readonly minConfidence: number;
+  private appearanceEncoder?: AppearanceEncoder;
 
-  constructor(minConfidence = 0.50) {
+  constructor(minConfidence = 0.50, appearanceEncoder?: AppearanceEncoder) {
     this.minConfidence = minConfidence;
-  }
-
-  /**
-   * Generates a normalized Re-ID appearance descriptor vector for a detected bounding box.
-   * Encodes normalized spatial-chromatic signature, aspect ratio, and torso distribution.
-   */
-  public generateAppearanceEmbedding(
-    bbox: BoundingBox, 
-    seedOffset = 0,
-    colorSignature = { r: 0.5, g: 0.5, b: 0.6 }
-  ): number[] {
-    const rawVector: number[] = new Array(16).fill(0);
-    const cx = bbox.x + bbox.width / 2;
-    const cy = bbox.y + bbox.height / 2;
-    const aspect = bbox.height / Math.max(0.01, bbox.width);
-    const area = bbox.width * bbox.height;
-
-    // Feature 0-3: Spatial and geometric features
-    rawVector[0] = cx;
-    rawVector[1] = cy;
-    rawVector[2] = Math.min(1.0, aspect / 3.0);
-    rawVector[3] = Math.min(1.0, area * 4.0);
-
-    // Feature 4-7: Upper body / head region intensity
-    rawVector[4] = colorSignature.r;
-    rawVector[5] = colorSignature.g;
-    rawVector[6] = colorSignature.b;
-    rawVector[7] = (colorSignature.r * 0.299 + colorSignature.g * 0.587 + colorSignature.b * 0.114);
-
-    // Feature 8-15: Harmonic spatial frequency descriptors for texture & clothing patterns
-    for (let i = 0; i < 8; i++) {
-      const freq = (i + 1) * Math.PI;
-      rawVector[8 + i] = Math.sin(freq * (cx + seedOffset * 0.1)) * Math.cos(freq * (cy + seedOffset * 0.05)) * 0.5 + 0.5;
-    }
-
-    // L2 Normalization
-    let sumSq = 0;
-    for (const val of rawVector) {
-      sumSq += val * val;
-    }
-    const norm = Math.sqrt(sumSq) || 1.0;
-    return rawVector.map(v => Math.round((v / norm) * 1000) / 1000);
+    this.appearanceEncoder = appearanceEncoder;
   }
 
   /**
@@ -78,7 +69,7 @@ export class RealPersonDetector {
    * Returns value between 0.0 (completely dissimilar) and 1.0 (identical appearance).
    */
   public static computeCosineSimilarity(emb1?: number[], emb2?: number[]): number {
-    if (!emb1 || !emb2 || emb1.length !== emb2.length) return 0.0;
+    if (!emb1 || !emb2 || emb1.length === 0 || emb1.length !== emb2.length) return 0.0;
     let dot = 0;
     let norm1 = 0;
     let norm2 = 0;
@@ -94,7 +85,7 @@ export class RealPersonDetector {
 
   /**
    * Generates a unique ephemeral Layer 1 Detection ID.
-   * Example: det-000104
+   * Example: det-000001
    */
   public generateDetectionId(): string {
     const num = String(this.detectionCounter++).padStart(6, '0');
@@ -102,7 +93,16 @@ export class RealPersonDetector {
   }
 
   /**
-   * Secondary Object Detector: Cell Phone Detection.
+   * Generates a unique ephemeral secondary object ID.
+   * Example: phone-det-000001
+   */
+  public generatePhoneDetectionId(): string {
+    const num = String(this.phoneDetectionCounter++).padStart(6, '0');
+    return `phone-det-${num}`;
+  }
+
+  /**
+   * Secondary Object Detector: Cell Phone Association.
    * Associates detected phone with the person bounding box that encompasses it.
    */
   public associatePhoneWithPerson(
@@ -130,7 +130,40 @@ export class RealPersonDetector {
   }
 
   /**
-   * Performs real person detection, secondary phone detection, pose estimation, and Re-ID embedding.
+   * Primary frame-processing boundary for person and secondary object detection.
+   */
+  public async detectFrame(
+    input: PersonDetectorInput,
+    rawDetections: Array<{
+      class_name: string;
+      confidence: number;
+      bbox: BoundingBox;
+      head_pose?: HeadPoseData;
+      face_visible?: boolean;
+      face_confidence?: number;
+      seat_id?: string;
+      associated_student_id?: string;
+    }> = [],
+    rawPhones: SecondaryObjectDetection[] = []
+  ): Promise<DetectorOutput> {
+    const humans = this.processDetections(rawDetections, rawPhones);
+    return {
+      humans,
+      phones: rawPhones,
+      timestamp: input.timestamp
+    };
+  }
+
+  /**
+   * Performs real person detection filtering, anatomical validation,
+   * secondary phone association, and secondary head pose / face checks.
+   *
+   * PRESERVES:
+   * - seat_id and associated_student_id
+   * DOES NOT:
+   * - invent biometric confidence
+   * - generate fake appearance embeddings
+   * - create detections from seat rectangles
    */
   public processDetections(
     rawDetections: Array<{
@@ -139,7 +172,10 @@ export class RealPersonDetector {
       bbox: BoundingBox;
       head_pose?: HeadPoseData;
       face_visible?: boolean;
-      color_seed?: number;
+      face_confidence?: number;
+      seat_id?: string;
+      associated_student_id?: string;
+      appearance_embedding?: number[];
     }>,
     rawPhones: SecondaryObjectDetection[] = []
   ): HumanDetection[] {
@@ -147,7 +183,7 @@ export class RealPersonDetector {
 
     for (const raw of rawDetections) {
       // 1. Class Gate: Must be class 'person'
-      if (raw.class_name.toLowerCase() !== 'person') {
+      if (!raw.class_name || raw.class_name.toLowerCase() !== 'person') {
         continue;
       }
 
@@ -163,11 +199,6 @@ export class RealPersonDetector {
       if (aspect < 1.15 || aspect > 4.30) continue; // Reject flat or overly elongated anomalies
 
       const detId = this.generateDetectionId();
-      const appearance_embedding = this.generateAppearanceEmbedding(
-        bbox, 
-        raw.color_seed || 1,
-        { r: 0.4 + (bbox.x * 0.3), g: 0.4 + (bbox.y * 0.3), b: 0.55 }
-      );
 
       // 4. Secondary Cell Phone Association
       let phoneDetected = false;
@@ -179,32 +210,40 @@ export class RealPersonDetector {
           phoneDetected = true;
           phoneConfidence = phone.confidence;
           phoneBbox = { ...phone.bbox };
+          phone.associated_track_id = detId;
           break;
         }
       }
 
-      // 5. Head Pose & Face Visibility (Secondary evidence)
+      // 5. Head Pose: do not invent confidence if none provided
       const headPose: HeadPoseData = raw.head_pose || {
         yaw: 0,
         pitch: 0,
         direction: 'center' as HeadDirection,
-        confidence: 0.90
+        confidence: 0
       };
 
-      const faceVisible = raw.face_visible !== undefined ? raw.face_visible : true;
+      // 6. Face Visibility & Confidence: do not invent biometric confidence
+      const faceVisible = raw.face_visible ?? false;
+      const faceConfidence = raw.face_confidence ?? 0;
+
+      // 7. Appearance Embedding: only use real embedding if provided by CV pipeline
+      const appearanceEmbedding = raw.appearance_embedding;
 
       confirmedHumans.push({
         detection_id: detId,
         class_name: 'person',
         confidence: raw.confidence,
         bbox: { ...bbox },
-        appearance_embedding,
+        appearance_embedding: appearanceEmbedding,
         head_pose: headPose,
         face_visible: faceVisible,
-        face_confidence: faceVisible ? 0.92 : 0.20,
+        face_confidence: faceConfidence,
         phone_detected: phoneDetected,
         phone_confidence: phoneConfidence,
-        phone_bbox: phoneBbox
+        phone_bbox: phoneBbox,
+        seat_id: raw.seat_id,
+        associated_student_id: raw.associated_student_id
       });
     }
 

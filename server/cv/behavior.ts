@@ -4,10 +4,19 @@
  * 
  * CORE ARCHITECTURAL INVARIANTS:
  * 1. Suspicion is represented strictly as a "Suspicion Score" or "Monitoring Score" (0 - 100),
- *    NEVER as a definitive claim that a student is cheating.
- * 2. A single movement or single frame MUST NOT automatically trigger high suspicion.
- * 3. Uses temporal rules: persistence duration, repeated movement thresholds, confidence gates,
- *    and event cooldowns to prevent event spamming.
+ *    NEVER as a definitive accusation of academic dishonesty.
+ * 2. Missing/Unknown Secondary Evidence:
+ *    If face detector or pose estimator is not active (confidence <= 0.35),
+ *    distinguish FACE_UNKNOWN from FACE_NOT_VISIBLE. Never penalize a student
+ *    simply because secondary biometric hardware/model is absent.
+ * 3. Event Deduplication & Cooldowns:
+ *    Events are not emitted every frame; score contribution reflects discrete behavioral anomalies.
+ * 4. Dual Suspicion Scores + Max Score:
+ *    - current_score: Immediate active anomaly state (resettable, decays to 0)
+ *    - cumulative_score: Monotonically non-decreasing audit trail of accumulated behavioral evidence
+ *    - max_score: Peak instantaneous current_score reached
+ * 5. Explainable Audit Trail:
+ *    All emitted events include evidence (confidence, duration, bounding box, score contribution).
  */
 
 import { 
@@ -119,26 +128,56 @@ export class BehaviorAnalyzer {
 
     // -------------------------------------------------------------
     // 1. Head Pose & Gaze Direction Analysis
+    // ONLY analyze if pose estimator provided valid confidence (> 0.35)
     // -------------------------------------------------------------
-    const currentDir = track.head_pose.direction;
-    if (currentDir !== ctx.current_direction) {
-      // Direction changed
-      if (currentDir === 'left' || currentDir === 'right') {
-        ctx.looking_turn_count++;
-        ctx.last_turn_timestamp = now;
-      }
-      ctx.current_direction = currentDir;
-      ctx.direction_started_at = now;
-      ctx.looking_alert_fired = false;
-    } else if (currentDir === 'left' || currentDir === 'right') {
-      const sustainedDurationSec = (now - ctx.direction_started_at) / 1000;
-      if (sustainedDurationSec >= this.thresholds.looking_duration_sec && !ctx.looking_alert_fired) {
-        ctx.looking_alert_fired = true;
-        ctx.active_penalties.looking_turn = this.weights.repeated_looking;
+    const hasValidPoseEvidence = track.head_pose && track.head_pose.confidence > 0.35;
+    if (hasValidPoseEvidence) {
+      const currentDir = track.head_pose.direction;
+      if (currentDir !== ctx.current_direction) {
+        if (currentDir === 'left' || currentDir === 'right') {
+          ctx.looking_turn_count++;
+          ctx.last_turn_timestamp = now;
+        }
+        ctx.current_direction = currentDir;
+        ctx.direction_started_at = now;
+        ctx.looking_alert_fired = false;
+      } else if (currentDir === 'left' || currentDir === 'right') {
+        const sustainedDurationSec = (now - ctx.direction_started_at) / 1000;
+        if (sustainedDurationSec >= this.thresholds.looking_duration_sec && !ctx.looking_alert_fired) {
+          ctx.looking_alert_fired = true;
+          ctx.active_penalties.looking_turn = this.weights.repeated_looking;
 
-        const eventType: BehaviorEventType = currentDir === 'left' ? 'LOOKING_LEFT' : 'LOOKING_RIGHT';
+          const eventType: BehaviorEventType = currentDir === 'left' ? 'LOOKING_LEFT' : 'LOOKING_RIGHT';
+          triggeredEvents.push(this.createEvent({
+            event_type: eventType,
+            camera_id: track.camera_id,
+            track_id: track.track_id,
+            student_id: track.associated_student_id,
+            student_name: studentInfo?.name,
+            student_id_number: studentInfo?.student_id_number,
+            confidence: track.head_pose.confidence,
+            score_contribution: this.weights.repeated_looking,
+            severity: 'warning',
+            description: `Sustained gaze direction to ${currentDir} (${sustainedDurationSec.toFixed(1)}s)`,
+            duration_ms: Math.round(sustainedDurationSec * 1000),
+            track
+          }, now));
+        }
+      } else {
+        // Facing center or downwards (normal exam writing)
+        ctx.active_penalties.looking_turn = Math.max(0, ctx.active_penalties.looking_turn - 1);
+      }
+
+      // Repeated glancing heuristic: 4+ head turns within 35 seconds
+      const glanceWindowSec = (now - ctx.last_turn_timestamp) / 1000;
+      if (glanceWindowSec > 35) {
+        ctx.looking_turn_count = Math.max(0, ctx.looking_turn_count - 1);
+      }
+      if (ctx.looking_turn_count >= 4 && (now - ctx.last_repeated_looking_event_time) > 25000) {
+        ctx.last_repeated_looking_event_time = now;
+        ctx.looking_turn_count = 1; // Reset counter after firing
         triggeredEvents.push(this.createEvent({
-          event_type: eventType,
+          event_type: 'REPEATED_LOOKING',
           camera_id: track.camera_id,
           track_id: track.track_id,
           student_id: track.associated_student_id,
@@ -147,41 +186,22 @@ export class BehaviorAnalyzer {
           confidence: track.head_pose.confidence,
           score_contribution: this.weights.repeated_looking,
           severity: 'warning',
-          description: `Sustained gaze direction to ${currentDir} (${sustainedDurationSec.toFixed(1)}s)`
+          description: 'Frequent intermittent head glancing detected across adjacent desks',
+          duration_ms: Math.round(glanceWindowSec * 1000),
+          track
         }, now));
       }
     } else {
-      // Facing center or downwards (normal exam writing)
-      // Gradually decay head turn penalty
+      // Pose evidence unknown - do not penalize
       ctx.active_penalties.looking_turn = Math.max(0, ctx.active_penalties.looking_turn - 1);
-    }
-
-    // Repeated glancing heuristic: 4+ head turns within 30 seconds
-    const glanceWindowSec = (now - ctx.last_turn_timestamp) / 1000;
-    if (glanceWindowSec > 35) {
-      ctx.looking_turn_count = Math.max(0, ctx.looking_turn_count - 1);
-    }
-    if (ctx.looking_turn_count >= 4 && (now - ctx.last_repeated_looking_event_time) > 25000) {
-      ctx.last_repeated_looking_event_time = now;
-      ctx.looking_turn_count = 1; // Reset counter after firing
-      triggeredEvents.push(this.createEvent({
-        event_type: 'REPEATED_LOOKING',
-        camera_id: track.camera_id,
-        track_id: track.track_id,
-        student_id: track.associated_student_id,
-        student_name: studentInfo?.name,
-        student_id_number: studentInfo?.student_id_number,
-        confidence: 0.85,
-        score_contribution: this.weights.repeated_looking,
-        severity: 'warning',
-        description: 'Frequent intermittent head glancing detected across adjacent desks'
-      }, now));
     }
 
     // -------------------------------------------------------------
     // 2. Face Visibility & Occlusion Analysis
+    // MUST have active face detector confidence (> 0.35) before penalizing!
     // -------------------------------------------------------------
-    if (!track.face_visible) {
+    const hasValidFaceEvidence = track.face_confidence > 0.35;
+    if (hasValidFaceEvidence && !track.face_visible) {
       if (!ctx.face_missing_since) {
         ctx.face_missing_since = now;
       }
@@ -196,10 +216,12 @@ export class BehaviorAnalyzer {
           student_id: track.associated_student_id,
           student_name: studentInfo?.name,
           student_id_number: studentInfo?.student_id_number,
-          confidence: 0.82,
+          confidence: track.face_confidence,
           score_contribution: this.weights.face_hidden,
           severity: 'warning',
-          description: `Facial features occluded or obscured from camera view for ${obscuredDurationSec.toFixed(1)}s`
+          description: `Facial features occluded or obscured from camera view for ${obscuredDurationSec.toFixed(1)}s`,
+          duration_ms: Math.round(obscuredDurationSec * 1000),
+          track
         }, now));
       }
     } else {
@@ -231,7 +253,9 @@ export class BehaviorAnalyzer {
           confidence: track.phone_confidence,
           score_contribution: this.weights.phone_detected,
           severity: 'high',
-          description: `Mobile communication device detected with ${(track.phone_confidence * 100).toFixed(0)}% confidence`
+          description: `Mobile communication device detected with ${(track.phone_confidence * 100).toFixed(0)}% confidence`,
+          duration_ms: Math.round(phoneDurationSec * 1000),
+          track
         }, now));
       }
     } else {
@@ -243,10 +267,9 @@ export class BehaviorAnalyzer {
     // 4. Seat Boundary & Leaving Seat Analysis
     // -------------------------------------------------------------
     if (seatRegion) {
-      // Bottom-center of person box represents seated desk location
       const footX = track.bbox.x + track.bbox.width / 2;
       const footY = track.bbox.y + track.bbox.height * 0.88;
-      const margin = 0.04; // Standardized consistent margin
+      const margin = 0.04;
       const insideSeat = 
         footX >= (seatRegion.x - margin) &&
         footX <= (seatRegion.x + seatRegion.width + margin) &&
@@ -262,6 +285,7 @@ export class BehaviorAnalyzer {
           ctx.left_seat_alert_fired = true;
           ctx.is_out_of_seat = true;
           ctx.active_penalties.out_of_seat = this.weights.leaving_seat;
+          const leftConf = Math.min(1.0, 0.75 + Math.min(0.20, (leftDurationSec - this.thresholds.leave_seat_grace_sec) * 0.05));
           triggeredEvents.push(this.createEvent({
             event_type: 'LEFT_SEAT',
             camera_id: track.camera_id,
@@ -269,15 +293,17 @@ export class BehaviorAnalyzer {
             student_id: track.associated_student_id,
             student_name: studentInfo?.name,
             student_id_number: studentInfo?.student_id_number,
-            confidence: 0.90,
+            confidence: leftConf,
             score_contribution: this.weights.leaving_seat,
             severity: 'high',
-            description: `Student departed configured workstation desk for ${leftDurationSec.toFixed(1)}s`
+            description: `Student departed configured workstation desk for ${leftDurationSec.toFixed(1)}s`,
+            duration_ms: Math.round(leftDurationSec * 1000),
+            track
           }, now));
         }
       } else {
         if (ctx.is_out_of_seat) {
-          // Returned to seat!
+          // Returned to seat
           ctx.is_out_of_seat = false;
           ctx.left_seat_alert_fired = false;
           ctx.left_seat_since = null;
@@ -289,10 +315,11 @@ export class BehaviorAnalyzer {
             student_id: track.associated_student_id,
             student_name: studentInfo?.name,
             student_id_number: studentInfo?.student_id_number,
-            confidence: 0.92,
+            confidence: 0.90,
             score_contribution: -15,
             severity: 'info',
-            description: 'Student returned to assigned workstation'
+            description: 'Student returned to assigned workstation',
+            track
           }, now));
         } else {
           ctx.left_seat_since = null;
@@ -307,6 +334,7 @@ export class BehaviorAnalyzer {
       if ((now - ctx.last_abnormal_movement_time) > 15000) {
         ctx.last_abnormal_movement_time = now;
         ctx.active_penalties.abnormal_motion = this.weights.abnormal_movement;
+        const moveConf = Math.min(0.95, Math.max(0.60, track.movement_magnitude / 100));
         triggeredEvents.push(this.createEvent({
           event_type: 'ABNORMAL_MOVEMENT',
           camera_id: track.camera_id,
@@ -314,10 +342,11 @@ export class BehaviorAnalyzer {
           student_id: track.associated_student_id,
           student_name: studentInfo?.name,
           student_id_number: studentInfo?.student_id_number,
-          confidence: 0.80,
+          confidence: moveConf,
           score_contribution: this.weights.abnormal_movement,
           severity: 'warning',
-          description: `Rapid agitation/movement detected (magnitude ${track.movement_magnitude})`
+          description: `Rapid agitation/movement detected (magnitude ${track.movement_magnitude})`,
+          track
         }, now));
       }
     } else {
@@ -349,6 +378,12 @@ export class BehaviorAnalyzer {
     const max_score = Math.max(track.max_score || 0, current_score, cumulative_score);
     const suspicion_score = cumulative_score;
 
+    // Attach dual scores to newly triggered events for complete audit reconstructibility
+    for (const evt of triggeredEvents) {
+      evt.current_score = current_score;
+      evt.cumulative_score = cumulative_score;
+    }
+
     return { events: triggeredEvents, suspicion_score, current_score, cumulative_score, max_score };
   }
 
@@ -364,6 +399,8 @@ export class BehaviorAnalyzer {
     score_contribution: number;
     severity: EventSeverity;
     description: string;
+    duration_ms?: number;
+    track?: CameraTrack;
   }, now: number): BehaviorEvent {
     return {
       id: `evt-${now}-${Math.floor(Math.random() * 10000)}`,
@@ -374,17 +411,22 @@ export class BehaviorAnalyzer {
       student_name: params.student_name,
       camera_id: params.camera_id,
       track_id: params.track_id,
-      global_person_id: params.global_person_id,
+      global_person_id: params.global_person_id || params.track?.global_person_id,
       timestamp: now,
       confidence: Math.round(params.confidence * 100) / 100,
       score_contribution: params.score_contribution,
       severity: params.severity,
-      description: params.description
+      description: params.description,
+      evidence: {
+        bbox: params.track?.bbox ? { ...params.track.bbox } : undefined,
+        detector_confidence: params.confidence,
+        duration_ms: params.duration_ms
+      }
     };
   }
 
   /**
-   * Admin action: clear active penalties for a track
+   * Admin action: clear active penalties for a track (resets immediate risk to 0)
    */
   public clearTrackWarning(track_id: string): void {
     const ctx = this.track_contexts.get(track_id);

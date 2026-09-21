@@ -4,21 +4,24 @@
  * 
  * CORE ARCHITECTURAL INVARIANTS:
  * 1. Three-Layer Identity Architecture:
- *    - Layer 1: Ephemeral per-frame Detection ID (e.g., det-000104)
- *    - Layer 2: Camera-scoped Track ID (e.g., CAM1-T001, CAM2-T001)
+ *    - Layer 1: Ephemeral per-frame Detection ID (e.g., det-000001)
+ *    - Layer 2: Camera-scoped Track ID (e.g., CAM1-T001, CAM2-T004)
  *    - Layer 3: Persistent Global Person ID (e.g., P-001) linked to formal StudentRecord (e.g., STU-2026-0812)
- * 2. Visual Re-ID Cross-Camera Identity Association:
- *    Cross-camera identity is determined by appearance feature embeddings (cosine similarity)
- *    fused with spatial geometry and seat priors.
+ * 2. Visual Re-ID + Geometric Fusion:
+ *    Combines appearance cosine similarity (when embeddings are present) with seat & student priors.
  * 3. Sole Authority for Global Person IDs:
- *    GlobalIdentityManager is the ONLY component authorized to allocate P-001, P-002, etc.
- * 4. Dual Suspicion Scores + Max Score:
+ *    UnifiedStudentManager is the ONLY component authorized to allocate P-001, P-002, etc.
+ * 4. Single-Camera Uniqueness Constraint:
+ *    The same Global Person ID can NEVER be assigned to two different active tracks in the same camera simultaneously.
+ * 5. Temporal Seat Confirmation:
+ *    Requires stable spatial observation across consecutive frames before latching seat assignment.
+ * 6. Dual Suspicion Scores + Max Score:
  *    - current_score: Immediate risk window (resettable)
- *    - cumulative_score: Monotonically non-decreasing audit trail
+ *    - cumulative_score: Monotonically non-decreasing audit score
  *    - max_score: Peak instantaneous risk level
- * 5. Observation Quality Priority:
+ * 7. Observation Quality Priority:
  *    Dynamically evaluates clarity (resolution, face visibility, scale) to mark is_best_view: true.
- * 6. Centralized Thresholds:
+ * 8. Centralized Thresholds & Warning Level:
  *    Uses configured warning_suspicion_threshold and high_suspicion_threshold from settings.
  */
 
@@ -28,7 +31,9 @@ import {
   GlobalPerson,
   SeatRecord, 
   StudentObservation, 
-  StudentRecord 
+  StudentRecord,
+  getWarningLevel,
+  MonitoringThresholds
 } from '../../src/types.js';
 import { RealPersonDetector } from './personDetector.js';
 
@@ -36,6 +41,14 @@ export interface GlobalIdentityThresholds {
   warning_suspicion_threshold: number;
   high_suspicion_threshold: number;
   reid_similarity_threshold: number;
+}
+
+export interface GlobalIdentityEvidence {
+  appearanceSimilarity: number;
+  seatMatch: boolean;
+  studentMatch: boolean;
+  temporalContinuity: number;
+  cameraCompatibility: number;
 }
 
 export class UnifiedStudentManager {
@@ -48,6 +61,12 @@ export class UnifiedStudentManager {
     high_suspicion_threshold: 65,
     reid_similarity_threshold: 0.70
   };
+
+  // Seat stability tracker: track_id -> { seat_id, count }
+  private trackSeatStability: Map<string, { seat_id: string; count: number }> = new Map();
+
+  // Cross-camera event deduplication cache: "gp_id:event_type" -> timestamp
+  private recentEventsCache: Map<string, number> = new Map();
 
   constructor(
     initialStudents: StudentRecord[], 
@@ -64,6 +83,7 @@ export class UnifiedStudentManager {
         current_score: 0,
         cumulative_score: 0,
         max_score: 0,
+        warning_level: 'normal',
         active_observations: []
       });
     }
@@ -77,7 +97,27 @@ export class UnifiedStudentManager {
     this.seats = seats;
   }
 
+  /**
+   * Update student roster. Ensures removed students are cleaned up and associations severed.
+   */
   public updateStudentList(students: StudentRecord[]): void {
+    const newStudentIds = new Set(students.map(s => s.id));
+
+    // Remove deleted students
+    for (const [id] of this.students.entries()) {
+      if (!newStudentIds.has(id)) {
+        this.students.delete(id);
+        // Sever from global persons
+        for (const gp of this.global_persons.values()) {
+          if (gp.associated_student_id === id) {
+            gp.associated_student_id = undefined;
+            gp.associated_student_name = undefined;
+          }
+        }
+      }
+    }
+
+    // Update or insert students
     for (const s of students) {
       const existing = this.students.get(s.id);
       if (existing) {
@@ -95,6 +135,7 @@ export class UnifiedStudentManager {
           current_score: 0,
           cumulative_score: 0,
           max_score: 0,
+          warning_level: 'normal',
           active_observations: []
         });
       }
@@ -115,7 +156,7 @@ export class UnifiedStudentManager {
    * and bounding box area (nearer/larger subjects give higher observation clarity).
    */
   private computeObservationQuality(track: CameraTrack, camera: CameraConfig): number {
-    const cameraBase = camera.quality_score * 0.4;
+    const cameraBase = (camera.quality_score || 80) * 0.4;
     const faceFactor = track.face_visible ? (track.face_confidence * 30) : 5;
     const boxArea = track.bbox.width * track.bbox.height;
     const scaleFactor = Math.min(30, Math.max(5, (boxArea / 0.15) * 20));
@@ -130,7 +171,6 @@ export class UnifiedStudentManager {
   private findMatchingSeat(track: CameraTrack, cameraId: string): SeatRecord | null {
     if (this.seats.length === 0) return null;
 
-    // Bottom-center of person box represents seated desk location
     const footX = track.bbox.x + track.bbox.width / 2;
     const footY = track.bbox.y + track.bbox.height * 0.88;
     const margin = 0.04;
@@ -154,18 +194,43 @@ export class UnifiedStudentManager {
   }
 
   /**
+   * Temporal seat confirmation: require stable observation count before latching seat_id.
+   */
+  private confirmSeatTemporal(trackId: string, candidateSeatId: string | null): string | null {
+    if (!candidateSeatId) {
+      this.trackSeatStability.delete(trackId);
+      return null;
+    }
+
+    const current = this.trackSeatStability.get(trackId);
+    if (current && current.seat_id === candidateSeatId) {
+      current.count++;
+      if (current.count >= 2) {
+        return candidateSeatId;
+      }
+      return null;
+    } else {
+      this.trackSeatStability.set(trackId, { seat_id: candidateSeatId, count: 1 });
+      return null;
+    }
+  }
+
+  /**
    * Match a camera track to an existing Global Person using Re-ID appearance embedding,
-   * corroborated by seat/student priors.
+   * corroborated by seat/student priors, respecting camera exclusivity.
    */
   private matchGlobalPerson(
     track: CameraTrack,
     matchedStudentId: string | null,
-    matchedSeatId: string | null
+    matchedSeatId: string | null,
+    excludedGpIds: Set<string>
   ): string | null {
     let bestGpId: string | null = null;
     let highestMatchScore = 0;
 
     for (const gp of this.global_persons.values()) {
+      if (excludedGpIds.has(gp.id)) continue;
+
       let visualSimilarity = 0;
       if (track.appearance_embedding && gp.appearance_embedding) {
         visualSimilarity = RealPersonDetector.computeCosineSimilarity(
@@ -180,6 +245,14 @@ export class UnifiedStudentManager {
         priorScore = 1.0;
       } else if (matchedSeatId && gp.seat_id === matchedSeatId) {
         priorScore = 0.85;
+      }
+
+      // Strong negative prior: If both have distinct seat IDs or distinct students, do not merge!
+      if (matchedSeatId && gp.seat_id && matchedSeatId !== gp.seat_id) {
+        continue;
+      }
+      if (matchedStudentId && gp.associated_student_id && matchedStudentId !== gp.associated_student_id) {
+        continue;
       }
 
       // Fused cross-camera match score: Visual Re-ID + Spatial Prior
@@ -197,6 +270,27 @@ export class UnifiedStudentManager {
     }
 
     return bestGpId;
+  }
+
+  /**
+   * Check cross-camera event deduplication cache.
+   * Returns true if event is allowed (not a duplicate within 3.5 seconds).
+   */
+  public shouldEmitCrossCameraEvent(globalPersonId: string, eventType: string, timestamp: number): boolean {
+    const key = `${globalPersonId}:${eventType}`;
+    const lastEmitted = this.recentEventsCache.get(key);
+    if (lastEmitted && (timestamp - lastEmitted) < 3500) {
+      return false; // Deduplicated
+    }
+    this.recentEventsCache.set(key, timestamp);
+
+    // Prune stale cache entries
+    if (this.recentEventsCache.size > 200) {
+      for (const [k, t] of this.recentEventsCache.entries()) {
+        if (timestamp - t > 10000) this.recentEventsCache.delete(k);
+      }
+    }
+    return true;
   }
 
   /**
@@ -229,6 +323,9 @@ export class UnifiedStudentManager {
       const camera = cameraMap.get(cameraId);
       if (!camera || camera.status !== 'online') continue;
 
+      // Track Global Person IDs already assigned in this specific camera to enforce Single-Camera Uniqueness
+      const cameraAssignedGPs = new Set<string>();
+
       for (const track of tracks) {
         let matchedStudentId: string | null = null;
         let matchedSeatId: string | null = null;
@@ -238,23 +335,24 @@ export class UnifiedStudentManager {
           matchedStudentId = track.associated_student_id;
         }
 
-        // Association Priority B: Seat geometry mapping
-        if (!matchedStudentId) {
-          const matchedSeat = this.findMatchingSeat(track, cameraId);
-          if (matchedSeat) {
-            matchedSeatId = matchedSeat.id;
-            track.seat_id = matchedSeat.id;
-            if (matchedSeat.assigned_student_id && this.students.has(matchedSeat.assigned_student_id)) {
-              matchedStudentId = matchedSeat.assigned_student_id;
-              track.associated_student_id = matchedStudentId;
-            }
+        // Association Priority B: Seat geometry mapping with temporal confirmation
+        const rawSeat = this.findMatchingSeat(track, cameraId);
+        const confirmedSeatId = this.confirmSeatTemporal(track.track_id, rawSeat?.id || null);
+        if (confirmedSeatId) {
+          matchedSeatId = confirmedSeatId;
+          track.seat_id = confirmedSeatId;
+          const assignedStudentId = rawSeat?.assigned_student_id;
+          if (assignedStudentId && this.students.has(assignedStudentId)) {
+            matchedStudentId = assignedStudentId;
+            track.associated_student_id = matchedStudentId;
           }
         }
 
         // Layer 3: Visual Re-ID Global Person Matching
         let globalPersonId = track.global_person_id;
-        if (!globalPersonId) {
-          globalPersonId = this.matchGlobalPerson(track, matchedStudentId, matchedSeatId) || undefined;
+        if (!globalPersonId || cameraAssignedGPs.has(globalPersonId)) {
+          // Find match respecting single-camera uniqueness
+          globalPersonId = this.matchGlobalPerson(track, matchedStudentId, matchedSeatId, cameraAssignedGPs) || undefined;
         }
 
         // Allocate a new Global Person ID if no existing person matched
@@ -288,9 +386,18 @@ export class UnifiedStudentManager {
               );
             }
           }
+          if (gp && matchedSeatId && !gp.seat_id) {
+            gp.seat_id = matchedSeatId;
+          }
+          if (gp && matchedStudentId && !gp.associated_student_id) {
+            gp.associated_student_id = matchedStudentId;
+            const studentRec = this.students.get(matchedStudentId);
+            if (studentRec) gp.associated_student_name = studentRec.name;
+          }
         }
 
-        // Set authoritative global person ID on track
+        // Enforce uniqueness per camera
+        cameraAssignedGPs.add(globalPersonId);
         track.global_person_id = globalPersonId;
         const quality = this.computeObservationQuality(track, camera);
 
@@ -376,10 +483,21 @@ export class UnifiedStudentManager {
     }
 
     // Step 3: Determine Best View & Unified Scores for each Student
+    const thresholdsConfig: MonitoringThresholds = {
+      looking_duration_sec: 3.5,
+      face_hidden_duration_sec: 4.0,
+      leave_seat_grace_sec: 5.0,
+      phone_confidence_min: 0.65,
+      high_suspicion_threshold: this.thresholds.high_suspicion_threshold,
+      warning_suspicion_threshold: this.thresholds.warning_suspicion_threshold,
+      movement_threshold_px: 25
+    };
+
     for (const student of this.students.values()) {
       if (student.active_observations.length === 0) {
         student.status = 'absent';
         student.current_score = 0;
+        student.warning_level = 'normal';
         continue;
       }
 
@@ -428,9 +546,11 @@ export class UnifiedStudentManager {
         student.unified_suspicion_score = student.cumulative_score;
       }
 
-      // Status flagging
-      if (student.unified_suspicion_score >= this.thresholds.high_suspicion_threshold || 
-          (student.current_score && student.current_score >= this.thresholds.high_suspicion_threshold)) {
+      // Status flagging & Warning Level
+      const effectiveScore = Math.max(student.current_score || 0, student.unified_suspicion_score || 0);
+      student.warning_level = getWarningLevel(effectiveScore, thresholdsConfig);
+
+      if (effectiveScore >= this.thresholds.high_suspicion_threshold) {
         student.status = 'flagged';
       }
     }
@@ -446,6 +566,15 @@ export class UnifiedStudentManager {
     if (!student) return false;
     // Proctor clearance: Reset immediate current risk, preserve cumulative score and max score
     student.current_score = 0;
+    student.warning_level = getWarningLevel(student.unified_suspicion_score, {
+      looking_duration_sec: 3.5,
+      face_hidden_duration_sec: 4.0,
+      leave_seat_grace_sec: 5.0,
+      phone_confidence_min: 0.65,
+      high_suspicion_threshold: this.thresholds.high_suspicion_threshold,
+      warning_suspicion_threshold: this.thresholds.warning_suspicion_threshold,
+      movement_threshold_px: 25
+    });
     if (student.unified_suspicion_score < this.thresholds.high_suspicion_threshold) {
       student.status = 'present';
     }
@@ -478,5 +607,20 @@ export class UnifiedStudentManager {
 
   public getStudents(): StudentRecord[] {
     return this.getAllStudents();
+  }
+
+  public reset(): void {
+    this.global_persons.clear();
+    this.trackSeatStability.clear();
+    this.recentEventsCache.clear();
+    this.next_person_number = 1;
+    for (const s of this.students.values()) {
+      s.current_score = 0;
+      s.cumulative_score = 0;
+      s.max_score = 0;
+      s.warning_level = 'normal';
+      s.active_observations = [];
+      s.status = 'present';
+    }
   }
 }

@@ -35,9 +35,9 @@ export function LiveStatisticsBar() {
       progress: (stats.online_cameras / Math.max(1, stats.total_cameras)) * 100
     },
     {
-      label: 'Detected Tracks',
+      label: 'Detected Persons',
       value: stats.detected_persons,
-      subvalue: 'active visual subjects',
+      subvalue: stats.active_tracks !== undefined ? `${stats.active_tracks} camera tracks` : 'global subjects',
       icon: Users,
       accentColor: 'text-[var(--system-info)]'
     },
@@ -65,8 +65,8 @@ export function LiveStatisticsBar() {
     },
     {
       label: 'CV Engine Core',
-      value: `${stats.processing_fps || 24} FPS`,
-      subvalue: `${(1000 / (stats.processing_fps || 24)).toFixed(0)}ms cycle`,
+      value: stats.processing_fps > 0 ? `${stats.processing_fps.toFixed(1)} FPS` : '0 FPS',
+      subvalue: stats.processing_fps > 0 ? `${(1000 / stats.processing_fps).toFixed(0)}ms cycle` : 'idle',
       icon: Cpu,
       accentColor: 'text-[var(--system-accent)]'
     }
