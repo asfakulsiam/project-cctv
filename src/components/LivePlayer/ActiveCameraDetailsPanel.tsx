@@ -131,15 +131,22 @@ export function ActiveCameraDetailsPanel({ onInspectStudent }: ActiveCameraDetai
                     </div>
                   </div>
 
-                  {matchedStudent && onInspectStudent && (
-                    <button
-                      onClick={() => onInspectStudent(matchedStudent.id)}
-                      className="px-2 py-1 rounded-[6px] bg-[var(--system-accent-subtle)] text-[var(--system-accent)] text-[11px] font-medium hover:opacity-80 transition-opacity flex items-center space-x-0.5 cursor-pointer"
-                    >
-                      <span>Inspect</span>
-                      <ChevronRight className="w-3 h-3" />
-                    </button>
-                  )}
+                  <div className="flex items-center space-x-1.5">
+                    {t.suspicion_score >= 35 && (
+                      <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                        WARN
+                      </span>
+                    )}
+                    {matchedStudent && onInspectStudent && (
+                      <button
+                        onClick={() => onInspectStudent(matchedStudent.id)}
+                        className="px-2 py-1 rounded-[6px] bg-[var(--system-accent-subtle)] text-[var(--system-accent)] text-[11px] font-medium hover:opacity-80 transition-opacity flex items-center space-x-0.5 cursor-pointer"
+                      >
+                        <span>Inspect</span>
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

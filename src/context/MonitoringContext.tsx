@@ -36,6 +36,8 @@ interface MonitoringContextType {
   setFocusedCameraId: (id: string) => void;
   setSelectedStudent: (student: StudentRecord | null) => void;
   setSelectedTrack: (track: CameraTrack | null) => void;
+  clearStudentWarning: (studentId: string) => Promise<boolean>;
+  clearTrackWarning: (trackId: string) => Promise<boolean>;
   refreshData: () => Promise<void>;
   triggerDemoAction: (action: string, studentId?: string, durationSec?: number) => Promise<boolean>;
   toggleCamera: (cameraId: string) => Promise<void>;
@@ -388,6 +390,45 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
     }
   };
 
+  // Clear Student Warning / Reset Suspicion
+  const clearStudentWarning = useCallback(async (studentId: string): Promise<boolean> => {
+    setStudents(prev => prev.map(s => s.id === studentId ? { ...s, unified_suspicion_score: 5, status: 'present' } : s));
+    if (selectedStudent?.id === studentId) {
+      setSelectedStudent(prev => prev ? { ...prev, unified_suspicion_score: 5, status: 'present' } : null);
+    }
+    setTracksByCamera(prev => {
+      const updated: Record<string, CameraTrack[]> = {};
+      for (const [camId, trks] of Object.entries(prev)) {
+        updated[camId] = trks.map(t => t.associated_student_id === studentId ? { ...t, suspicion_score: 5 } : t);
+      }
+      return updated;
+    });
+    try {
+      await fetch(`/api/students/${studentId}/clear-warning`, { method: 'POST' });
+    } catch {
+      // ignore
+    }
+    return true;
+  }, [selectedStudent]);
+
+  // Clear Track Warning / Reset Suspicion
+  const clearTrackWarning = useCallback(async (trackId: string): Promise<boolean> => {
+    setTracksByCamera(prev => {
+      const updated: Record<string, CameraTrack[]> = {};
+      for (const [camId, trks] of Object.entries(prev)) {
+        updated[camId] = trks.map(t => t.track_id === trackId ? { ...t, suspicion_score: 5 } : t);
+      }
+      return updated;
+    });
+    if (selectedTrack?.track_id === trackId) {
+      setSelectedTrack(prev => prev ? { ...prev, suspicion_score: 5 } : null);
+    }
+    try {
+      await fetch(`/api/tracks/${trackId}/clear-warning`, { method: 'POST' });
+    } catch {}
+    return true;
+  }, [selectedTrack]);
+
   // Broadcast Real-time Video Detections to Local State & Backend Server
   const broadcastDetections = useCallback((cameraId: string, detections: CameraTrack[]) => {
     // 1. Instantly update local camera tracks for zero-latency client HUD bounding boxes
@@ -429,6 +470,8 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
         setFocusedCameraId,
         setSelectedStudent,
         setSelectedTrack,
+        clearStudentWarning,
+        clearTrackWarning,
         refreshData,
         triggerDemoAction,
         toggleCamera,

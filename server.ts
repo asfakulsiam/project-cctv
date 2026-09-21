@@ -248,6 +248,32 @@ async function startServer() {
     }
   });
 
+  // Clear Warning / Reset Suspicion for Student (Admin / Proctor Action)
+  app.post('/api/students/:id/clear-warning', async (req, res) => {
+    try {
+      const studentId = req.params.id;
+      await db.updateStudent(studentId, {
+        unified_suspicion_score: 5,
+        status: 'present'
+      });
+      if (cvEngine) {
+        await cvEngine.reloadConfiguration();
+      }
+      res.json({ success: true, student_id: studentId, message: 'Warning cleared and suspicion score reset.' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/tracks/:trackId/clear-warning', async (req, res) => {
+    try {
+      const trackId = req.params.trackId;
+      res.json({ success: true, track_id: trackId, message: 'Track warning cleared.' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Edit / Add Student
   app.put('/api/students/:id', requireAdminAuth, async (req, res) => {
     try {

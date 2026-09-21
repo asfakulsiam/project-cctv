@@ -201,11 +201,11 @@ export function drawCameraFeed(
     }
 
     // -------------------------------------------------------------
-    // D. Dynamic Person Bounding Box (Frame-by-Frame Motion Tracking)
-    // Clearly encloses the student so ID ownership is instant and unambiguous
+    // D. Dynamic Person Bounding Box (Snug, Frame-by-Frame Motion Tracking)
+    // Clearly encloses the student without cluttering or blocking views
     // -------------------------------------------------------------
     ctx.strokeStyle = borderColor;
-    ctx.lineWidth = isSelected ? 2.8 : (isWarning || isCritical ? 2.2 : 1.6);
+    ctx.lineWidth = isSelected ? 2.2 : (isWarning || isCritical ? 1.8 : 1.3);
     ctx.strokeRect(px, py, pw, ph);
 
     // Subtle box inner tint on warning / critical
@@ -217,10 +217,10 @@ export function drawCameraFeed(
       ctx.fillRect(px, py, pw, ph);
     }
 
-    // Corner accent brackets for crisp surveillance focus
-    const cornerLen = Math.min(14, pw * 0.2);
+    // Slim, compact corner accent brackets
+    const cornerLen = Math.min(8, pw * 0.18);
     ctx.strokeStyle = cornerColor;
-    ctx.lineWidth = 2.5;
+    ctx.lineWidth = 1.8;
     ctx.beginPath();
     // Top-Left
     ctx.moveTo(px, py + cornerLen);
@@ -246,85 +246,85 @@ export function drawCameraFeed(
     const cx = px + pw / 2;
     const cy = py + ph / 2;
     ctx.beginPath();
-    ctx.moveTo(cx - 4, cy);
-    ctx.lineTo(cx + 4, cy);
-    ctx.moveTo(cx, cy - 4);
-    ctx.lineTo(cx, cy + 4);
+    ctx.moveTo(cx - 3, cy);
+    ctx.lineTo(cx + 3, cy);
+    ctx.moveTo(cx, cy - 3);
+    ctx.lineTo(cx, cy + 3);
     ctx.stroke();
 
     // -------------------------------------------------------------
-    // E. Compact, Non-Blocking ID & Score Header Tag
+    // E. Ultra-Compact, Non-Blocking ID & Score Header Tag
     // (Small, sleek, and moves frame-by-frame on top of the bounding box)
     // -------------------------------------------------------------
     const student = students.find(s => s.id === track.associated_student_id);
     const studentIdText = student?.student_id_number ? ` [${student.student_id_number}]` : '';
     const statusPrefix = isCritical ? '🚨 ' : (isWarning ? '⚠️ ' : '');
-    const tagText = `${statusPrefix}${track.track_id}${studentIdText} • SCORE: ${score}`;
+    const tagText = `${statusPrefix}${track.track_id}${studentIdText} • ${score}`;
     
-    // Compact font to avoid blocking camera views
-    ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
-    const tagWidth = ctx.measureText(tagText).width + 10;
-    const tagHeight = 16;
+    // Sleek small font to avoid blocking camera views
+    ctx.font = 'bold 8.5px "JetBrains Mono", monospace';
+    const tagWidth = ctx.measureText(tagText).width + 8;
+    const tagHeight = 13.5;
 
     // Header Y position (clamped so it is never clipped by top canvas border)
-    const headerY = py >= tagHeight + 3 ? py - tagHeight - 2 : py + 2;
+    const headerY = py >= tagHeight + 2 ? py - tagHeight - 1 : py + 1;
 
     // Compact Header Badge
     ctx.fillStyle = badgeBg;
     ctx.fillRect(px, headerY, tagWidth, tagHeight);
 
     // Subtle dark border around header badge
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
     ctx.lineWidth = 1;
     ctx.strokeRect(px, headerY, tagWidth, tagHeight);
 
     // Header badge text
     ctx.fillStyle = badgeTextColor;
-    ctx.fillText(tagText, px + 5, headerY + 11.5);
+    ctx.fillText(tagText, px + 4, headerY + 9.8);
 
     // -------------------------------------------------------------
     // G. Bottom Telemetry Alerts (Only rendered when active alerts occur)
     // -------------------------------------------------------------
-    const footerY = Math.min(height - 8, py + ph + 16);
+    const footerY = Math.min(height - 6, py + ph + 14);
     let badgeOffset = 0;
 
     // Gaze Direction Alert
     if (track.head_pose && track.head_pose.direction !== 'center') {
       const dirText = `LOOKING ${track.head_pose.direction.toUpperCase()}`;
-      ctx.font = 'bold 9px "JetBrains Mono", monospace';
-      const dirW = ctx.measureText(dirText).width + 10;
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      const dirW = ctx.measureText(dirText).width + 8;
 
       ctx.fillStyle = 'rgba(234, 179, 8, 0.95)';
-      ctx.fillRect(px + badgeOffset, footerY - 14, dirW, 18);
+      ctx.fillRect(px + badgeOffset, footerY - 12, dirW, 14);
       ctx.fillStyle = '#0f172a';
-      ctx.fillText(dirText, px + badgeOffset + 5, footerY - 1);
-      badgeOffset += dirW + 4;
+      ctx.fillText(dirText, px + badgeOffset + 4, footerY - 1.5);
+      badgeOffset += dirW + 3;
     }
 
     // Phone Detected Alert
     if (track.phone_detected) {
       const phoneText = 'PHONE DETECTED';
-      ctx.font = 'bold 9px "JetBrains Mono", monospace';
-      const phoneW = ctx.measureText(phoneText).width + 10;
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      const phoneW = ctx.measureText(phoneText).width + 8;
 
       ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
-      ctx.fillRect(px + badgeOffset, footerY - 14, phoneW, 18);
+      ctx.fillRect(px + badgeOffset, footerY - 12, phoneW, 14);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(phoneText, px + badgeOffset + 5, footerY - 1);
-      badgeOffset += phoneW + 4;
+      ctx.fillText(phoneText, px + badgeOffset + 4, footerY - 1.5);
+      badgeOffset += phoneW + 3;
     }
 
     // Face Occlusion Alert
     if (!track.face_visible) {
       const faceText = 'FACE OCCLUDED';
-      ctx.font = 'bold 9px "JetBrains Mono", monospace';
-      const faceW = ctx.measureText(faceText).width + 10;
+      ctx.font = 'bold 8px "JetBrains Mono", monospace';
+      const faceW = ctx.measureText(faceText).width + 8;
 
       ctx.fillStyle = 'rgba(234, 88, 12, 0.95)';
-      ctx.fillRect(px + badgeOffset, footerY - 14, faceW, 18);
+      ctx.fillRect(px + badgeOffset, footerY - 12, faceW, 14);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(faceText, px + badgeOffset + 5, footerY - 1);
-      badgeOffset += faceW + 4;
+      ctx.fillText(faceText, px + badgeOffset + 4, footerY - 1.5);
+      badgeOffset += faceW + 3;
     }
 
     // Cross-Camera Best View Arbitration Badge

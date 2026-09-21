@@ -4,14 +4,16 @@
  * clearest perspective indicators, and incident history.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
 import { StudentRecord } from '../../types.js';
 import { 
   Camera, 
   Clock, 
   Sparkles,
-  ChevronRight
+  ChevronRight,
+  RotateCcw,
+  CheckCircle2
 } from 'lucide-react';
 import { Sheet } from '../ui/Sheet.js';
 import { Badge } from '../ui/Badge.js';
@@ -24,7 +26,17 @@ interface StudentInspectionDrawerProps {
 }
 
 export function StudentInspectionDrawer({ student, onClose }: StudentInspectionDrawerProps) {
-  const { cameras, setFocusedCameraId, events } = useMonitoring();
+  const { cameras, setFocusedCameraId, events, clearStudentWarning } = useMonitoring();
+  const [clearing, setClearing] = useState(false);
+  const [clearedSuccess, setClearedSuccess] = useState(false);
+
+  const handleClearWarning = async () => {
+    setClearing(true);
+    await clearStudentWarning(student.id);
+    setClearing(false);
+    setClearedSuccess(true);
+    setTimeout(() => setClearedSuccess(false), 2500);
+  };
 
   const studentEvents = events.filter(e => e.student_id === student.id).slice(0, 10);
   const bestObservation = student.active_observations.find(o => o.is_best_view);
@@ -37,10 +49,10 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
 
   const suspicionVariant = getSuspicionVariant(student.unified_suspicion_score);
   const suspicionLabel = student.unified_suspicion_score >= 60 
-    ? 'ELEVATED MONITORING' 
+    ? 'ELEVATED MONITORING (WARN/RED)' 
     : student.unified_suspicion_score >= 35 
-      ? 'ATTENTION ADVISORY' 
-      : 'NORMAL PATTERN';
+      ? 'ATTENTION ADVISORY (YELLOW)' 
+      : 'NORMAL PATTERN (CLEAN)';
 
   return (
     <Sheet
@@ -63,13 +75,38 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
             </Badge>
           </div>
 
-          <div className="flex items-baseline space-x-2">
-            <span className="text-[32px] font-bold font-mono-apple text-[var(--system-text-primary)]">
-              {student.unified_suspicion_score}
-            </span>
-            <span className="text-[12px] text-[var(--system-text-tertiary)] font-mono-apple">
-              / 100 max index
-            </span>
+          <div className="flex items-baseline justify-between">
+            <div className="flex items-baseline space-x-2">
+              <span className="text-[32px] font-bold font-mono-apple text-[var(--system-text-primary)]">
+                {student.unified_suspicion_score}
+              </span>
+              <span className="text-[12px] text-[var(--system-text-tertiary)] font-mono-apple">
+                / 100 max index
+              </span>
+            </div>
+
+            {/* Admin Clear Warning Button */}
+            <button
+              onClick={handleClearWarning}
+              disabled={clearing}
+              className={`px-3 py-1.5 rounded-[8px] text-[11px] font-semibold flex items-center space-x-1.5 cursor-pointer transition-all ${
+                clearedSuccess
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-[var(--system-fill)] hover:bg-[var(--system-fill-hover)] text-[var(--system-text-primary)] border border-[var(--system-chrome-border)]'
+              }`}
+            >
+              {clearedSuccess ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Warning Cleared</span>
+                </>
+              ) : (
+                <>
+                  <RotateCcw className={`w-3.5 h-3.5 ${clearing ? 'animate-spin' : ''}`} />
+                  <span>Clear Warning / Reset</span>
+                </>
+              )}
+            </button>
           </div>
 
           {/* Progress bar */}
@@ -84,7 +121,7 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
           </div>
 
           <p className="text-[11px] text-[var(--system-text-tertiary)] italic leading-relaxed">
-            * Objective multi-camera tracking index computed from optical motion and gaze telemetry.
+            * Score accumulates with candidate movements and remains flagged until cleared by an administrator.
           </p>
         </Card>
 
