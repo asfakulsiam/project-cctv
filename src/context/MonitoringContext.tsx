@@ -523,26 +523,13 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
     }
   }, []);
 
-  // Broadcast Real-time Video Detections to Local State & Backend Server
+  // Local Track Preview (Client UI displays server telemetry authoritative tracks)
   const broadcastDetections = useCallback((cameraId: string, detections: CameraTrack[]) => {
-    // 1. Instantly update local camera tracks for zero-latency client HUD bounding boxes
+    // Only update local view state if needed; never transmit authoritative detections from browser
     setTracksByCamera(prev => ({
       ...prev,
       [cameraId]: detections
     }));
-
-    // 2. Transmit to server CV engine via WebSocket (or throttled POST)
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(JSON.stringify({
-          type: 'DETECTIONS',
-          camera_id: cameraId,
-          detections
-        }));
-      } catch {
-        // ignore socket send errors
-      }
-    }
   }, []);
 
   // Clear Activity Events (Admin only - clears database events first)

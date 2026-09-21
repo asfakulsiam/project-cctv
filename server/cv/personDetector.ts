@@ -79,17 +79,76 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
   private inferenceUrl?: string;
 
   constructor(inferenceUrl?: string) {
-    this.inferenceUrl = inferenceUrl;
+    this.inferenceUrl = inferenceUrl || process.env.CV_INFERENCE_URL;
   }
 
   public async detect(input: PersonDetectorInput): Promise<DetectorOutput> {
+    // If an external inference endpoint is configured and frame data is provided
+    if (this.inferenceUrl && input.frame) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1200);
+
+        const framePayload: any = input.frame;
+        const response = await fetch(this.inferenceUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            camera_id: input.camera_id,
+            timestamp: input.timestamp,
+            frame: typeof framePayload === 'string' ? framePayload : undefined
+          }),
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
+
+        if (response.ok) {
+          const data: any = await response.json();
+          if (Array.isArray(data.detections)) {
+            const humans: HumanDetection[] = data.detections
+              .filter((d: any) => (d.class_name?.toLowerCase() === 'person' || d.class === 'person') && d.confidence >= 0.40)
+              .map((d: any) => ({
+                class_name: 'person' as const,
+                confidence: d.confidence,
+                bbox: { ...d.bbox },
+                head_pose: d.head_pose,
+                face_visible: d.face_visible,
+                face_confidence: d.face_confidence,
+                appearance_embedding: d.appearance_embedding,
+                seat_id: d.seat_id,
+                associated_student_id: d.associated_student_id
+              }));
+
+            const phones: SecondaryObjectDetection[] = (data.phones || data.detections.filter((d: any) => d.class_name === 'cell phone' || d.class === 'cell phone'))
+              .map((p: any, idx: number) => ({
+                detection_id: p.detection_id || `ext-phone-${idx}`,
+                class_name: 'cell phone' as const,
+                confidence: p.confidence,
+                bbox: { ...p.bbox },
+                associated_track_id: p.associated_track_id
+              }));
+
+            return {
+              humans,
+              phones,
+              timestamp: input.timestamp
+            };
+          }
+        }
+      } catch {
+        // Fall back gracefully to internal or input detections
+      }
+    }
+
     const rawDetections = input.detections || [];
     const rawPhones = input.phones || [];
 
     const humans: HumanDetection[] = rawDetections
       .filter(d => d.class_name?.toLowerCase() === 'person' && d.confidence >= 0.40)
       .map(d => ({
-        class_name: 'person',
+        class_name: 'person' as const,
         confidence: d.confidence,
         bbox: { ...d.bbox },
         head_pose: d.head_pose,
@@ -196,6 +255,18 @@ export class TemporalObservationBuffer {
       obs.rawCandidates = obs.rawCandidates.filter(c => !predicate(c));
     }
   }
+
+  public getAllCameraIds(): string[] {
+    return Array.from(this.buffer.keys());
+  }
+
+  public removeMatchingAll(predicate: (raw: RawDetectionPayload) => boolean): void {
+    for (const list of this.buffer.values()) {
+      for (const obs of list) {
+        obs.rawCandidates = obs.rawCandidates.filter(c => !predicate(c));
+      }
+    }
+  }
 }
 
 export class RealPersonDetector {
@@ -247,12 +318,14 @@ export class RealPersonDetector {
 
   /**
    * Temporarily suppress candidate re-creation after administrative deletion.
+   * Clears past temporal observations dynamically across all registered cameras.
    */
   public suppressCandidate(
     personId: string, 
     seatId?: string, 
     bbox?: BoundingBox, 
-    durationMs: number = 4000
+    durationMs: number = 4000,
+    cameraIds?: string[]
   ): void {
     const now = Date.now();
     this.suppressedIdentities.set(personId, {
@@ -263,20 +336,28 @@ export class RealPersonDetector {
       expiresAt: now + durationMs
     });
 
-    // Remove matching past observations from temporal buffer across all cameras
-    for (const cameraId of ['cam-1', 'cam-2', 'cam-3', 'cam-4', 'cam-default']) {
-      this.temporalBuffer.removeMatching(cameraId, (raw) => {
-        if (seatId && raw.seat_id === seatId) return true;
-        if (bbox && raw.bbox) {
-          const centerDist = Math.hypot(
-            (raw.bbox.x + raw.bbox.width / 2) - (bbox.x + bbox.width / 2),
-            (raw.bbox.y + raw.bbox.height / 2) - (bbox.y + bbox.height / 2)
-          );
-          if (centerDist < 0.12) return true;
-        }
-        return false;
-      });
+    const isMatch = (raw: RawDetectionPayload) => {
+      if (seatId && raw.seat_id === seatId) return true;
+      if (bbox && raw.bbox) {
+        const centerDist = Math.hypot(
+          (raw.bbox.x + raw.bbox.width / 2) - (bbox.x + bbox.width / 2),
+          (raw.bbox.y + raw.bbox.height / 2) - (bbox.y + bbox.height / 2)
+        );
+        if (centerDist < 0.12) return true;
+      }
+      return false;
+    };
+
+    // Remove matching past observations dynamically across all camera buffers
+    const targetCameras = cameraIds && cameraIds.length > 0
+      ? cameraIds
+      : this.temporalBuffer.getAllCameraIds();
+
+    for (const cameraId of targetCameras) {
+      this.temporalBuffer.removeMatching(cameraId, isMatch);
     }
+    // Also remove across all in-memory buffers
+    this.temporalBuffer.removeMatchingAll(isMatch);
   }
 
   public clearSuppression(): void {
@@ -570,18 +651,16 @@ export class RealPersonDetector {
     const timeSpanMs = currentTimestamp - earliestMatchTime;
     const avgConfidence = matchingObservationsCount > 0 ? (confidenceSum / matchingObservationsCount) : 0;
 
-    // Confirmation Criteria:
-    // 1. Minimum observation count (at least minObservations, e.g. 2 frames)
-    // 2. Minimum temporal persistence span (at least minPersistenceMs, e.g. 250ms), OR
-    // 3. Pre-associated seat/track stability with sufficient confidence
+    // Strict Multi-Frame Temporal Confirmation:
+    // Requires:
+    // 1. Multi-frame matching observation count (at least minObservations >= 2)
+    // 2. Minimum temporal persistence span (>= minPersistenceMs or >= 3 frames)
+    // 3. Average detection confidence meeting threshold
+    // Stationary seated students confirm naturally without movement because their stable center & area
+    // match consecutive frames cleanly.
     if (matchingObservationsCount >= this.config.minObservations && 
         (timeSpanMs >= this.config.minPersistenceMs || matchingObservationsCount >= 3) &&
         avgConfidence >= this.minConfidence) {
-      return true;
-    }
-
-    // Also confirm if high confidence and explicit valid seat anchor
-    if (candidate.confidence >= 0.85 && candidate.seat_id && matchingObservationsCount >= 1) {
       return true;
     }
 

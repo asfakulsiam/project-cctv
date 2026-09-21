@@ -806,7 +806,7 @@ export class CVEngine {
     }
 
     // Suppress spatial footprint for 4000ms so 1-tick frame loops do not immediately recreate candidate
-    this.personDetector.suppressCandidate(personId, gp?.seat_id, lastKnownBbox, 4000);
+    this.personDetector.suppressCandidate(personId, gp?.seat_id, lastKnownBbox, 4000, Array.from(this.cameras.keys()));
 
     for (const tracker of this.trackers.values()) {
       tracker.removeTracksByPersonId(personId);

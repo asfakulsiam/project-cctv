@@ -19,7 +19,7 @@ dotenv.config();
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'academic_exam_2026';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 let cvEngine: MultiCameraCVEngine | null = null;
 
@@ -108,10 +108,9 @@ async function startServer() {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'PING') {
           ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
-        } else if (msg.type === 'DETECTIONS' && msg.camera_id && Array.isArray(msg.detections)) {
-          if (cvEngine) {
-            cvEngine.injectCameraDetections(msg.camera_id, msg.detections);
-          }
+        } else if (msg.type === 'DETECTIONS') {
+          // Client UI injection is disabled to ensure server-authoritative CV pipeline.
+          // Server CV engine and external worker APIs are the authoritative sources.
         }
       } catch {
         // ignore malformed ws messages
@@ -227,7 +226,13 @@ async function startServer() {
   // -------------------------------------------------------------
   app.post('/api/admin/login', (req, res) => {
     const { username, password } = req.body;
-    const isPasswordValid = password === ADMIN_PASSWORD;
+    if (!ADMIN_PASSWORD || ADMIN_PASSWORD.trim().length === 0) {
+      return res.status(500).json({
+        success: false,
+        error: 'Administrator authentication unavailable: ADMIN_PASSWORD environment variable is not configured.'
+      });
+    }
+    const isPasswordValid = typeof password === 'string' && password === ADMIN_PASSWORD;
     if (username === ADMIN_USERNAME && isPasswordValid) {
       const now = Date.now();
       const token = `adm_token_${now}_${Math.random().toString(36).substring(2, 10)}`;
