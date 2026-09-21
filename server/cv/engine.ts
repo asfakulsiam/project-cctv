@@ -388,20 +388,26 @@ export class CVEngine {
 
     this.behaviorAnalyzer.pruneStaleContexts(allActiveTrackIds);
 
-    // Calculate Real-Time Stats
-    const stats = this.computeRealtimeStats(cameraTracksMap, unifiedStudents, globalPersons);
+    // Step 4: Deterministic post-behavior score synchronization across GlobalPersons & Students
+    const { students: finalUnifiedStudents, globalPersons: finalGlobalPersons } = this.unifiedStudentManager.syncScoresAfterBehavior(
+      cameraTracksMap,
+      now
+    );
+
+    // Step 5: Calculate Real-Time Stats with fully synchronized score state
+    const stats = this.computeRealtimeStats(cameraTracksMap, finalUnifiedStudents, finalGlobalPersons);
 
     this.latestTracksByCamera = cameraTracksMap;
-    this.latestUnifiedStudents = unifiedStudents;
-    this.latestGlobalPersons = globalPersons;
+    this.latestUnifiedStudents = finalUnifiedStudents;
+    this.latestGlobalPersons = finalGlobalPersons;
 
-    // Broadcast Real-Time State over WebSockets
+    // Step 6: Broadcast Real-Time State over WebSockets
     this.broadcastTelemetry({
       type: 'TELEMETRY_UPDATE',
       timestamp: now,
       tracks_by_camera: Object.fromEntries(cameraTracksMap.entries()),
-      students: unifiedStudents,
-      global_persons: globalPersons,
+      students: finalUnifiedStudents,
+      global_persons: finalGlobalPersons,
       stats,
       new_event: newEvents.length > 0 ? newEvents[newEvents.length - 1] : undefined
     });
@@ -699,11 +705,24 @@ export class CVEngine {
     return this.unifiedStudentManager.getGlobalPerson(personId);
   }
 
-  public editCandidate(personId: string, updates: { seat_id?: string; student_id?: string | null; notes?: string }): GlobalPerson | null {
+  public async editCandidate(personId: string, updates: { seat_id?: string; student_id?: string | null; notes?: string }): Promise<GlobalPerson | null> {
     const updated = this.unifiedStudentManager.editCandidate(personId, updates);
     if (updated) {
       this.latestGlobalPersons = this.unifiedStudentManager.getCandidates();
       this.latestUnifiedStudents = this.unifiedStudentManager.getStudents();
+
+      // Persist student updates if candidate is associated with a student record
+      if (updated.associated_student_id) {
+        const student = this.unifiedStudentManager.getStudentRecord(updated.associated_student_id);
+        if (student) {
+          await db.updateStudent(student.id, {
+            seat_id: student.seat_id,
+            notes: student.notes,
+            person_id: student.person_id,
+            global_person_id: student.global_person_id
+          });
+        }
+      }
     }
     return updated;
   }
@@ -712,6 +731,7 @@ export class CVEngine {
     for (const tracker of this.trackers.values()) {
       tracker.removeTracksByPersonId(personId);
     }
+    this.personDetector.clearTemporalBuffer();
     const deleted = this.unifiedStudentManager.deleteCandidate(personId);
     for (const [camId, tracks] of this.latestTracksByCamera.entries()) {
       this.latestTracksByCamera.set(camId, tracks.filter(t => t.global_person_id !== personId && t.person_id !== personId));
@@ -737,6 +757,7 @@ export class CVEngine {
     for (const tracker of this.trackers.values()) {
       tracker.reset();
     }
+    this.personDetector.clearTemporalBuffer();
     this.unifiedStudentManager.clearCurrentCandidates();
     this.cameraDetectionsQueue.clear();
     this.cameraPhonesQueue.clear();

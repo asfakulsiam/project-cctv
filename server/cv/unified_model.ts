@@ -670,8 +670,19 @@ export class UnifiedStudentManager {
     const gp = this.global_persons.get(personId);
     if (!gp) return null;
 
+    if (updates.notes !== undefined) {
+      gp.notes = updates.notes;
+      if (gp.associated_student_id) {
+        const student = this.students.get(gp.associated_student_id);
+        if (student) student.notes = updates.notes;
+      }
+    }
     if (updates.seat_id !== undefined) {
       gp.seat_id = updates.seat_id || undefined;
+      if (gp.associated_student_id) {
+        const student = this.students.get(gp.associated_student_id);
+        if (student) student.seat_id = updates.seat_id || undefined;
+      }
     }
     if (updates.student_id !== undefined) {
       this.associatePersonWithStudent(personId, updates.student_id);
@@ -696,6 +707,111 @@ export class UnifiedStudentManager {
 
     this.global_persons.delete(personId);
     return true;
+  }
+
+  /**
+   * Deterministic Post-Behavior Score Synchronization:
+   * Re-synchronizes scores on GlobalPerson and StudentRecord after BehaviorAnalyzer
+   * has updated CameraTrack suspicion_score, current_score, cumulative_score, max_score.
+   * Guarantees 0-tick lag between CameraTracks, GlobalPersons, Students, and Stats.
+   */
+  public syncScoresAfterBehavior(
+    tracksByCamera: Map<string, CameraTrack[]>,
+    now: number = Date.now()
+  ): { students: StudentRecord[]; globalPersons: GlobalPerson[] } {
+    const thresholdsConfig: MonitoringThresholds = {
+      looking_duration_sec: 3.5,
+      face_hidden_duration_sec: 4.0,
+      leave_seat_grace_sec: 5.0,
+      phone_confidence_min: 0.65,
+      high_suspicion_threshold: this.thresholds.high_suspicion_threshold,
+      warning_suspicion_threshold: this.thresholds.warning_suspicion_threshold,
+      movement_threshold_px: 25
+    };
+
+    // 1. Sync GlobalPersons with updated track scores
+    for (const gp of this.global_persons.values()) {
+      if (!gp.camera_tracks || gp.camera_tracks.length === 0) continue;
+
+      let maxCurrent = 0;
+      let maxCumulative = 0;
+      let maxPeak = gp.max_score || 0;
+
+      for (const trackRef of gp.camera_tracks) {
+        const camTracks = tracksByCamera.get(trackRef.camera_id);
+        const trk = camTracks?.find(t => t.track_id === trackRef.track_id);
+        if (trk) {
+          maxCurrent = Math.max(maxCurrent, trk.current_score || 0);
+          maxCumulative = Math.max(maxCumulative, trk.cumulative_score || trk.suspicion_score || 0);
+          maxPeak = Math.max(maxPeak, trk.max_score || 0, maxCurrent, maxCumulative);
+        }
+      }
+
+      gp.current_score = maxCurrent;
+      gp.cumulative_score = Math.max(gp.cumulative_score || 0, maxCumulative);
+      gp.max_score = Math.max(maxPeak, gp.cumulative_score, gp.current_score);
+
+      if (gp.cumulative_score >= this.thresholds.warning_suspicion_threshold || 
+          gp.current_score >= this.thresholds.warning_suspicion_threshold) {
+        gp.warning_latched = true;
+      }
+    }
+
+    // 2. Sync Students with observation quality-weighted track scores
+    for (const student of this.students.values()) {
+      if (student.active_observations.length === 0) {
+        student.status = 'absent';
+        student.current_score = 0;
+        student.warning_level = 'normal';
+        continue;
+      }
+
+      let weightedCumulativeSum = 0;
+      let weightedCurrentSum = 0;
+      let totalWeight = 0;
+
+      for (const obs of student.active_observations) {
+        const camTracks = tracksByCamera.get(obs.camera_id);
+        const trk = camTracks?.find(t => t.track_id === obs.track_id);
+        if (trk) {
+          obs.current_score = trk.current_score;
+          obs.cumulative_score = trk.cumulative_score;
+          obs.suspicion_score = trk.cumulative_score;
+          obs.max_score = trk.max_score;
+
+          const weight = (obs.quality || 50) / 100;
+          const cum = trk.cumulative_score ?? trk.suspicion_score ?? 0;
+          const cur = trk.current_score ?? 0;
+          weightedCumulativeSum += cum * weight;
+          weightedCurrentSum += cur * weight;
+          totalWeight += weight;
+        }
+      }
+
+      if (totalWeight > 0) {
+        const aggregatedCum = Math.round(weightedCumulativeSum / totalWeight);
+        const aggregatedCur = Math.round(weightedCurrentSum / totalWeight);
+
+        student.cumulative_score = Math.max(student.cumulative_score || 0, aggregatedCum);
+        student.current_score = aggregatedCur;
+        student.max_score = Math.max(student.max_score || 0, aggregatedCur, student.cumulative_score);
+        student.unified_suspicion_score = student.cumulative_score;
+      }
+
+      const effectiveScore = Math.max(student.current_score || 0, student.unified_suspicion_score || 0);
+      student.warning_level = getWarningLevel(effectiveScore, thresholdsConfig);
+
+      if (effectiveScore >= this.thresholds.high_suspicion_threshold) {
+        student.status = 'flagged';
+      } else {
+        student.status = 'present';
+      }
+    }
+
+    return {
+      students: Array.from(this.students.values()),
+      globalPersons: Array.from(this.global_persons.values()).filter(gp => gp.camera_tracks && gp.camera_tracks.length > 0)
+    };
   }
 
   public clearCurrentCandidates(): boolean {

@@ -162,6 +162,7 @@ export interface GlobalPerson {
   observations?: Record<string, GlobalPersonObservation>;
   first_seen?: number;
   last_seen: number;
+  notes?: string;
   status?: 'in_seat' | 'left_seat' | 'unassigned';
 }
 

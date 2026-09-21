@@ -17,7 +17,6 @@ import { useMonitoring } from '../../context/MonitoringContext.js';
 import { useScreenWakeLock } from '../../hooks/useScreenWakeLock.js';
 import { drawCameraFeed } from '../../utils/canvasRenderer.js';
 import { resolveCameraStream } from '../../utils/streamHelper.js';
-import { MotionVisionDetector } from '../../utils/motionVisionDetector.js';
 import { CameraTrack } from '../../types.js';
 import { 
   ZoomIn, 
@@ -70,12 +69,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mjpegRef = useRef<HTMLImageElement>(null);
-
-  // Client-Side Optical Vision & Motion Detector
-  const detectorRef = useRef<MotionVisionDetector>(new MotionVisionDetector());
-  const lastDetectionTimeRef = useRef<number>(0);
-  const liveTracksRef = useRef<CameraTrack[]>([]);
-  const lastBroadcastTimeRef = useRef<number>(0);
 
   // Framing mode: contain (Auto Frame - Best View) or cover (Fill Screen)
   const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
@@ -326,8 +319,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
     return () => {
       isCancelled = true;
-      detectorRef.current.reset();
-      liveTracksRef.current = [];
       if (activeStream) {
         activeStream.getTracks().forEach(t => t.stop());
       }
@@ -476,7 +467,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     const clickX = ((e.clientX - rect.left - panOffset.x) / zoomLevel) / canvas.width;
     const clickY = ((e.clientY - rect.top - panOffset.y) / zoomLevel) / canvas.height;
 
-    const effectiveTracks = liveTracksRef.current.length > 0 ? liveTracksRef.current : tracks;
+    const effectiveTracks = tracks;
     const hitTrack = effectiveTracks.find(t => 
       clickX >= t.bbox.x &&
       clickX <= t.bbox.x + t.bbox.width &&

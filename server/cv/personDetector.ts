@@ -15,8 +15,11 @@
  * 4. Appearance Encoder (Re-ID):
  *    Interface for deep visual feature embeddings. Until an actual vision encoder is connected,
  *    appearance_embedding is strictly undefined — no synthetic positional vectors.
- * 5. Clean Interface Boundary:
- *    PersonDetectorInput -> Frame -> Detection -> Temporal Confirmation -> CameraTracker
+ * 5. Bounded Temporal Frame Buffer:
+ *    Maintains a bounded 1–3s ring buffer in memory to stabilize bounding boxes, verify
+ *    temporal consistency, and expire stale frames without memory leaks.
+ * 6. Stationary Persistence:
+ *    Detection does NOT depend on motion. A stationary seated person remains fully detected.
  */
 
 import { 
@@ -31,6 +34,20 @@ export interface PersonDetectorInput {
   frame: unknown;
   timestamp: number;
   camera_id: string;
+  detections?: RawDetectionPayload[];
+  phones?: SecondaryObjectDetection[];
+}
+
+export interface RawDetectionPayload {
+  class_name: string;
+  confidence: number;
+  bbox: BoundingBox;
+  head_pose?: HeadPoseData;
+  face_visible?: boolean;
+  face_confidence?: number;
+  seat_id?: string;
+  associated_student_id?: string;
+  appearance_embedding?: number[];
 }
 
 export interface DetectorOutput {
@@ -46,6 +63,11 @@ export interface AppearanceEncoder {
   ): Promise<number[] | undefined>;
 }
 
+export interface PersonDetectorAdapter {
+  name: string;
+  detect(input: PersonDetectorInput): Promise<DetectorOutput>;
+}
+
 export interface IdentityEvidence {
   appearance_similarity?: number;
   spatial_similarity?: number;
@@ -53,15 +75,80 @@ export interface IdentityEvidence {
   temporal_similarity?: number;
 }
 
+/**
+ * Bounded in-memory temporal frame buffer for video analysis
+ * Retains only a short 1.5 - 3.0s window to prevent memory accumulation on continuous CCTV.
+ */
+export interface BufferedFrameObservation {
+  timestamp: number;
+  camera_id: string;
+  detections: HumanDetection[];
+  phones: SecondaryObjectDetection[];
+}
+
+export class TemporalObservationBuffer {
+  private buffer: Map<string, BufferedFrameObservation[]> = new Map(); // camera_id -> observations
+  private readonly maxWindowMs: number;
+  private readonly maxFramesPerCamera: number;
+
+  constructor(maxWindowMs = 3000, maxFramesPerCamera = 45) {
+    this.maxWindowMs = maxWindowMs;
+    this.maxFramesPerCamera = maxFramesPerCamera;
+  }
+
+  public push(cameraId: string, observation: BufferedFrameObservation): void {
+    let list = this.buffer.get(cameraId);
+    if (!list) {
+      list = [];
+      this.buffer.set(cameraId, list);
+    }
+    list.push(observation);
+
+    // Evict observations older than maxWindowMs or exceeding max capacity
+    const cutoff = observation.timestamp - this.maxWindowMs;
+    const filtered = list.filter(item => item.timestamp >= cutoff);
+    if (filtered.length > this.maxFramesPerCamera) {
+      filtered.splice(0, filtered.length - this.maxFramesPerCamera);
+    }
+    this.buffer.set(cameraId, filtered);
+  }
+
+  public getRecent(cameraId: string): BufferedFrameObservation[] {
+    return this.buffer.get(cameraId) || [];
+  }
+
+  public clear(cameraId?: string): void {
+    if (cameraId) {
+      this.buffer.delete(cameraId);
+    } else {
+      this.buffer.clear();
+    }
+  }
+}
+
 export class RealPersonDetector {
   private detectionCounter = 1;
   private phoneDetectionCounter = 1;
-  private readonly minConfidence: number;
+  private minConfidence: number;
   private appearanceEncoder?: AppearanceEncoder;
+  private customAdapter?: PersonDetectorAdapter;
+  private temporalBuffer = new TemporalObservationBuffer(3000, 45);
 
   constructor(minConfidence = 0.50, appearanceEncoder?: AppearanceEncoder) {
     this.minConfidence = minConfidence;
     this.appearanceEncoder = appearanceEncoder;
+  }
+
+  public setMinConfidence(minConfidence: number): void {
+    this.minConfidence = minConfidence;
+  }
+
+  public setAdapter(adapter: PersonDetectorAdapter): void {
+    this.customAdapter = adapter;
+  }
+
+  public clearTemporalBuffer(cameraId?: string): void {
+    this.temporalBuffer.clear(cameraId);
   }
 
   /**
@@ -131,37 +218,62 @@ export class RealPersonDetector {
 
   /**
    * Primary frame-processing boundary for person and secondary object detection.
-   * Accepts either structured PersonDetectorInput or raw video frame with optional detections.
+   * Accepts structured PersonDetectorInput or raw video frame with optional detections.
    */
   public async detectFrame(
     frameOrInput: PersonDetectorInput | any,
     cameraId?: string,
     timestamp: number = Date.now(),
-    rawDetections: Array<{
-      class_name: string;
-      confidence: number;
-      bbox: BoundingBox;
-      head_pose?: HeadPoseData;
-      face_visible?: boolean;
-      face_confidence?: number;
-      seat_id?: string;
-      associated_student_id?: string;
-      appearance_embedding?: number[];
-    }> = [],
+    rawDetections: RawDetectionPayload[] = [],
     rawPhones: SecondaryObjectDetection[] = []
   ): Promise<HumanDetection[]> {
     if (!frameOrInput) return [];
 
-    // Support extracting embedded detections from frame container if not explicitly passed
-    const detections = (rawDetections && rawDetections.length > 0)
+    const camId = cameraId || frameOrInput.camera_id || 'cam-default';
+
+    // 1. If a custom external model adapter is registered (e.g. YOLO/ONNX), delegate to it
+    if (this.customAdapter) {
+      try {
+        const output = await this.customAdapter.detect({
+          frame: frameOrInput,
+          timestamp,
+          camera_id: camId,
+          detections: rawDetections,
+          phones: rawPhones
+        });
+        const processed = this.processDetections(output.humans || [], output.phones || []);
+        this.temporalBuffer.push(camId, {
+          timestamp,
+          camera_id: camId,
+          detections: processed,
+          phones: output.phones || []
+        });
+        return processed;
+      } catch (err) {
+        console.warn(`[PersonDetector] Custom adapter ${this.customAdapter.name} error:`, err);
+      }
+    }
+
+    // 2. Extract structured detections from frame container or explicit parameter
+    const detections: RawDetectionPayload[] = (rawDetections && rawDetections.length > 0)
       ? rawDetections
       : (frameOrInput.detections || []);
 
-    const phones = (rawPhones && rawPhones.length > 0)
+    const phones: SecondaryObjectDetection[] = (rawPhones && rawPhones.length > 0)
       ? rawPhones
       : (frameOrInput.phones || []);
 
-    return this.processDetections(detections, phones);
+    const confirmedHumans = this.processDetections(detections, phones);
+
+    // 3. Push to bounded temporal buffer for multi-frame consistency analysis
+    this.temporalBuffer.push(camId, {
+      timestamp,
+      camera_id: camId,
+      detections: confirmedHumans,
+      phones
+    });
+
+    return confirmedHumans;
   }
 
   /**
@@ -173,20 +285,10 @@ export class RealPersonDetector {
    * DOES NOT:
    * - invent biometric confidence
    * - generate fake appearance embeddings
-   * - create detections from seat rectangles
+   * - create detections from seat rectangles or movement alone
    */
   public processDetections(
-    rawDetections: Array<{
-      class_name: string;
-      confidence: number;
-      bbox: BoundingBox;
-      head_pose?: HeadPoseData;
-      face_visible?: boolean;
-      face_confidence?: number;
-      seat_id?: string;
-      associated_student_id?: string;
-      appearance_embedding?: number[];
-    }>,
+    rawDetections: RawDetectionPayload[],
     rawPhones: SecondaryObjectDetection[] = []
   ): HumanDetection[] {
     const confirmedHumans: HumanDetection[] = [];
@@ -203,6 +305,8 @@ export class RealPersonDetector {
       }
 
       const bbox = raw.bbox;
+      if (!bbox || typeof bbox.x !== 'number' || typeof bbox.y !== 'number') continue;
+      
       // 3. Anatomical Proportions Validation (seated human morphology)
       if (bbox.width <= 0.02 || bbox.height <= 0.02) continue;
       const aspect = bbox.height / bbox.width;

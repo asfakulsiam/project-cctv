@@ -1022,7 +1022,7 @@ async function startServer() {
       const { seat_id, student_id, notes } = req.body;
       if (!cvEngine) return res.status(503).json({ error: 'CV engine not initialized' });
 
-      const updated = cvEngine.editCandidate(personId, { seat_id, student_id, notes });
+      const updated = await cvEngine.editCandidate(personId, { seat_id, student_id, notes });
       if (!updated) return res.status(404).json({ error: 'Exam candidate not found' });
       res.json(updated);
     } catch (err: any) {
