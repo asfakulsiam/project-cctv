@@ -362,8 +362,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               const detectedTracks = detectorRef.current.processFrame(
                 activeSource, 
                 focusedCamera.camera_id,
-                studentsRef.current,
-                seatsRef.current
+                studentsRef.current
               );
               liveTracksRef.current = detectedTracks || [];
               // Throttled broadcast to global context & server

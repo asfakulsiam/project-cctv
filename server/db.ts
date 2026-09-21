@@ -84,98 +84,25 @@ const DEFAULT_CLASSROOMS: ClassroomRecord[] = [
 ];
 
 const DEFAULT_STUDENTS: StudentRecord[] = [
-  {
-    id: 'stu-1',
-    student_id_number: 'STU-2026-001',
-    name: 'Alex Johnson',
-    classroom_id: 'hall-a',
-    seat_id: 'seat-1',
-    status: 'present',
-    unified_suspicion_score: 12,
-    active_observations: []
-  },
-  {
-    id: 'stu-2',
-    student_id_number: 'STU-2026-002',
-    name: 'Sarah Chen',
-    classroom_id: 'hall-a',
-    seat_id: 'seat-2',
-    status: 'present',
-    unified_suspicion_score: 18,
-    active_observations: []
-  },
-  {
-    id: 'stu-3',
-    student_id_number: 'STU-2026-003',
-    name: 'Marcus Vance',
-    classroom_id: 'hall-a',
-    seat_id: 'seat-3',
-    status: 'present',
-    unified_suspicion_score: 15,
-    active_observations: []
-  },
-  {
-    id: 'stu-4',
-    student_id_number: 'STU-2026-004',
-    name: 'Priya Sharma',
-    classroom_id: 'hall-a',
-    seat_id: 'seat-4',
-    status: 'present',
-    unified_suspicion_score: 10,
-    active_observations: []
-  }
+  { id: 'stu-1', student_id_number: 'STU-2026-001', name: 'Alex Johnson', classroom_id: 'hall-a', seat_id: 'seat-1', status: 'present', unified_suspicion_score: 12, active_observations: [] },
+  { id: 'stu-2', student_id_number: 'STU-2026-002', name: 'Sarah Chen', classroom_id: 'hall-a', seat_id: 'seat-2', status: 'present', unified_suspicion_score: 18, active_observations: [] },
+  { id: 'stu-3', student_id_number: 'STU-2026-003', name: 'Marcus Vance', classroom_id: 'hall-a', seat_id: 'seat-3', status: 'present', unified_suspicion_score: 15, active_observations: [] },
+  { id: 'stu-4', student_id_number: 'STU-2026-004', name: 'Priya Sharma', classroom_id: 'hall-a', seat_id: 'seat-4', status: 'present', unified_suspicion_score: 10, active_observations: [] },
+  { id: 'stu-5', student_id_number: 'STU-2026-005', name: 'Liam Davis', classroom_id: 'hall-a', seat_id: 'seat-5', status: 'present', unified_suspicion_score: 14, active_observations: [] },
+  { id: 'stu-6', student_id_number: 'STU-2026-006', name: 'Emma Watson', classroom_id: 'hall-a', seat_id: 'seat-6', status: 'present', unified_suspicion_score: 8, active_observations: [] },
+  { id: 'stu-7', student_id_number: 'STU-2026-007', name: 'Daniel Kim', classroom_id: 'hall-a', seat_id: 'seat-7', status: 'present', unified_suspicion_score: 16, active_observations: [] },
+  { id: 'stu-8', student_id_number: 'STU-2026-008', name: 'Sophia Rodriguez', classroom_id: 'hall-a', seat_id: 'seat-8', status: 'present', unified_suspicion_score: 11, active_observations: [] },
+  { id: 'stu-9', student_id_number: 'STU-2026-009', name: 'Noah Martinez', classroom_id: 'hall-a', seat_id: 'seat-9', status: 'present', unified_suspicion_score: 13, active_observations: [] },
+  { id: 'stu-10', student_id_number: 'STU-2026-010', name: 'Olivia Taylor', classroom_id: 'hall-a', seat_id: 'seat-10', status: 'present', unified_suspicion_score: 9, active_observations: [] },
+  { id: 'stu-11', student_id_number: 'STU-2026-011', name: 'Ethan Brown', classroom_id: 'hall-a', seat_id: 'seat-11', status: 'present', unified_suspicion_score: 15, active_observations: [] },
+  { id: 'stu-12', student_id_number: 'STU-2026-012', name: 'Lucas Miller', classroom_id: 'hall-a', seat_id: 'seat-12', status: 'present', unified_suspicion_score: 12, active_observations: [] },
+  { id: 'stu-13', student_id_number: 'STU-2026-013', name: 'Mia Anderson', classroom_id: 'hall-a', seat_id: 'seat-13', status: 'present', unified_suspicion_score: 14, active_observations: [] },
+  { id: 'stu-14', student_id_number: 'STU-2026-014', name: 'Mason Thomas', classroom_id: 'hall-a', seat_id: 'seat-14', status: 'present', unified_suspicion_score: 10, active_observations: [] },
+  { id: 'stu-15', student_id_number: 'STU-2026-015', name: 'Ava Jackson', classroom_id: 'hall-a', seat_id: 'seat-15', status: 'present', unified_suspicion_score: 17, active_observations: [] },
+  { id: 'stu-16', student_id_number: 'STU-2026-016', name: 'James White', classroom_id: 'hall-a', seat_id: 'seat-16', status: 'present', unified_suspicion_score: 11, active_observations: [] }
 ];
 
-const DEFAULT_SEATS: SeatRecord[] = [
-  {
-    id: 'seat-1',
-    seat_label: 'A-01',
-    seat_number: 'A-01',
-    grid_row: 1,
-    grid_col: 1,
-    classroom_id: 'hall-a',
-    assigned_student_id: 'stu-1',
-    camera_regions: {
-      'cam-1': { x: 0.05, y: 0.15, width: 0.42, height: 0.75 }
-    }
-  },
-  {
-    id: 'seat-2',
-    seat_label: 'A-02',
-    seat_number: 'A-02',
-    grid_row: 1,
-    grid_col: 2,
-    classroom_id: 'hall-a',
-    assigned_student_id: 'stu-2',
-    camera_regions: {
-      'cam-1': { x: 0.50, y: 0.15, width: 0.42, height: 0.75 }
-    }
-  },
-  {
-    id: 'seat-3',
-    seat_label: 'B-01',
-    seat_number: 'B-01',
-    grid_row: 2,
-    grid_col: 1,
-    classroom_id: 'hall-a',
-    assigned_student_id: 'stu-3',
-    camera_regions: {
-      'cam-1': { x: 0.05, y: 0.55, width: 0.42, height: 0.40 }
-    }
-  },
-  {
-    id: 'seat-4',
-    seat_label: 'B-02',
-    seat_number: 'B-02',
-    grid_row: 2,
-    grid_col: 2,
-    classroom_id: 'hall-a',
-    assigned_student_id: 'stu-4',
-    camera_regions: {
-      'cam-1': { x: 0.50, y: 0.55, width: 0.42, height: 0.40 }
-    }
-  }
-];
+const DEFAULT_SEATS: SeatRecord[] = [];
 
 /**
  * Connect to MongoDB or activate fallback in-memory store
