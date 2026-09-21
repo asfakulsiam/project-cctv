@@ -200,83 +200,96 @@ export function drawCameraFeed(
       ctx.fillRect(phoneX + 2, phoneY + 2, phoneW - 4, phoneH - 4);
     }
 
-    // D. Main Bounding Box (Yellow for Warning, Red for Critical, Green for Normal)
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = isSelected ? 3 : (isWarning || isCritical ? 2.5 : 1.8);
-    ctx.strokeRect(px, py, pw, ph);
+    // -------------------------------------------------------------
+    // D. Minimalist Non-Obstructive Anchor & Tracking Reticle
+    // Replaces heavy full-body rectangles with clean floating HUD tags
+    // -------------------------------------------------------------
+    const centerX = px + pw / 2;
+    const topY = py;
 
-    // Subtle box inner tint on warning / critical
-    if (isWarning) {
-      ctx.fillStyle = 'rgba(234, 179, 8, 0.08)';
-      ctx.fillRect(px, py, pw, ph);
-    } else if (isCritical) {
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.12)';
-      ctx.fillRect(px, py, pw, ph);
+    // Subtle Anchor Pin / Micro-Crosshair at student head/center
+    ctx.strokeStyle = borderColor;
+    ctx.fillStyle = borderColor;
+    ctx.lineWidth = 1.5;
+
+    // Head center anchor dot
+    ctx.beginPath();
+    ctx.arc(centerX, topY + Math.min(12, ph * 0.15), 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // If selected or in warning/critical state, show refined corner brackets (no heavy full box)
+    if (isSelected || isWarning || isCritical) {
+      const cornerLen = Math.min(12, pw * 0.2);
+      ctx.strokeStyle = cornerColor;
+      ctx.lineWidth = isSelected ? 2.5 : 2;
+      ctx.beginPath();
+      // Top-Left
+      ctx.moveTo(px, py + cornerLen);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px + cornerLen, py);
+      // Top-Right
+      ctx.moveTo(px + pw - cornerLen, py);
+      ctx.lineTo(px + pw, py);
+      ctx.lineTo(px + pw, py + cornerLen);
+      // Bottom-Left
+      ctx.moveTo(px, py + ph - cornerLen);
+      ctx.lineTo(px, py + ph);
+      ctx.lineTo(px + cornerLen, py + ph);
+      // Bottom-Right
+      ctx.moveTo(px + pw - cornerLen, py + ph);
+      ctx.lineTo(px + pw, py + ph);
+      ctx.lineTo(px + pw, py + ph - cornerLen);
+      ctx.stroke();
+
+      if (isCritical) {
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.08)';
+        ctx.fillRect(px, py, pw, ph);
+      }
     }
 
-    // Accent corner brackets
-    const cornerLen = Math.min(16, pw * 0.22);
-    ctx.strokeStyle = cornerColor;
-    ctx.lineWidth = 3.5;
-    ctx.beginPath();
-    // Top-Left
-    ctx.moveTo(px, py + cornerLen);
-    ctx.lineTo(px, py);
-    ctx.lineTo(px + cornerLen, py);
-    // Top-Right
-    ctx.moveTo(px + pw - cornerLen, py);
-    ctx.lineTo(px + pw, py);
-    ctx.lineTo(px + pw, py + cornerLen);
-    // Bottom-Left
-    ctx.moveTo(px, py + ph - cornerLen);
-    ctx.lineTo(px, py + ph);
-    ctx.lineTo(px + cornerLen, py + ph);
-    // Bottom-Right
-    ctx.moveTo(px + pw - cornerLen, py + ph);
-    ctx.lineTo(px + pw, py + ph);
-    ctx.lineTo(px + pw, py + ph - cornerLen);
-    ctx.stroke();
-
-    // Center targeting crosshair
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-    ctx.lineWidth = 1;
-    const cx = px + pw / 2;
-    const cy = py + ph / 2;
-    ctx.beginPath();
-    ctx.moveTo(cx - 5, cy);
-    ctx.lineTo(cx + 5, cy);
-    ctx.moveTo(cx, cy - 5);
-    ctx.lineTo(cx, cy + 5);
-    ctx.stroke();
-
     // -------------------------------------------------------------
-    // E. Prominent Header Tag: Fixed Track ID + Student ID + Suspicion Score + Status
-    // (e.g. "CAM1-S001 | ID: STU-2026-001 • SCORE: 48 [WARNING]")
-    // STRICTLY ID ONLY - NO DUMMY NAMES
+    // E. Prominent Floating HUD Tag: Track ID + Student ID + Suspicion Score
+    // (Follows examinee smoothly, changes color dynamically: Green -> Yellow -> Red)
     // -------------------------------------------------------------
     const student = students.find(s => s.id === track.associated_student_id);
-    const studentIdText = student?.student_id_number ? ` | ID: ${student.student_id_number}` : '';
-    const tagText = `${track.track_id}${studentIdText} • SCORE: ${score} [${statusLabel}]`;
+    const studentIdText = student?.student_id_number ? ` [${student.student_id_number}]` : '';
+    const statusPrefix = isCritical ? '🚨 ' : (isWarning ? '⚠️ ' : '');
+    const tagText = `${statusPrefix}${track.track_id}${studentIdText} • SCORE: ${score}`;
     
     ctx.font = 'bold 11px "JetBrains Mono", monospace';
     const tagWidth = ctx.measureText(tagText).width + 16;
     const tagHeight = 22;
 
-    // Header Y position (clamped so it is never clipped by top canvas border)
-    const headerY = py >= tagHeight + 4 ? py - tagHeight - 2 : py + 2;
+    // Center the floating tag directly above the student
+    let tagX = centerX - tagWidth / 2;
+    // Keep tag inside canvas horizontal bounds
+    tagX = Math.max(4, Math.min(width - tagWidth - 4, tagX));
 
-    // Draw header background badge
+    // Floating tag Y position (floats smoothly above the student's head)
+    const floatingY = py >= tagHeight + 6 ? py - tagHeight - 4 : py + 4;
+
+    // Small connector line from tag down to anchor dot
+    if (py >= tagHeight + 6) {
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(centerX, floatingY + tagHeight);
+      ctx.lineTo(centerX, py);
+      ctx.stroke();
+    }
+
+    // Draw high-contrast floating badge with rounded feel
     ctx.fillStyle = badgeBg;
-    ctx.fillRect(px, headerY, tagWidth, tagHeight);
+    ctx.fillRect(tagX, floatingY, tagWidth, tagHeight);
 
-    // Border around header badge for high visual crispness
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+    // Subtle dark border around header badge for maximum readability on any background
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(px, headerY, tagWidth, tagHeight);
+    ctx.strokeRect(tagX, floatingY, tagWidth, tagHeight);
 
-    // Header badge text
+    // Floating tag text
     ctx.fillStyle = badgeTextColor;
-    ctx.fillText(tagText, px + 8, headerY + 15);
+    ctx.fillText(tagText, tagX + 8, floatingY + 15);
 
     // -------------------------------------------------------------
     // G. Bottom Telemetry Pills: Behavior Reasons & Alerts
