@@ -41,7 +41,8 @@ export type TrackStatus = 'candidate' | 'active' | 'lost' | 'terminated';
 export interface InternalTrackState {
   track_id: string;            // Layer 2: CAM1-T001
   camera_id: string;
-  global_person_id?: string;   // Layer 3: P-001 (set ONLY by GlobalIdentityManager)
+  person_id?: string;          // Layer 3: P-001
+  global_person_id?: string;   // Layer 3: P-001 (alias)
   status: TrackStatus;
   bbox: BoundingBox;
   target_bbox: BoundingBox;
@@ -448,7 +449,7 @@ export class CameraTracker {
         missed_frames: 0,
         head_pose: det.head_pose || { yaw: 0, pitch: 0, direction: 'center', confidence: 0 },
         face_visible: det.face_visible ?? false,
-        face_occluded: det.face_visible === false && (det.head_pose?.direction === 'center' || (det.face_confidence ?? 0) > 0.4),
+        face_occluded: ((det.face_confidence ?? 0) > 0.35) && det.face_visible === false,
         face_confidence: det.face_confidence ?? 0,
         phone_detected: det.phone_detected ?? false,
         phone_confidence: det.phone_confidence ?? 0,
@@ -588,9 +589,11 @@ export class CameraTracker {
     track.target_bbox = det.bbox;
     track.confidence = det.confidence;
     track.head_pose = det.head_pose || track.head_pose;
-    track.face_visible = det.face_visible !== undefined ? det.face_visible : track.face_visible;
-    track.face_occluded = det.face_visible === false && (det.head_pose?.direction === 'center' || (det.face_confidence ?? 0) > 0.4);
-    track.face_confidence = det.face_confidence ?? track.face_confidence;
+    const updatedFaceConfidence = det.face_confidence ?? track.face_confidence ?? 0;
+    const updatedFaceVisible = det.face_visible !== undefined ? det.face_visible : track.face_visible;
+    track.face_confidence = updatedFaceConfidence;
+    track.face_visible = updatedFaceVisible;
+    track.face_occluded = updatedFaceConfidence > 0.35 && updatedFaceVisible === false;
     track.phone_detected = det.phone_detected ?? false;
     track.phone_confidence = det.phone_confidence ?? 0;
     track.phone_bbox = det.phone_bbox;
@@ -673,7 +676,7 @@ export class CameraTracker {
       track.current_score = current;
       track.max_score = maxScore ?? Math.max(track.max_score || 0, current, cumulative);
       const warnThreshold = this.thresholds?.warning_suspicion_threshold ?? 40;
-      if (cumulative >= warnThreshold || current >= warnThreshold) {
+      if (current >= warnThreshold) {
         track.warning_latched = true;
       }
     }

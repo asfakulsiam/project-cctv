@@ -396,71 +396,89 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
 
   // Clear Student Warning / Reset Immediate Risk (Admin / Proctor Action)
   // Invariant: Unlatches warning and resets immediate risk, but preserves cumulative score
+  // Required flow: POST → check response.ok + success → update local state → return true
+  // On failure: do not change local state → return false
   const clearStudentWarning = useCallback(async (studentId: string): Promise<boolean> => {
     const adminToken = localStorage.getItem('admin_token') || '';
-    setStudents(prev => prev.map(s => s.id === studentId ? { ...s, current_score: 0, status: 'present' } : s));
-    if (selectedStudent?.id === studentId) {
-      setSelectedStudent(prev => prev ? { ...prev, current_score: 0, status: 'present' } : null);
-    }
-    setTracksByCamera(prev => {
-      const updated: Record<string, CameraTrack[]> = {};
-      for (const [camId, trks] of Object.entries(prev)) {
-        updated[camId] = trks.map(t => t.associated_student_id === studentId ? { 
-          ...t, 
-          current_score: 0, 
-          warning_latched: false, 
-          warning_cleared_at: Date.now() 
-        } : t);
-      }
-      return updated;
-    });
     try {
-      await fetch(`/api/students/${studentId}/clear-warning`, { 
+      const res = await fetch(`/api/students/${encodeURIComponent(studentId)}/clear-warning`, { 
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${adminToken}`,
           'Content-Type': 'application/json'
         }
       });
-    } catch {
-      // ignore
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!data.success) return false;
+
+      // Only update local state after server confirmation
+      setStudents(prev => prev.map(s => s.id === studentId ? { ...s, current_score: 0, status: 'present' } : s));
+      if (selectedStudent?.id === studentId) {
+        setSelectedStudent(prev => prev ? { ...prev, current_score: 0, status: 'present' } : null);
+      }
+      setTracksByCamera(prev => {
+        const updated: Record<string, CameraTrack[]> = {};
+        for (const [camId, trks] of Object.entries(prev)) {
+          updated[camId] = trks.map(t => t.associated_student_id === studentId ? { 
+            ...t, 
+            current_score: 0, 
+            warning_latched: false, 
+            warning_cleared_at: Date.now() 
+          } : t);
+        }
+        return updated;
+      });
+      return true;
+    } catch (err) {
+      console.error('Failed to clear student warning:', err);
+      return false;
     }
-    return true;
   }, [selectedStudent]);
 
   // Clear Track Warning / Reset Immediate Risk
+  // Required flow: POST → check response.ok + success → update local state → return true
+  // On failure: do not change local state → return false
   const clearTrackWarning = useCallback(async (trackId: string): Promise<boolean> => {
     const adminToken = localStorage.getItem('admin_token') || '';
-    setTracksByCamera(prev => {
-      const updated: Record<string, CameraTrack[]> = {};
-      for (const [camId, trks] of Object.entries(prev)) {
-        updated[camId] = trks.map(t => t.track_id === trackId ? { 
-          ...t, 
-          current_score: 0, 
-          warning_latched: false, 
-          warning_cleared_at: Date.now() 
-        } : t);
-      }
-      return updated;
-    });
-    if (selectedTrack?.track_id === trackId) {
-      setSelectedTrack(prev => prev ? { 
-        ...prev, 
-        current_score: 0, 
-        warning_latched: false, 
-        warning_cleared_at: Date.now() 
-      } : null);
-    }
     try {
-      await fetch(`/api/tracks/${trackId}/clear-warning`, { 
+      const res = await fetch(`/api/tracks/${encodeURIComponent(trackId)}/clear-warning`, { 
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${adminToken}`,
           'Content-Type': 'application/json'
         }
       });
-    } catch {}
-    return true;
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!data.success) return false;
+
+      // Only update local state after server confirmation
+      setTracksByCamera(prev => {
+        const updated: Record<string, CameraTrack[]> = {};
+        for (const [camId, trks] of Object.entries(prev)) {
+          updated[camId] = trks.map(t => t.track_id === trackId ? { 
+            ...t, 
+            current_score: 0, 
+            warning_latched: false, 
+            warning_cleared_at: Date.now() 
+          } : t);
+        }
+        return updated;
+      });
+      if (selectedTrack?.track_id === trackId) {
+        setSelectedTrack(prev => prev ? { 
+          ...prev, 
+          current_score: 0, 
+          warning_latched: false, 
+          warning_cleared_at: Date.now() 
+        } : null);
+      }
+      return true;
+    } catch (err) {
+      console.error('Failed to clear track warning:', err);
+      return false;
+    }
   }, [selectedTrack]);
 
   // Broadcast Real-time Video Detections to Local State & Backend Server

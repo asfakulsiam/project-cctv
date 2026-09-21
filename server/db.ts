@@ -318,13 +318,36 @@ export const db = {
   },
 
   async updateStudent(id: string, updates: Partial<StudentRecord>): Promise<StudentRecord | null> {
+    const cleanUpdates = { ...updates };
+    const toUnset: any = {};
+
+    if ('person_id' in cleanUpdates && (cleanUpdates.person_id === null || cleanUpdates.person_id === undefined)) {
+      delete cleanUpdates.person_id;
+      toUnset.person_id = "";
+    }
+    if ('global_person_id' in cleanUpdates && (cleanUpdates.global_person_id === null || cleanUpdates.global_person_id === undefined)) {
+      delete cleanUpdates.global_person_id;
+      toUnset.global_person_id = "";
+    }
+
     if (!isUsingFallback && mongoDb) {
-      await mongoDb.collection('students').updateOne({ id }, { $set: updates });
+      const updateDoc: any = {};
+      if (Object.keys(cleanUpdates).length > 0) updateDoc.$set = cleanUpdates;
+      if (Object.keys(toUnset).length > 0) updateDoc.$unset = toUnset;
+      if (Object.keys(updateDoc).length > 0) {
+        await mongoDb.collection('students').updateOne({ id }, updateDoc);
+      }
       return this.getStudentById(id);
     }
     const idx = memoryStore.students.findIndex(s => s.id === id);
     if (idx !== -1) {
-      memoryStore.students[idx] = { ...memoryStore.students[idx], ...updates };
+      memoryStore.students[idx] = { ...memoryStore.students[idx], ...cleanUpdates };
+      if (toUnset.person_id !== undefined) {
+        delete (memoryStore.students[idx] as any).person_id;
+      }
+      if (toUnset.global_person_id !== undefined) {
+        delete (memoryStore.students[idx] as any).global_person_id;
+      }
       return memoryStore.students[idx];
     }
     return null;

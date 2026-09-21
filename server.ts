@@ -347,16 +347,14 @@ async function startServer() {
   app.put('/api/students/:id', requireAdminAuth, async (req, res) => {
     try {
       // Whitelist only editable profile fields: student_id_number, name, seat_id, notes, classroom_id
-      // CV state (current_score, cumulative_score, max_score, warning_latched, global_person_id) remains owned by CV engine
-      const { student_id_number, name, seat_id, notes, classroom_id, person_id, global_person_id } = req.body;
+      // CV state (current_score, cumulative_score, max_score, warning_latched) and Person IDs remain owned by CV engine & association endpoints
+      const { student_id_number, name, seat_id, notes, classroom_id } = req.body;
       const allowedUpdates: any = {};
       if (student_id_number !== undefined) allowedUpdates.student_id_number = student_id_number;
       if (name !== undefined) allowedUpdates.name = name;
       if (seat_id !== undefined) allowedUpdates.seat_id = seat_id;
       if (notes !== undefined) allowedUpdates.notes = notes;
       if (classroom_id !== undefined) allowedUpdates.classroom_id = classroom_id;
-      if (person_id !== undefined) allowedUpdates.person_id = person_id;
-      if (global_person_id !== undefined) allowedUpdates.global_person_id = global_person_id;
 
       const updated = await db.updateStudent(req.params.id, allowedUpdates);
       if (!updated) return res.status(404).json({ error: 'Student not found' });
@@ -943,11 +941,45 @@ async function startServer() {
     try {
       const personId = req.params.id;
       const { student_id } = req.body; // string or null
+      
+      const allStudents = await db.getStudents();
+
+      if (student_id) {
+        const targetStudent = allStudents.find(s => s.id === student_id);
+        if (!targetStudent) {
+          return res.status(404).json({ error: 'Student not found' });
+        }
+
+        // Sever any other student that had this person_id in DB
+        for (const s of allStudents) {
+          if (s.id !== student_id && (s.person_id === personId || s.global_person_id === personId)) {
+            await db.updateStudent(s.id, { person_id: null as any, global_person_id: null as any });
+          }
+        }
+
+        // Persist association to DB
+        await db.updateStudent(student_id, {
+          person_id: personId,
+          global_person_id: personId
+        });
+      } else {
+        // Unassign: clear person_id and global_person_id from any student associated with this personId in DB
+        for (const s of allStudents) {
+          if (s.person_id === personId || s.global_person_id === personId) {
+            await db.updateStudent(s.id, { person_id: null as any, global_person_id: null as any });
+          }
+        }
+      }
+
       if (cvEngine) {
         const success = cvEngine.associatePersonWithStudent(personId, student_id || null);
         if (!success) {
           return res.status(404).json({ error: 'Person ID not found or student ID invalid' });
         }
+        // Keep CV runtime state synchronized with DB
+        const refreshedStudents = await db.getStudents();
+        cvEngine.updateStudentList(refreshedStudents);
+
         res.json({ success: true, person_id: personId, student_id: student_id || null });
       } else {
         res.status(503).json({ error: 'CV engine not initialized' });

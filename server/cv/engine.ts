@@ -55,6 +55,9 @@ export class StandardFrameSource implements FrameSource {
   private isConnected = false;
   private currentFrame: any | null = null;
   private lastFrameTime = 0;
+  private frameCount = 0;
+  private lastFpsCalcTime = Date.now();
+  private measuredFps = 0;
 
   constructor(camera: CameraConfig) {
     this.camera = camera;
@@ -66,7 +69,15 @@ export class StandardFrameSource implements FrameSource {
 
   public pushFrame(frame: any): void {
     this.currentFrame = frame;
-    this.lastFrameTime = Date.now();
+    const now = Date.now();
+    this.lastFrameTime = now;
+    this.frameCount++;
+    const elapsed = now - this.lastFpsCalcTime;
+    if (elapsed >= 1000) {
+      this.measuredFps = Math.round((this.frameCount * 1000) / elapsed);
+      this.frameCount = 0;
+      this.lastFpsCalcTime = now;
+    }
   }
 
   public async readFrame(): Promise<any | null> {
@@ -74,6 +85,7 @@ export class StandardFrameSource implements FrameSource {
     // Expire frames older than 2.5 seconds to prevent stale data
     if (this.currentFrame && Date.now() - this.lastFrameTime > 2500) {
       this.currentFrame = null;
+      this.measuredFps = 0;
     }
     return this.currentFrame;
   }
@@ -81,13 +93,15 @@ export class StandardFrameSource implements FrameSource {
   public async close(): Promise<void> {
     this.isConnected = false;
     this.currentFrame = null;
+    this.measuredFps = 0;
   }
 
   public getStatus(): { connected: boolean; fps: number; error?: string } {
+    const isReceiving = this.lastFrameTime > 0 && (Date.now() - this.lastFrameTime) <= 2500;
     return {
-      connected: this.isConnected,
-      fps: (this.camera as any).fps || 15,
-      error: this.camera.status === 'offline' ? 'Camera offline' : undefined
+      connected: this.isConnected && (this.camera.status === 'online'),
+      fps: isReceiving ? this.measuredFps : 0,
+      error: this.camera.status === 'offline' ? 'Camera offline' : (!isReceiving && this.isConnected ? 'No incoming frames' : undefined)
     };
   }
 }
@@ -413,10 +427,18 @@ export class CVEngine {
 
   public async clearStudentWarning(studentId: string): Promise<boolean> {
     this.unifiedStudentManager.clearStudentWarning(studentId);
+    const student = this.unifiedStudentManager.getStudentRecord(studentId);
+    const personId = student?.person_id || student?.global_person_id;
+
     for (const tracker of this.trackers.values()) {
       for (const trackId of tracker.getActiveTrackIds()) {
         const track = tracker.getTrack(trackId);
-        if (track && track.associated_student_id === studentId) {
+        const matches = track && (
+          track.associated_student_id === studentId ||
+          (personId && track.person_id === personId) ||
+          (personId && track.global_person_id === personId)
+        );
+        if (matches) {
           tracker.clearTrackWarning(trackId);
           this.behaviorAnalyzer.clearTrackWarning(trackId);
         }
@@ -425,7 +447,11 @@ export class CVEngine {
     // Immediately unlatch and reset score on associated cached tracks
     for (const tracks of this.latestTracksByCamera.values()) {
       for (const t of tracks) {
-        if (t.associated_student_id === studentId) {
+        if (
+          t.associated_student_id === studentId ||
+          (personId && t.person_id === personId) ||
+          (personId && t.global_person_id === personId)
+        ) {
           t.warning_latched = false;
           t.current_score = 0;
           t.warning_cleared_at = Date.now();
@@ -597,6 +623,10 @@ export class CVEngine {
 
   public associatePersonWithStudent(personId: string, studentId: string | null): boolean {
     return this.unifiedStudentManager.associatePersonWithStudent(personId, studentId);
+  }
+
+  public updateStudentList(students: StudentRecord[]): void {
+    this.unifiedStudentManager.updateStudentList(students);
   }
 
   public registerClient(ws: WebSocket): void {

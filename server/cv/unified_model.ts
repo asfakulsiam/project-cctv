@@ -150,14 +150,26 @@ export class UnifiedStudentManager {
       }
     }
 
-    // Update or insert students, preserving person_id
+    // Update or insert students, preserving person_id with DB as the persistent source of truth
     for (const s of students) {
       const existing = this.students.get(s.id);
-      const pid = s.person_id || s.global_person_id || existing?.person_id || existing?.global_person_id;
+      const pid = (s.person_id || s.global_person_id) ? (s.person_id || s.global_person_id) : undefined;
       if (pid && /^P-\d+$/i.test(pid)) {
         const num = parseInt(pid.replace(/^P-/i, ''), 10);
         if (!isNaN(num) && num >= this.next_person_number) {
           this.next_person_number = num + 1;
+        }
+      }
+
+      // If existing had a person_id that is no longer assigned, sever it from global persons
+      if (existing && existing.person_id && existing.person_id !== pid) {
+        const oldGp = this.global_persons.get(existing.person_id);
+        if (oldGp && oldGp.associated_student_id === s.id) {
+          oldGp.associated_student_id = undefined;
+          oldGp.associated_student_name = undefined;
+          oldGp.student_id = undefined;
+          oldGp.student_id_number = undefined;
+          oldGp.student_name = undefined;
         }
       }
 
@@ -172,13 +184,15 @@ export class UnifiedStudentManager {
           person_id: pid,
           global_person_id: pid
         });
-        // Update associated Global Person display name without mutating person_id
+        // Update associated Global Person display name
         if (pid) {
           const gp = this.global_persons.get(pid);
           if (gp) {
+            gp.associated_student_id = s.id;
             gp.associated_student_name = s.name;
-            gp.student_name = s.name;
+            gp.student_id = s.id;
             gp.student_id_number = s.student_id_number;
+            gp.student_name = s.name;
           }
         }
       } else {
@@ -680,15 +694,7 @@ export class UnifiedStudentManager {
     if (!student) return false;
     // Proctor clearance: Reset immediate current risk, preserve cumulative score and max score
     student.current_score = 0;
-    student.warning_level = getWarningLevel(student.unified_suspicion_score, {
-      looking_duration_sec: 3.5,
-      face_hidden_duration_sec: 4.0,
-      leave_seat_grace_sec: 5.0,
-      phone_confidence_min: 0.65,
-      high_suspicion_threshold: this.thresholds.high_suspicion_threshold,
-      warning_suspicion_threshold: this.thresholds.warning_suspicion_threshold,
-      movement_threshold_px: 25
-    });
+    student.warning_level = 'normal';
     if (student.unified_suspicion_score < this.thresholds.high_suspicion_threshold) {
       student.status = 'present';
     }

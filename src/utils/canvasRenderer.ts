@@ -317,8 +317,10 @@ export function drawCameraFeed(
       badgeOffset += phoneW + 3;
     }
 
-    // Face Occlusion Alert - Only when face_occluded is confirmed, not merely off-angle face
-    if (track.face_occluded) {
+    // Face Occlusion Alert - Only when actual face analysis exists (face_confidence > 0.35) and confirms occlusion
+    const hasActualFaceAnalysis = (track.face_confidence ?? 0) > 0.35;
+    const isFaceOccluded = hasActualFaceAnalysis && (track.face_occluded === true || track.face_visible === false);
+    if (isFaceOccluded) {
       const faceText = 'FACE OCCLUDED';
       ctx.font = 'bold 8px "JetBrains Mono", monospace';
       const faceW = ctx.measureText(faceText).width + 8;

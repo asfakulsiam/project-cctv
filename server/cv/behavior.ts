@@ -430,6 +430,7 @@ export class BehaviorAnalyzer {
    */
   public clearTrackWarning(track_id: string): void {
     const ctx = this.track_contexts.get(track_id);
+    const now = Date.now();
     if (ctx) {
       ctx.active_penalties = {
         looking_turn: 0,
@@ -438,14 +439,21 @@ export class BehaviorAnalyzer {
         out_of_seat: 0,
         abnormal_motion: 0
       };
+      ctx.current_direction = 'center';
+      ctx.direction_started_at = now;
       ctx.looking_turn_count = 0;
       ctx.looking_alert_fired = false;
+      ctx.last_turn_timestamp = now;
+      ctx.last_repeated_looking_event_time = now;
       ctx.face_missing_since = null;
       ctx.face_missing_alert_fired = false;
       ctx.phone_detected_since = null;
+      ctx.last_phone_alert_time = now;
       ctx.is_out_of_seat = false;
       ctx.left_seat_since = null;
       ctx.left_seat_alert_fired = false;
+      ctx.velocity_spikes = 0;
+      ctx.last_abnormal_movement_time = now;
     }
   }
 
