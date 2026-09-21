@@ -27,6 +27,7 @@
 import { 
   BoundingBox, 
   CameraTrack, 
+  MonitoringThresholds,
   HeadDirection, 
   HeadPoseData, 
   HumanDetection, 
@@ -157,6 +158,12 @@ export class MotionVisionDetector {
   // State maps
   private activeTracks: Map<string, InternalPersonTrack> = new Map();
   private candidateBuffer: Map<string, CandidateEvidenceItem> = new Map();
+
+  public thresholds: Partial<MonitoringThresholds> = {};
+
+  public setThresholds(thresholds: Partial<MonitoringThresholds>): void {
+    this.thresholds = { ...this.thresholds, ...thresholds };
+  }
 
   // Multi-frame confirmation parameters (rejects single-frame noise & flickers)
   private readonly confirmationHitsRequired = 5;   // ~0.35s - 0.5s multi-frame window
@@ -883,11 +890,11 @@ export class MotionVisionDetector {
       activeAnomalyWindow += 25;
     }
 
-    // 3. Face Occlusion
-    if (!track.face_visible) {
+    // 3. Face Occlusion - Only when face analysis was actually performed with valid confidence (> 0.35)
+    if (track.face_confidence > 0.35 && !track.face_visible) {
       if (!track.face_hidden_since) track.face_hidden_since = now;
       const hiddenSec = (now - track.face_hidden_since) / 1000;
-      if (hiddenSec >= 2.5) {
+      if (hiddenSec >= (this.thresholds?.face_hidden_duration_sec ?? 2.5)) {
         activeAnomalyWindow += 30;
       }
     } else {
@@ -895,12 +902,12 @@ export class MotionVisionDetector {
     }
 
     // 4. Agitated Movement contribution
-    if (track.movement_magnitude > 45) {
+    if (track.movement_magnitude > (this.thresholds?.movement_threshold_px ?? 45)) {
       activeAnomalyWindow += Math.min(30, Math.round(track.movement_magnitude * 0.35));
     }
 
-    // 5. Phone Detection
-    if (track.phone_detected) {
+    // 5. Phone Detection - Only when confidence is above minimum threshold
+    if (track.phone_detected && (track.phone_confidence >= (this.thresholds?.phone_confidence_min ?? 0.65))) {
       activeAnomalyWindow += 50;
     }
 
@@ -914,8 +921,9 @@ export class MotionVisionDetector {
     }
     track.suspicion_score = track.cumulative_score;
 
-    // Latch warning if cumulative score or current score crosses threshold (>= 60)
-    if (track.cumulative_score >= 60 || track.current_score >= 60) {
+    // Latch warning if cumulative score or current score crosses configured threshold
+    const warnThreshold = this.thresholds?.warning_suspicion_threshold ?? 40;
+    if (track.cumulative_score >= warnThreshold || track.current_score >= warnThreshold) {
       track.warning_latched = true;
     }
   }

@@ -13,7 +13,8 @@ import {
   SystemStats, 
   RealtimeStateMessage,
   ExamSession,
-  SeatRecord
+  SeatRecord,
+  GlobalPerson
 } from '../types.js';
 
 interface MonitoringContextType {
@@ -28,6 +29,7 @@ interface MonitoringContextType {
   stats: SystemStats;
   session: ExamSession | null;
   seats: SeatRecord[];
+  globalPersons: GlobalPerson[];
   isConnected: boolean;
   selectedStudent: StudentRecord | null;
   selectedTrack: CameraTrack | null;
@@ -49,6 +51,9 @@ interface MonitoringContextType {
   broadcastDetections: (cameraId: string, detections: CameraTrack[]) => void;
   clearActivityEvents: () => Promise<boolean>;
   associatePersonWithStudent: (personId: string, studentId: string | null) => Promise<boolean>;
+  editCandidate: (personId: string, updates: { seat_id?: string; student_id?: string | null; notes?: string }) => Promise<boolean>;
+  deleteCandidate: (personId: string) => Promise<boolean>;
+  clearCurrentCandidates: () => Promise<boolean>;
 }
 
 const defaultStats: SystemStats = {
@@ -96,6 +101,7 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
   const [stats, setStats] = useState<SystemStats>(defaultStats);
   const [session, setSession] = useState<ExamSession | null>(null);
   const [seats, setSeats] = useState<SeatRecord[]>([]);
+  const [globalPersons, setGlobalPersons] = useState<GlobalPerson[]>([]);
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [selectedStudent, setSelectedStudent] = useState<StudentRecord | null>(null);
   const [selectedTrack, setSelectedTrack] = useState<CameraTrack | null>(null);
@@ -106,13 +112,14 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
   // Initial HTTP Fetch
   const refreshData = useCallback(async () => {
     try {
-      const [settingsRes, camerasRes, studentsRes, eventsRes, sessionRes, seatsRes] = await Promise.all([
+      const [settingsRes, camerasRes, studentsRes, eventsRes, sessionRes, seatsRes, candidatesRes] = await Promise.all([
         fetch('/api/settings').then(r => r.json()),
         fetch('/api/cameras').then(r => r.json()),
         fetch('/api/students').then(r => r.json()),
         fetch('/api/events?limit=40').then(r => r.json()),
         fetch('/api/session').then(r => r.json()),
-        fetch('/api/seats').then(r => r.json())
+        fetch('/api/seats').then(r => r.json()),
+        fetch('/api/candidates').then(r => r.json()).catch(() => [])
       ]);
 
       setSettings(settingsRes);
@@ -121,6 +128,7 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
       setEvents(prev => mergeDeduplicatedEvents(prev, eventsRes));
       setSession(sessionRes);
       setSeats(seatsRes);
+      if (Array.isArray(candidatesRes)) setGlobalPersons(candidatesRes);
 
       const primary = camerasRes.find((c: CameraConfig) => c.is_primary)?.camera_id || (camerasRes[0]?.camera_id || '');
       setPrimaryCameraId(primary);
@@ -161,11 +169,15 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
             if (msg.students) setStudents(msg.students);
             if (msg.events) setEvents(prev => mergeDeduplicatedEvents(prev, msg.events || []));
             if (msg.stats) setStats(msg.stats);
+            if ((msg as any).global_persons) setGlobalPersons((msg as any).global_persons);
           } else if ((msg as any).type === 'ACTIVITY_CLEARED') {
             setEvents([]);
           } else if (msg.type === 'TELEMETRY_UPDATE') {
             if (msg.tracks_by_camera) {
               setTracksByCamera(msg.tracks_by_camera);
+            }
+            if ((msg as any).global_persons) {
+              setGlobalPersons((msg as any).global_persons);
             }
             if (msg.students) {
               setStudents(msg.students);
@@ -550,6 +562,73 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
     }
   }, [refreshData]);
 
+  // Edit Candidate Metadata (Admin only)
+  const editCandidate = useCallback(async (personId: string, updates: { seat_id?: string; student_id?: string | null; notes?: string }): Promise<boolean> => {
+    const adminToken = localStorage.getItem('admin_token') || '';
+    try {
+      const res = await fetch(`/api/candidates/${encodeURIComponent(personId)}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updates)
+      });
+      if (res.ok) {
+        await refreshData();
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to edit candidate:', err);
+      return false;
+    }
+  }, [refreshData]);
+
+  // Delete Candidate (Admin only)
+  const deleteCandidate = useCallback(async (personId: string): Promise<boolean> => {
+    const adminToken = localStorage.getItem('admin_token') || '';
+    try {
+      const res = await fetch(`/api/candidates/${encodeURIComponent(personId)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (res.ok) {
+        await refreshData();
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to delete candidate:', err);
+      return false;
+    }
+  }, [refreshData]);
+
+  // Clear All Current Candidates (Admin only)
+  const clearCurrentCandidates = useCallback(async (): Promise<boolean> => {
+    const adminToken = localStorage.getItem('admin_token') || '';
+    try {
+      const res = await fetch('/api/candidates/clear', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (res.ok) {
+        await refreshData();
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error('Failed to clear current candidates:', err);
+      return false;
+    }
+  }, [refreshData]);
+
   return (
     <MonitoringContext.Provider
       value={{
@@ -563,6 +642,7 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
         stats,
         session,
         seats,
+        globalPersons,
         isConnected,
         selectedStudent,
         selectedTrack,
@@ -581,7 +661,10 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
         testCameraConnection,
         broadcastDetections,
         clearActivityEvents,
-        associatePersonWithStudent
+        associatePersonWithStudent,
+        editCandidate,
+        deleteCandidate,
+        clearCurrentCandidates
       }}
     >
       {children}

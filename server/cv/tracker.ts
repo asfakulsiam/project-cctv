@@ -692,6 +692,29 @@ export class CameraTracker {
     return true;
   }
 
+  public removeTrack(trackId: string): boolean {
+    const deletedActive = this.active_tracks.delete(trackId);
+    const deletedCand = this.candidate_tracks.delete(trackId);
+    return deletedActive || deletedCand;
+  }
+
+  public removeTracksByPersonId(personId: string): string[] {
+    const removed: string[] = [];
+    for (const [id, t] of this.active_tracks.entries()) {
+      if (t.global_person_id === personId || t.person_id === personId) {
+        this.active_tracks.delete(id);
+        removed.push(id);
+      }
+    }
+    for (const [id, t] of this.candidate_tracks.entries()) {
+      if (t.global_person_id === personId || t.person_id === personId) {
+        this.candidate_tracks.delete(id);
+        removed.push(id);
+      }
+    }
+    return removed;
+  }
+
   public reset(): void {
     this.active_tracks.clear();
     this.candidate_tracks.clear();

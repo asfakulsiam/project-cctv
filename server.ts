@@ -937,7 +937,7 @@ async function startServer() {
   });
 
   // Person ID to Student Association (Admin Control)
-  app.post('/api/persons/:id/associate', requireAdminAuth, async (req, res) => {
+  const handlePersonAssociate = async (req: express.Request, res: express.Response) => {
     try {
       const personId = req.params.id;
       const { student_id } = req.body; // string or null
@@ -984,6 +984,72 @@ async function startServer() {
       } else {
         res.status(503).json({ error: 'CV engine not initialized' });
       }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  };
+
+  app.post('/api/persons/:id/associate', requireAdminAuth, handlePersonAssociate);
+  app.post('/api/candidates/:id/associate', requireAdminAuth, handlePersonAssociate);
+
+  // -------------------------------------------------------------
+  // EXAM CANDIDATE MANAGEMENT (Layer 3 Confirmed Real Persons)
+  // -------------------------------------------------------------
+
+  // Get Current Exam Candidates (Camera Confirmed)
+  app.get('/api/candidates', (req, res) => {
+    try {
+      const candidates = cvEngine ? cvEngine.getCandidates() : [];
+      res.json(candidates);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/persons', (req, res) => {
+    try {
+      const persons = cvEngine ? cvEngine.getAllGlobalPersons() : [];
+      res.json(persons);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Edit Candidate Metadata (Technical ID is immutable)
+  app.put('/api/candidates/:id', requireAdminAuth, async (req, res) => {
+    try {
+      const personId = req.params.id;
+      const { seat_id, student_id, notes } = req.body;
+      if (!cvEngine) return res.status(503).json({ error: 'CV engine not initialized' });
+
+      const updated = cvEngine.editCandidate(personId, { seat_id, student_id, notes });
+      if (!updated) return res.status(404).json({ error: 'Exam candidate not found' });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete Single Candidate
+  app.delete('/api/candidates/:id', requireAdminAuth, async (req, res) => {
+    try {
+      const personId = req.params.id;
+      if (!cvEngine) return res.status(503).json({ error: 'CV engine not initialized' });
+
+      const deleted = await cvEngine.deleteCandidate(personId);
+      res.json({ success: deleted, person_id: personId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Clear All Current Candidates (Runtime Reset, DB & Events Preserved)
+  app.post('/api/candidates/clear', requireAdminAuth, async (req, res) => {
+    try {
+      if (!cvEngine) return res.status(503).json({ error: 'CV engine not initialized' });
+
+      await cvEngine.clearCandidates();
+      res.json({ success: true, message: 'All current exam candidates cleared. System ready for fresh capture.' });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

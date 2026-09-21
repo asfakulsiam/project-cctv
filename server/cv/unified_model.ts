@@ -89,32 +89,13 @@ export class UnifiedStudentManager {
         ...student,
         person_id: pid,
         global_person_id: pid,
+        status: 'absent',
         current_score: 0,
         cumulative_score: 0,
         max_score: 0,
         warning_level: 'normal',
         active_observations: []
       });
-      if (pid && !this.global_persons.has(pid)) {
-        this.global_persons.set(pid, {
-          id: pid,
-          person_id: pid,
-          global_person_id: pid,
-          associated_student_id: student.id,
-          associated_student_name: student.name,
-          student_id: student.id,
-          student_id_number: student.student_id_number,
-          student_name: student.name,
-          seat_id: student.seat_id,
-          camera_tracks: [],
-          current_score: 0,
-          cumulative_score: 0,
-          max_score: 0,
-          warning_latched: false,
-          last_seen: Date.now(),
-          status: student.seat_id ? 'in_seat' : 'unassigned'
-        });
-      }
     }
   }
 
@@ -196,35 +177,27 @@ export class UnifiedStudentManager {
           }
         }
       } else {
+        const existing = this.students.get(s.id);
         this.students.set(s.id, {
           ...s,
           person_id: pid,
           global_person_id: pid,
-          current_score: 0,
-          cumulative_score: 0,
-          max_score: 0,
-          warning_level: 'normal',
-          active_observations: []
+          status: existing ? existing.status : 'absent',
+          current_score: existing ? existing.current_score : 0,
+          cumulative_score: existing ? existing.cumulative_score : 0,
+          max_score: existing ? existing.max_score : 0,
+          warning_level: existing ? existing.warning_level : 'normal',
+          active_observations: existing ? existing.active_observations : []
         });
-        if (pid && !this.global_persons.has(pid)) {
-          this.global_persons.set(pid, {
-            id: pid,
-            person_id: pid,
-            global_person_id: pid,
-            associated_student_id: s.id,
-            associated_student_name: s.name,
-            student_id: s.id,
-            student_id_number: s.student_id_number,
-            student_name: s.name,
-            seat_id: s.seat_id,
-            camera_tracks: [],
-            current_score: 0,
-            cumulative_score: 0,
-            max_score: 0,
-            warning_latched: false,
-            last_seen: Date.now(),
-            status: s.seat_id ? 'in_seat' : 'unassigned'
-          });
+        // If active global person already exists for this person_id, update metadata
+        if (pid && this.global_persons.has(pid)) {
+          const gp = this.global_persons.get(pid)!;
+          gp.associated_student_id = s.id;
+          gp.associated_student_name = s.name;
+          gp.student_id = s.id;
+          gp.student_id_number = s.student_id_number;
+          gp.student_name = s.name;
+          if (s.seat_id) gp.seat_id = s.seat_id;
         }
       }
     }
@@ -685,8 +658,58 @@ export class UnifiedStudentManager {
 
     return {
       students: Array.from(this.students.values()),
-      globalPersons: Array.from(this.global_persons.values())
+      globalPersons: Array.from(this.global_persons.values()).filter(gp => gp.camera_tracks && gp.camera_tracks.length > 0)
     };
+  }
+
+  public getCandidates(): GlobalPerson[] {
+    return Array.from(this.global_persons.values()).filter(gp => gp.camera_tracks && gp.camera_tracks.length > 0);
+  }
+
+  public editCandidate(personId: string, updates: { seat_id?: string; student_id?: string | null; notes?: string }): GlobalPerson | null {
+    const gp = this.global_persons.get(personId);
+    if (!gp) return null;
+
+    if (updates.seat_id !== undefined) {
+      gp.seat_id = updates.seat_id || undefined;
+    }
+    if (updates.student_id !== undefined) {
+      this.associatePersonWithStudent(personId, updates.student_id);
+    }
+    return gp;
+  }
+
+  public deleteCandidate(personId: string): boolean {
+    const gp = this.global_persons.get(personId);
+    if (!gp) return false;
+
+    // Unlink from student
+    if (gp.associated_student_id) {
+      const student = this.students.get(gp.associated_student_id);
+      if (student) {
+        student.active_observations = [];
+        student.status = 'absent';
+        student.current_score = 0;
+        student.warning_level = 'normal';
+      }
+    }
+
+    this.global_persons.delete(personId);
+    return true;
+  }
+
+  public clearCurrentCandidates(): boolean {
+    this.global_persons.clear();
+    this.trackSeatStability.clear();
+    this.recentEventsCache.clear();
+
+    for (const student of this.students.values()) {
+      student.active_observations = [];
+      student.status = 'absent';
+      student.current_score = 0;
+      student.warning_level = 'normal';
+    }
+    return true;
   }
 
   public clearStudentWarning(studentId: string): boolean {

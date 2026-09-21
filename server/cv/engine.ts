@@ -662,6 +662,9 @@ export class CVEngine {
     const statusColor = cam.status === 'online' ? '#10b981' : '#ef4444';
     const timestamp = new Date().toLocaleTimeString();
     
+    const warnThreshold = this.settings.thresholds?.warning_suspicion_threshold ?? 40;
+    const highThreshold = this.settings.thresholds?.high_suspicion_threshold ?? 65;
+    
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360">
       <rect width="640" height="360" fill="#090d16" />
       <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -676,12 +679,87 @@ export class CVEngine {
         const y = t.bbox.y * 360;
         const w = t.bbox.width * 640;
         const h = t.bbox.height * 360;
-        const color = t.warning_latched || (t.suspicion_score || 0) >= 65 ? '#ef4444' : ((t.suspicion_score || 0) >= 35 ? '#eab308' : '#10b981');
+        const color = t.warning_latched || (t.suspicion_score || 0) >= highThreshold ? '#ef4444' : ((t.suspicion_score || 0) >= warnThreshold ? '#eab308' : '#10b981');
         return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="none" stroke="${color}" stroke-width="1.5"/>
         <rect x="${x}" y="${Math.max(0, y - 14)}" width="${Math.min(100, w)}" height="14" fill="${color}"/>
         <text x="${x + 4}" y="${Math.max(10, y - 3)}" fill="#000" font-family="monospace" font-size="9" font-weight="bold">${t.track_id} (${Math.round(t.suspicion_score || 0)})</text>`;
       }).join('')}
     </svg>`;
+  }
+
+  public getCandidates(): GlobalPerson[] {
+    return this.unifiedStudentManager.getCandidates();
+  }
+
+  public getAllGlobalPersons(): GlobalPerson[] {
+    return this.unifiedStudentManager.getAllGlobalPersons();
+  }
+
+  public getGlobalPerson(personId: string): GlobalPerson | undefined {
+    return this.unifiedStudentManager.getGlobalPerson(personId);
+  }
+
+  public editCandidate(personId: string, updates: { seat_id?: string; student_id?: string | null; notes?: string }): GlobalPerson | null {
+    const updated = this.unifiedStudentManager.editCandidate(personId, updates);
+    if (updated) {
+      this.latestGlobalPersons = this.unifiedStudentManager.getCandidates();
+      this.latestUnifiedStudents = this.unifiedStudentManager.getStudents();
+    }
+    return updated;
+  }
+
+  public async deleteCandidate(personId: string): Promise<boolean> {
+    for (const tracker of this.trackers.values()) {
+      tracker.removeTracksByPersonId(personId);
+    }
+    const deleted = this.unifiedStudentManager.deleteCandidate(personId);
+    for (const [camId, tracks] of this.latestTracksByCamera.entries()) {
+      this.latestTracksByCamera.set(camId, tracks.filter(t => t.global_person_id !== personId && t.person_id !== personId));
+    }
+    this.latestGlobalPersons = this.latestGlobalPersons.filter(gp => gp.id !== personId && gp.person_id !== personId);
+    this.latestUnifiedStudents = this.unifiedStudentManager.getStudents();
+    
+    const now = Date.now();
+    const stats = this.computeRealtimeStats(this.latestTracksByCamera, this.latestUnifiedStudents, this.latestGlobalPersons);
+    this.cachedStats = stats;
+    this.broadcastTelemetry({
+      type: 'TELEMETRY_UPDATE',
+      timestamp: now,
+      tracks_by_camera: Object.fromEntries(this.latestTracksByCamera.entries()),
+      students: this.latestUnifiedStudents,
+      global_persons: this.latestGlobalPersons,
+      stats
+    });
+    return deleted;
+  }
+
+  public async clearCandidates(): Promise<boolean> {
+    for (const tracker of this.trackers.values()) {
+      tracker.reset();
+    }
+    this.unifiedStudentManager.clearCurrentCandidates();
+    this.cameraDetectionsQueue.clear();
+    this.cameraPhonesQueue.clear();
+    this.latestTracksByCamera.clear();
+    this.latestGlobalPersons = [];
+    this.latestUnifiedStudents = this.unifiedStudentManager.getStudents();
+    
+    const now = Date.now();
+    const emptyTracksMap = new Map<string, CameraTrack[]>();
+    for (const camId of this.cameras.keys()) {
+      emptyTracksMap.set(camId, []);
+    }
+    const stats = this.computeRealtimeStats(emptyTracksMap, this.latestUnifiedStudents, []);
+    this.cachedStats = stats;
+    this.broadcastTelemetry({
+      type: 'TELEMETRY_UPDATE',
+      timestamp: now,
+      tracks_by_camera: Object.fromEntries(emptyTracksMap.entries()),
+      students: this.latestUnifiedStudents,
+      global_persons: [],
+      stats
+    });
+    return true;
   }
 
   public getSnapshot(): {

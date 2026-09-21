@@ -1,61 +1,88 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Admin Student Management & ID Number Editor
+ * Admin Student & Exam Candidate Manager
  * 
- * CORE REQUIREMENT:
- * "From the Admin Panel, administrators must be able to edit/correct the
- * student ID number and student information for clearer identification."
+ * CORE ARCHITECTURAL INVARIANT:
+ * "Strictly separate Registered Student, Exam Candidate, Global Person, and Camera Track."
+ * - Registered Students: Roster in database, initially marked absent until observed.
+ * - Exam Candidates: Confirmed Layer 3 physical persons observed by cameras in real time.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
 import { StudentRecord } from '../../types.js';
-import { Users, Edit3, Trash2, Plus, Check, X, AlertCircle, Link2, Unlink } from 'lucide-react';
+import { Users, Edit3, Trash2, Plus, Check, X, AlertCircle, RotateCcw, UserCheck, ShieldAlert } from 'lucide-react';
 
 export function AdminStudentsManager() {
-  const { students, tracksByCamera, refreshData, settings, associatePersonWithStudent } = useMonitoring();
+  const {
+    students,
+    seats,
+    globalPersons,
+    refreshData,
+    settings,
+    editCandidate,
+    deleteCandidate,
+    clearCurrentCandidates
+  } = useMonitoring();
+
   const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
 
+  // Student editing
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
   const [editIdNumber, setEditIdNumber] = useState<string>('');
   const [editName, setEditName] = useState<string>('');
   const [editSeatId, setEditSeatId] = useState<string>('');
   const [editNotes, setEditNotes] = useState<string>('');
 
+  // Student adding
   const [isAdding, setIsAdding] = useState<boolean>(false);
   const [newIdNumber, setNewIdNumber] = useState<string>('');
   const [newName, setNewName] = useState<string>('');
   const [newSeatId, setNewSeatId] = useState<string>('');
   const [newClassroom, setNewClassroom] = useState<string>('');
 
-  const [selectedStudentForPerson, setSelectedStudentForPerson] = useState<Record<string, string>>({});
+  // Candidate editing
+  const [editingCandidateId, setEditingCandidateId] = useState<string | null>(null);
+  const [candidateEditSeat, setCandidateEditSeat] = useState<string>('');
+  const [candidateEditStudent, setCandidateEditStudent] = useState<string>('');
+
+  // Clear confirmation
+  const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  const detectedPersonIds = useMemo(() => {
-    const set = new Set<string>();
-    Object.values(tracksByCamera || {}).forEach(tracks => {
-      tracks.forEach(t => {
-        const pid = t.global_person_id || t.person_id;
-        if (pid) set.add(pid);
-      });
+  const handleSaveCandidateEdit = async (personId: string) => {
+    const success = await editCandidate(personId, {
+      seat_id: candidateEditSeat || undefined,
+      student_id: candidateEditStudent || null
     });
-    students.forEach(s => {
-      if (s.global_person_id) set.add(s.global_person_id);
-      if (s.person_id) set.add(s.person_id);
-    });
-    return Array.from(set).sort();
-  }, [tracksByCamera, students]);
-
-  const handleAssignPerson = async (personId: string, studentId: string | null) => {
-    const success = await associatePersonWithStudent(personId, studentId);
     if (success) {
-      setFeedback({ 
-        type: 'success', 
-        message: studentId ? `Associated ${personId} with student.` : `Unassigned student from ${personId}.` 
-      });
+      setFeedback({ type: 'success', message: `Candidate ${personId} metadata updated.` });
+      setEditingCandidateId(null);
       setTimeout(() => setFeedback(null), 3000);
     } else {
-      setFeedback({ type: 'error', message: 'Failed to update person association.' });
+      setFeedback({ type: 'error', message: 'Failed to update candidate.' });
+    }
+  };
+
+  const handleDeleteCandidate = async (personId: string) => {
+    if (!window.confirm(`Remove candidate ${personId} from active session? This will untrack them until newly detected.`)) return;
+    const success = await deleteCandidate(personId);
+    if (success) {
+      setFeedback({ type: 'success', message: `Candidate ${personId} removed.` });
+      setTimeout(() => setFeedback(null), 3000);
+    } else {
+      setFeedback({ type: 'error', message: 'Failed to remove candidate.' });
+    }
+  };
+
+  const handleClearAllCandidates = async () => {
+    const success = await clearCurrentCandidates();
+    setShowClearConfirm(false);
+    if (success) {
+      setFeedback({ type: 'success', message: 'All current exam candidates cleared. System is reset for fresh camera capture.' });
+      setTimeout(() => setFeedback(null), 4000);
+    } else {
+      setFeedback({ type: 'error', message: 'Failed to clear exam candidates.' });
     }
   };
 
@@ -122,32 +149,44 @@ export function AdminStudentsManager() {
       });
 
       if (res.ok) {
-        setFeedback({ type: 'success', message: 'New student added to exam roster.' });
+        setFeedback({ type: 'success', message: 'New candidate enrolled successfully.' });
         setIsAdding(false);
-        setNewName('');
         setNewIdNumber('');
+        setNewName('');
         setNewSeatId('');
+        setNewClassroom('');
         await refreshData();
         setTimeout(() => setFeedback(null), 3000);
+      } else {
+        const data = await res.json();
+        setFeedback({ type: 'error', message: data.error || 'Failed to add student.' });
       }
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message });
     }
   };
 
-  const handleDelete = async (studentId: string, name: string) => {
-    if (!confirm(`Are you sure you want to remove student "${name}"?`)) return;
-    const token = localStorage.getItem('admin_token');
+  const handleDelete = async (studentId: string, studentName: string) => {
+    if (!window.confirm(`Are you sure you want to remove ${studentName} (${studentId}) from the exam roster?`)) {
+      return;
+    }
 
+    const token = localStorage.getItem('admin_token');
     try {
       const res = await fetch(`/api/students/${studentId}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
       });
+
       if (res.ok) {
-        setFeedback({ type: 'success', message: `Student ${name} deleted.` });
+        setFeedback({ type: 'success', message: 'Student removed from database.' });
         await refreshData();
         setTimeout(() => setFeedback(null), 3000);
+      } else {
+        const data = await res.json();
+        setFeedback({ type: 'error', message: data.error || 'Failed to delete student.' });
       }
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message });
@@ -155,95 +194,317 @@ export function AdminStudentsManager() {
   };
 
   return (
-    <div className="space-y-5">
-      
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-        <div>
-          <h2 className="text-base font-bold text-white flex items-center space-x-2">
-            <Users className="w-5 h-5 text-indigo-400" />
-            <span>Student Identification &amp; Roll Number Roster</span>
-          </h2>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Correct student ID numbers, update candidate names, and adjust desk assignments.
-          </p>
-        </div>
-
-        <button
-          onClick={() => setIsAdding(!isAdding)}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-sm self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add Candidate</span>
-        </button>
-      </div>
-
+    <div className="space-y-6 max-w-6xl mx-auto">
+      {/* Notifications */}
       {feedback && (
-        <div className={`p-3 rounded-lg text-xs flex items-center space-x-2 ${
-          feedback.type === 'success' ? 'bg-emerald-950/80 border border-emerald-800 text-emerald-300' : 'bg-rose-950/80 border border-rose-800 text-rose-300'
-        }`}>
-          <span>{feedback.message}</span>
+        <div
+          className={`p-3 rounded-lg flex items-center justify-between text-xs font-medium ${
+            feedback.type === 'success'
+              ? 'bg-emerald-950/80 border border-emerald-800 text-emerald-300'
+              : 'bg-rose-950/80 border border-rose-800 text-rose-300'
+          }`}
+        >
+          <div className="flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4" />
+            <span>{feedback.message}</span>
+          </div>
+          <button onClick={() => setFeedback(null)} className="text-slate-400 hover:text-white">
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
-      {/* Add Student Form */}
-      {isAdding && (
-        <form onSubmit={handleAddStudent} className="p-4 bg-slate-950 border border-indigo-500/40 rounded-xl space-y-3 text-xs">
-          <h3 className="font-semibold text-white">Enroll New Student in Session</h3>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* SECTION 1: CURRENT EXAM CANDIDATES (CAMERA CONFIRMED REAL PERSONS) */}
+      <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        <div className="p-4 bg-slate-900 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center space-x-2">
+            <UserCheck className="w-5 h-5 text-emerald-400" />
             <div>
-              <label className="block text-slate-400 mb-1">Student ID Number</label>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                Current Exam Candidates
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/60">
+                  {globalPersons.length} Active in Hall
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Live Layer 3 confirmed persons detected by camera. Clearing candidates resets runtime state for fresh capture without deleting registered students.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="px-3 py-1.5 bg-rose-950 hover:bg-rose-900 border border-rose-800/80 text-rose-300 rounded-lg text-xs font-medium flex items-center space-x-1.5 cursor-pointer transition-colors"
+              title="Reset current candidates for fresh capture"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Clear Current Candidates</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Clear Confirmation Modal */}
+        {showClearConfirm && (
+          <div className="p-4 bg-rose-950/40 border-b border-rose-800/60 flex items-center justify-between gap-4">
+            <div className="flex items-center space-x-3 text-rose-200 text-xs">
+              <ShieldAlert className="w-5 h-5 text-rose-400 flex-shrink-0" />
+              <div>
+                <p className="font-bold">Clear all active exam candidate tracks?</p>
+                <p className="text-rose-300/80 text-[11px]">
+                  This resets runtime active camera tracks. Registered students and past audit events remain safely preserved.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={handleClearAllCandidates}
+                className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs rounded transition-colors"
+              >
+                Confirm Clear
+              </button>
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Candidate Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase font-mono text-[10px]">
+              <tr>
+                <th className="px-4 py-3">Technical Person ID</th>
+                <th className="px-4 py-3">Active Camera Tracks</th>
+                <th className="px-4 py-3">Assigned Desk</th>
+                <th className="px-4 py-3">Associated Student</th>
+                <th className="px-4 py-3">Monitoring Risk</th>
+                <th className="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80 text-slate-300">
+              {globalPersons.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-10 text-center text-slate-500 text-xs">
+                    <div className="flex flex-col items-center justify-center space-y-2">
+                      <Users className="w-7 h-7 text-slate-600 stroke-1" />
+                      <p className="text-sm font-medium text-slate-400">0 Exam Candidates Detected</p>
+                      <p className="text-xs text-slate-500 max-w-md">
+                        The exam hall is currently empty. Candidates appear automatically when a real person is temporally confirmed by camera.
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                globalPersons.map(gp => {
+                  const isEditing = editingCandidateId === gp.id;
+                  const trackList = gp.camera_tracks || [];
+
+                  if (isEditing) {
+                    return (
+                      <tr key={gp.id} className="bg-indigo-950/20">
+                        <td className="px-4 py-3 font-mono font-bold text-indigo-400">
+                          {gp.id} <span className="text-[10px] text-slate-500">(immutable)</span>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-slate-400 text-[11px]">
+                          {trackList.map(t => `${t.camera_id}:${t.track_id}`).join(', ') || 'None'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            value={candidateEditSeat}
+                            onChange={e => setCandidateEditSeat(e.target.value)}
+                            className="px-2 py-1 bg-slate-900 border border-indigo-500 rounded text-white text-xs"
+                          >
+                            <option value="">Unassigned</option>
+                            {seats.map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.seat_label || s.id}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            value={candidateEditStudent}
+                            onChange={e => setCandidateEditStudent(e.target.value)}
+                            className="px-2 py-1 bg-slate-900 border border-indigo-500 rounded text-white text-xs"
+                          >
+                            <option value="">No Student Linked</option>
+                            {students.map(s => (
+                              <option key={s.id} value={s.id}>
+                                {s.student_id_number} - {s.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3 font-mono text-slate-400">
+                          {Math.round(gp.current_score || 0)} pts
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end space-x-1">
+                            <button
+                              onClick={() => handleSaveCandidateEdit(gp.id)}
+                              className="p-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white"
+                              title="Save Changes"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setEditingCandidateId(null)}
+                              className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                              title="Cancel"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  return (
+                    <tr key={gp.id} className="hover:bg-slate-900/50 transition-colors">
+                      <td className="px-4 py-3 font-mono font-bold text-indigo-400">
+                        {gp.id}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-[11px]">
+                        {trackList.length === 0 ? (
+                          <span className="text-slate-500">—</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {trackList.map(t => (
+                              <span
+                                key={`${t.camera_id}-${t.track_id}`}
+                                className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[10px]"
+                              >
+                                {t.camera_id}: {t.track_id}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-cyan-400">
+                        {gp.seat_id?.toUpperCase() || <span className="text-slate-500">Unassigned</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        {gp.associated_student_id || gp.student_id ? (
+                          <div className="flex items-center space-x-1.5">
+                            <span className="font-semibold text-white">
+                              {gp.associated_student_name || gp.student_name}
+                            </span>
+                            <span className="text-[10px] font-mono text-indigo-400 bg-indigo-950 px-1 py-0.5 rounded">
+                              {gp.student_id_number}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 italic">No student associated</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono">
+                        <span className={(gp.current_score || 0) >= highThreshold ? 'text-rose-400 font-bold' : 'text-slate-300'}>
+                          {Math.round(gp.current_score || 0)} pts
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end space-x-1.5">
+                          <button
+                            onClick={() => {
+                              setEditingCandidateId(gp.id);
+                              setCandidateEditSeat(gp.seat_id || '');
+                              setCandidateEditStudent(gp.associated_student_id || gp.student_id || '');
+                            }}
+                            className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+                            title="Edit Candidate Metadata & Seat"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteCandidate(gp.id)}
+                            className="p-1.5 rounded hover:bg-rose-950 text-slate-500 hover:text-rose-400 transition-colors"
+                            title="Remove Candidate from active session"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* SECTION 2: REGISTERED STUDENTS DATABASE (ENROLLMENT ROSTER) */}
+      <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Users className="w-4 h-4 text-indigo-400" />
+            <div>
+              <h3 className="text-sm font-bold text-white">Registered Student Roster</h3>
+              <p className="text-xs text-slate-400">Database of enrolled candidates. Registered students are not marked present without camera evidence.</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsAdding(!isAdding)}
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium flex items-center space-x-1.5 cursor-pointer transition-colors shadow-sm"
+          >
+            {isAdding ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+            <span>{isAdding ? 'Cancel' : 'Enroll Candidate'}</span>
+          </button>
+        </div>
+
+        {/* Add Student Form */}
+        {isAdding && (
+          <form onSubmit={handleAddStudent} className="p-4 bg-slate-900/60 border-b border-slate-800 grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div>
+              <label className="block text-[10px] font-mono uppercase text-slate-400 mb-1">Student ID Number</label>
               <input
                 type="text"
                 value={newIdNumber}
                 onChange={e => setNewIdNumber(e.target.value)}
-                placeholder="STU-2026-XXXX"
-                className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                required
+                placeholder="e.g. STU-2024-001"
+                className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
             <div>
-              <label className="block text-slate-400 mb-1">Full Name</label>
+              <label className="block text-[10px] font-mono uppercase text-slate-400 mb-1">Student Full Name *</label>
               <input
                 type="text"
+                required
                 value={newName}
                 onChange={e => setNewName(e.target.value)}
-                placeholder="Student Full Name"
-                className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-white"
-                required
+                placeholder="e.g. Alex Johnson"
+                className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
             <div>
-              <label className="block text-slate-400 mb-1">Assigned Desk / Seat ID (Optional)</label>
+              <label className="block text-[10px] font-mono uppercase text-slate-400 mb-1">Assigned Desk / Seat ID</label>
               <input
                 type="text"
                 value={newSeatId}
                 onChange={e => setNewSeatId(e.target.value)}
-                placeholder="e.g. seat-1 or A-01"
-                className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-white"
+                placeholder="e.g. seat-1"
+                className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
-          </div>
-          <div className="flex justify-end space-x-2 pt-2">
-            <button
-              type="button"
-              onClick={() => setIsAdding(false)}
-              className="px-3 py-1.5 rounded bg-slate-800 text-slate-300"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-1.5 rounded bg-indigo-600 text-white font-bold"
-            >
-              Enroll Candidate
-            </button>
-          </div>
-        </form>
-      )}
+            <div className="flex items-end space-x-2">
+              <button
+                type="submit"
+                className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+              >
+                Save to Database
+              </button>
+            </div>
+          </form>
+        )}
 
-      {/* Students List Table */}
-      <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        {/* Student Table */}
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase font-mono text-[10px]">
@@ -251,7 +512,8 @@ export function AdminStudentsManager() {
                 <th className="px-4 py-3">Student ID Number</th>
                 <th className="px-4 py-3">Student Name</th>
                 <th className="px-4 py-3">Assigned Desk</th>
-                <th className="px-4 py-3">Monitoring Score</th>
+                <th className="px-4 py-3">Exam Status</th>
+                <th className="px-4 py-3">Cumulative Risk</th>
                 <th className="px-4 py-3">Notes</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
@@ -259,7 +521,7 @@ export function AdminStudentsManager() {
             <tbody className="divide-y divide-slate-800/80 text-slate-300">
               {students.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-slate-500">
+                  <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center space-y-2">
                       <Users className="w-8 h-8 text-slate-600 stroke-1" />
                       <p className="text-sm font-medium text-slate-400">No students registered in roster</p>
@@ -301,8 +563,11 @@ export function AdminStudentsManager() {
                           className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-white text-xs"
                         />
                       </td>
+                      <td className="px-4 py-3 font-mono text-slate-400">
+                        {student.status}
+                      </td>
                       <td className="px-4 py-3 font-mono font-bold text-slate-400">
-                        {student.unified_suspicion_score} pts
+                        {student.cumulative_score || 0} pts
                       </td>
                       <td className="px-4 py-3">
                         <input
@@ -346,9 +611,22 @@ export function AdminStudentsManager() {
                     <td className="px-4 py-3 font-mono text-cyan-400">
                       {student.seat_id?.toUpperCase() || 'N/A'}
                     </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                          student.status === 'present'
+                            ? 'bg-emerald-950 text-emerald-300 border border-emerald-800/60'
+                            : student.status === 'flagged'
+                            ? 'bg-rose-950 text-rose-300 border border-rose-800/60'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {student.status.toUpperCase()}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 font-mono">
-                      <span className={student.unified_suspicion_score >= highThreshold ? 'text-rose-400 font-bold' : 'text-slate-300'}>
-                        {student.unified_suspicion_score}
+                      <span className={(student.cumulative_score || 0) >= highThreshold ? 'text-rose-400 font-bold' : 'text-slate-300'}>
+                        {student.cumulative_score || 0}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-slate-400 truncate max-w-xs">
@@ -379,117 +657,6 @@ export function AdminStudentsManager() {
           </table>
         </div>
       </div>
-
-      {/* Detected Person ID to Student Association Section (Admin Control) */}
-      <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-        <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <Link2 className="w-4 h-4 text-indigo-400" />
-            <div>
-              <h3 className="text-sm font-bold text-white">Person ID &amp; Student Association</h3>
-              <p className="text-xs text-slate-400">Map detected physical persons across cameras to enrolled exam candidates</p>
-            </div>
-          </div>
-          <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-1 rounded">
-            {detectedPersonIds.length} Detected Identity{detectedPersonIds.length === 1 ? '' : 'ies'}
-          </span>
-        </div>
-
-        {/* Person Association Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase font-mono text-[10px]">
-              <tr>
-                <th className="px-4 py-3">Person ID</th>
-                <th className="px-4 py-3">Associated Student ID</th>
-                <th className="px-4 py-3">Student Name</th>
-                <th className="px-4 py-3">Assigned Desk</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Association Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/80 text-slate-300">
-              {detectedPersonIds.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500 text-xs">
-                    No physical person identities currently active in camera feeds. Use the quick form above to pre-assign an ID.
-                  </td>
-                </tr>
-              ) : (
-                detectedPersonIds.map(personId => {
-                  const associatedStudent = students.find(s => s.global_person_id === personId || s.person_id === personId);
-                  const selectedStudent = selectedStudentForPerson[personId] || '';
-
-                  return (
-                    <tr key={personId} className="hover:bg-slate-900/50 transition-colors">
-                      <td className="px-4 py-3 font-mono font-bold text-indigo-400">
-                        {personId}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-slate-300">
-                        {associatedStudent ? associatedStudent.student_id_number : <span className="text-slate-500">—</span>}
-                      </td>
-                      <td className="px-4 py-3 font-semibold text-white">
-                        {associatedStudent ? associatedStudent.name : <span className="text-slate-500 text-xs font-normal">Not assigned</span>}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-cyan-400">
-                        {associatedStudent?.seat_id ? associatedStudent.seat_id.toUpperCase() : '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        {associatedStudent ? (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-950 text-emerald-300 border border-emerald-800/60">
-                            Assigned
-                          </span>
-                        ) : (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-400">
-                            Unassigned
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end space-x-2">
-                          <select
-                            value={selectedStudent}
-                            onChange={e => setSelectedStudentForPerson(prev => ({ ...prev, [personId]: e.target.value }))}
-                            className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-slate-300 text-xs"
-                          >
-                            <option value="">Select Candidate...</option>
-                            {students.map(s => (
-                              <option key={s.id} value={s.id}>
-                                {s.student_id_number} - {s.name}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            onClick={() => {
-                              if (selectedStudent) {
-                                handleAssignPerson(personId, selectedStudent);
-                              }
-                            }}
-                            disabled={!selectedStudent}
-                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded text-xs font-medium cursor-pointer transition-colors"
-                          >
-                            Assign
-                          </button>
-                          {associatedStudent && (
-                            <button
-                              onClick={() => handleAssignPerson(personId, null)}
-                              className="px-2.5 py-1 bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800/60 rounded text-xs font-medium cursor-pointer transition-colors"
-                              title="Unassign Student from this Person ID"
-                            >
-                              Unassign
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
     </div>
   );
 }
