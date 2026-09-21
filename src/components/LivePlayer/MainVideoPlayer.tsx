@@ -109,6 +109,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState<boolean>(true);
   const [streamInfo, setStreamInfo] = useState<{ label: string; resolution: string }>({ label: '', resolution: '' });
+  const [liveTrackCount, setLiveTrackCount] = useState<number>(0);
 
   const focusedCamera = cameras.find(c => c.camera_id === focusedCameraId) || cameras[0];
   const tracks = tracksByCamera[focusedCameraId] || [];
@@ -365,20 +366,19 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
                 studentsRef.current
               );
               liveTracksRef.current = detectedTracks || [];
-              // Throttled broadcast to global context & server
-              if (now - lastBroadcastTimeRef.current >= 600 && detectedTracks && detectedTracks.length > 0) {
+              setLiveTrackCount(liveTracksRef.current.length);
+              // Throttled broadcast to global context & server (broadcasts empty array if 0 humans)
+              if (now - lastBroadcastTimeRef.current >= 600) {
                 lastBroadcastTimeRef.current = now;
-                broadcastDetectionsRef.current(focusedCamera.camera_id, detectedTracks);
+                broadcastDetectionsRef.current(focusedCamera.camera_id, detectedTracks || []);
               }
             } catch {
               // ignore frame read exceptions
             }
           }
 
-          // Use live client detections immediately for instantaneous, smooth tracking overlay
-          const effectiveTracks = liveTracksRef.current.length > 0 
-            ? liveTracksRef.current 
-            : tracksRef.current;
+          // Use authoritative live client detections: if 0 humans detected in camera, render 0 tracks
+          const effectiveTracks = liveTracksRef.current;
 
           drawCameraFeed(
             ctx,
@@ -841,7 +841,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         </div>
 
         <div className="flex items-center space-x-3 font-mono-apple text-[11px]">
-          <span>Visible Tracks: <strong className="text-[var(--system-accent)]">{tracks.length || liveTracksRef.current.length}</strong></span>
+          <span>Visible Tracks: <strong className="text-[var(--system-accent)]">{liveTrackCount}</strong></span>
           <span className="text-[var(--system-text-quaternary)]">|</span>
           <span>
             Resolution: <strong className="text-[var(--system-text-primary)]">

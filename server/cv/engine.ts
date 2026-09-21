@@ -167,55 +167,11 @@ export class MultiCameraCVEngine {
       const tracker = this.trackers.get(cameraId);
       if (!tracker) continue;
 
-      // Ingest detections from real camera input queue (or use mapped camera seats)
-      let rawDetections = this.cameraDetectionsQueue.get(cameraId) || [];
+      // Ingest detections from real camera vision detector
+      const rawDetections = this.cameraDetectionsQueue.get(cameraId) || [];
       this.cameraDetectionsQueue.delete(cameraId);
 
-      if (rawDetections.length === 0) {
-        const cameraSeats = this.seats.filter(s => !!s.camera_regions?.[cameraId]);
-        if (cameraSeats.length > 0) {
-          rawDetections = cameraSeats.map((seat, sIdx) => {
-            const assignedStudent = registeredStudents.find(st => st.id === seat.assigned_student_id) || registeredStudents[sIdx];
-            return {
-              bbox: seat.camera_regions[cameraId],
-              confidence: 0.95,
-              head_pose: { yaw: 0, pitch: 0, direction: 'center' as const, confidence: 0.9 },
-              face_visible: true,
-              face_confidence: 0.92,
-              phone_detected: false,
-              phone_confidence: 0,
-              seat_id: seat.id,
-              associated_student_id: assignedStudent?.id || seat.assigned_student_id
-            };
-          });
-        } else {
-          // Default multi-examinee classroom layout across foreground, midground, and background desks
-          const multiExamDesks = [
-            { bbox: { x: 0.10, y: 0.58, width: 0.17, height: 0.34 } },
-            { bbox: { x: 0.38, y: 0.58, width: 0.17, height: 0.34 } },
-            { bbox: { x: 0.66, y: 0.58, width: 0.17, height: 0.34 } },
-            { bbox: { x: 0.14, y: 0.34, width: 0.14, height: 0.26 } },
-            { bbox: { x: 0.42, y: 0.34, width: 0.14, height: 0.26 } },
-            { bbox: { x: 0.70, y: 0.34, width: 0.14, height: 0.26 } },
-            { bbox: { x: 0.18, y: 0.14, width: 0.11, height: 0.20 } },
-            { bbox: { x: 0.45, y: 0.14, width: 0.11, height: 0.20 } },
-            { bbox: { x: 0.73, y: 0.14, width: 0.11, height: 0.20 } }
-          ];
-
-          rawDetections = multiExamDesks.map((d, dIdx) => ({
-            bbox: d.bbox,
-            confidence: 0.92,
-            head_pose: { yaw: 0, pitch: 0, direction: 'center' as const, confidence: 0.88 },
-            face_visible: true,
-            face_confidence: 0.90,
-            phone_detected: false,
-            phone_confidence: 0,
-            associated_student_id: registeredStudents[dIdx]?.id
-          }));
-        }
-      }
-
-      // INDEPENDENT PER-CAMERA TRACKING
+      // INDEPENDENT PER-CAMERA TRACKING: If no humans detected, tracks are 0
       const tracks = tracker.updateDetections(rawDetections, now);
 
       // Evaluate temporal behavior and scoring for each real track

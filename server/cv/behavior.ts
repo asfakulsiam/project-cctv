@@ -325,17 +325,18 @@ export class BehaviorAnalyzer {
     }
 
     // -------------------------------------------------------------
-    // 6. Calculate Explainable Composite Suspicion Score
+    // 6. Calculate Explainable Composite Suspicion Score (Monotonically Non-Decreasing)
     // -------------------------------------------------------------
-    const rawScore = 
-      ctx.active_penalties.looking_turn +
-      ctx.active_penalties.face_obscured +
-      ctx.active_penalties.phone_present +
-      ctx.active_penalties.out_of_seat +
-      ctx.active_penalties.abnormal_motion;
+    let eventScoreContribution = 0;
+    for (const evt of triggeredEvents) {
+      if (evt.score_contribution > 0) {
+        eventScoreContribution += evt.score_contribution;
+      }
+    }
 
-    // Base noise buffer of 5%
-    const suspicion_score = Math.min(100, Math.max(4, Math.round(rawScore)));
+    const previousScore = track.suspicion_score || 0;
+    const addedScore = Math.round(eventScoreContribution * 0.4);
+    const suspicion_score = Math.min(100, Math.max(previousScore, previousScore + addedScore));
 
     return { events: triggeredEvents, suspicion_score };
   }

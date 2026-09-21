@@ -102,10 +102,10 @@ export function drawCameraFeed(
     
     // Status Classification:
     // Warning: 35 <= score < highSuspicionThreshold (turns box and badges YELLOW)
-    // Critical: score >= highSuspicionThreshold (turns box and badges RED)
+    // Critical / Latched Warning: track.warning_latched === true OR score >= highSuspicionThreshold (turns box and badges RED)
     // Normal: score < 35 (turns box and badges GREEN/EMERALD)
-    const isCritical = score >= highSuspicionThreshold;
-    const isWarning = score >= 35 && !isCritical;
+    const isCritical = Boolean(track.warning_latched) || score >= highSuspicionThreshold;
+    const isWarning = !isCritical && score >= 35;
 
     let borderColor = '#10b981'; // Normal: Emerald Green
     let cornerColor = '#10b981';
@@ -118,7 +118,7 @@ export function drawCameraFeed(
       cornerColor = '#ef4444';
       badgeBg = '#ef4444';
       badgeTextColor = '#ffffff';
-      statusLabel = 'CRITICAL ALERT';
+      statusLabel = track.warning_latched ? 'WARNING LATCHED' : 'CRITICAL ALERT';
     } else if (isWarning) {
       borderColor = '#eab308'; // Warning: High-Visibility Yellow
       cornerColor = '#fbbf24';

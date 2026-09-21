@@ -43,6 +43,21 @@ export interface BoundingBox {
   height: number; // 0 - 1 normalized or pixel
 }
 
+export type DetectionClass = 'person' | 'other';
+
+export interface HumanDetection {
+  class_name: 'person';
+  confidence: number;
+  bbox: BoundingBox;
+  head_pose?: HeadPoseData;
+  face_visible?: boolean;
+  face_confidence?: number;
+  phone_detected?: boolean;
+  phone_confidence?: number;
+  seat_id?: string;
+  associated_student_id?: string;
+}
+
 export interface CameraTrack {
   track_id: string;            // Camera-scoped: e.g. "CAM1-S001"
   camera_id: string;           // Parent camera
@@ -55,9 +70,12 @@ export interface CameraTrack {
   phone_confidence: number;
   movement_magnitude: number;  // Relative velocity / spatial delta
   is_moving: boolean;
+  is_confirmed_human: boolean; // Guaranteed true human invariant
   seat_id?: string;
   associated_student_id?: string;
-  suspicion_score: number;     // 0 - 100 explainable score
+  suspicion_score: number;     // 0 - 100 explainable score (monotonically non-decreasing)
+  warning_latched?: boolean;   // Latched warning state until admin clearance
+  warning_cleared_at?: number;
   last_seen_timestamp: number;
   created_timestamp: number;
   history_trajectory?: Array<{ x: number; y: number; t: number }>;

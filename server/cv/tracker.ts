@@ -1,16 +1,16 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Production Multi-Object Person Tracker (SORT-Enhanced with Velocity Prediction & Multi-Frame Confirmation)
+ * Production Multi-Person Computer Vision Tracker (SORT-Enhanced with HumanGate & Kinematics)
  * 
- * ARCHITECTURAL DIRECTIVES:
- * 1. Independent Per-Camera Context: All track IDs are strictly camera-scoped (e.g., CAM1-S001).
- * 2. Prediction + Combined Association Metric: Uses velocity estimation + IoU (>= 0.15) + center distance.
- * 3. Robust State Machine: Candidate (3-frame confirmation gate) -> Active -> Lost (predicted) -> Terminated.
- * 4. Zero False-Positive Cycling: 1-frame detection noise never creates permanent IDs or fragments tracks.
- * 5. Stationary Persistence: Tracks never vanish or cycle simply because a student remains still.
+ * ARCHITECTURAL INVARIANTS:
+ * 1. Human Detection is the Gatekeeper: Only positive human detections enter the tracker.
+ * 2. Independent Per-Camera Context: All track IDs are strictly camera-scoped (e.g., CAM1-S001).
+ * 3. Temporal Candidate Confirmation: Human detections must pass multi-frame confirmation before receiving a permanent ID.
+ * 4. Stationary Persistence: Tracks never vanish or cycle simply because a student remains still.
+ * 5. Monotonically Non-Decreasing Score: Suspicion score never auto-decays; warnings latch until cleared by admin.
  */
 
-import { BoundingBox, CameraTrack, HeadPoseData } from '../../src/types.js';
+import { BoundingBox, CameraTrack, HeadPoseData, HumanDetection } from '../../src/types.js';
 
 export type TrackStatus = 'candidate' | 'active' | 'lost' | 'terminated';
 
@@ -37,9 +37,13 @@ export interface InternalTrackState {
   phone_confidence: number;
   movement_magnitude: number;
   is_moving: boolean;
+  is_confirmed_human: boolean;
   seat_id?: string;
   associated_student_id?: string;
   suspicion_score: number;
+  max_reached_score: number;
+  warning_latched: boolean;
+  warning_cleared_at?: number;
   last_seen_timestamp: number;
   created_timestamp: number;
   history: Array<{ x: number; y: number; t: number }>;
@@ -54,7 +58,7 @@ export class CameraTracker {
   private next_candidate_number = 1;
 
   // Configuration thresholds
-  private readonly confirmation_hits_required = 3; // Must be detected in 3 consecutive frames to confirm
+  private readonly confirmation_hits_required = 3; // Must be detected in 3 frames to confirm
   private readonly max_missed_frames = 18;         // Maintain lost track with prediction for up to ~1.2s
   private readonly iou_threshold = 0.15;           // Relaxed IoU when combined with center distance
 
@@ -107,8 +111,8 @@ export class CameraTracker {
    */
   private predictBoundingBox(track: InternalTrackState, dtSec: number): BoundingBox {
     const clampedDt = Math.min(0.5, Math.max(0, dtSec));
-    const predX = Math.max(0, Math.min(1 - track.bbox.width, track.bbox.x + track.velocity_x * clampedDt));
-    const predY = Math.max(0, Math.min(1 - track.bbox.height, track.bbox.y + track.velocity_y * clampedDt));
+    const predX = Math.max(0.01, Math.min(0.99 - track.bbox.width, track.bbox.x + track.velocity_x * clampedDt));
+    const predY = Math.max(0.01, Math.min(0.99 - track.bbox.height, track.bbox.y + track.velocity_y * clampedDt));
     return {
       x: predX,
       y: predY,
@@ -126,30 +130,21 @@ export class CameraTracker {
   }
 
   /**
-   * Ingest raw detections for the current frame, execute state machine updates, and output active tracks.
+   * Ingest confirmed human detections for the current frame, execute state machine updates, and output active tracks.
+   * INVARIANT: Only human detections are accepted.
    */
   public updateDetections(
-    rawDetections: Array<{
-      bbox: BoundingBox;
-      confidence: number;
-      head_pose?: HeadPoseData;
-      face_visible?: boolean;
-      face_confidence?: number;
-      phone_detected?: boolean;
-      phone_confidence?: number;
-      seat_id?: string;
-      associated_student_id?: string;
-    }>,
+    humanDetections: HumanDetection[],
     now: number = Date.now()
   ): CameraTrack[] {
     const matchedConfirmedIds = new Set<string>();
     const matchedCandidateIds = new Set<string>();
-    const unmatchedDetections: Array<(typeof rawDetections)[0]> = [];
+    const unmatchedDetections: HumanDetection[] = [];
 
     // -------------------------------------------------------------
-    // STEP 1: Associate detections with confirmed ACTIVE & LOST tracks
+    // STEP 1: Associate human detections with confirmed ACTIVE & LOST tracks
     // -------------------------------------------------------------
-    for (const det of rawDetections) {
+    for (const det of humanDetections) {
       let bestMatchId: string | null = null;
       let highestScore = 0;
 
@@ -163,9 +158,7 @@ export class CameraTracker {
         const dist = this.computeCenterDistance(predictedBox, det.bbox);
         const maxDist = this.maxAssociationDistance(predictedBox);
 
-        // Association criteria: High IoU OR close proximity within bounding box diagonal
         if (iou >= this.iou_threshold || dist <= maxDist) {
-          // Combined affinity score (IoU weighted + inverted normalized distance)
           const affinity = iou * 0.6 + Math.max(0, 1 - dist / maxDist) * 0.4;
           if (affinity > highestScore) {
             highestScore = affinity;
@@ -198,7 +191,6 @@ export class CameraTracker {
           height: track.bbox.height * (1 - posAlpha) + det.bbox.height * posAlpha
         };
 
-        // Displacement & Movement Magnitude (0 when stationary)
         const displacement = Math.hypot(dx, dy);
         const movement_magnitude = Math.min(100, Math.round(displacement * 500));
         const is_moving = movement_magnitude > 6;
@@ -222,7 +214,6 @@ export class CameraTracker {
         track.last_seen_timestamp = now;
         track.last_update_time = now;
 
-        // Trajectory History
         track.history.push({
           x: track.bbox.x + track.bbox.width / 2,
           y: track.bbox.y + track.bbox.height / 2,
@@ -235,9 +226,9 @@ export class CameraTracker {
     }
 
     // -------------------------------------------------------------
-    // STEP 2: Match remaining detections against CANDIDATE tracks
+    // STEP 2: Match remaining human detections against CANDIDATE tracks
     // -------------------------------------------------------------
-    const stillUnmatched: Array<(typeof rawDetections)[0]> = [];
+    const stillUnmatched: HumanDetection[] = [];
 
     for (const det of unmatchedDetections) {
       let bestCandidateId: string | null = null;
@@ -267,7 +258,6 @@ export class CameraTracker {
         cand.last_update_time = now;
         cand.bbox = { ...det.bbox };
 
-        // Check if candidate reached confirmation threshold
         if (cand.hits >= this.confirmation_hits_required) {
           this.candidate_tracks.delete(bestCandidateId);
           const permanentTrackId = this.generateTrackId();
@@ -281,7 +271,7 @@ export class CameraTracker {
     }
 
     // -------------------------------------------------------------
-    // STEP 3: Spawn new candidate tracks for unassigned detections
+    // STEP 3: Spawn new candidate tracks for unassigned human detections
     // -------------------------------------------------------------
     for (const det of stillUnmatched) {
       const candId = `cand-${this.next_candidate_number++}`;
@@ -304,9 +294,12 @@ export class CameraTracker {
         phone_confidence: det.phone_confidence ?? 0,
         movement_magnitude: 0,
         is_moving: false,
+        is_confirmed_human: true,
         seat_id: det.seat_id,
         associated_student_id: det.associated_student_id,
-        suspicion_score: 5,
+        suspicion_score: 0,
+        max_reached_score: 0,
+        warning_latched: false,
         last_seen_timestamp: now,
         created_timestamp: now,
         history: [{ x: det.bbox.x + det.bbox.width / 2, y: det.bbox.y + det.bbox.height / 2, t: now }]
@@ -317,7 +310,6 @@ export class CameraTracker {
     // -------------------------------------------------------------
     // STEP 4: Handle missed frames & prune candidate / active tracks
     // -------------------------------------------------------------
-    // Prune unmatched candidates immediately (prevents 1-frame false-positives)
     for (const [candId, cand] of this.candidate_tracks.entries()) {
       if (!matchedCandidateIds.has(candId)) {
         cand.missed_frames++;
@@ -327,7 +319,6 @@ export class CameraTracker {
       }
     }
 
-    // Advance lost active tracks with predicted position or terminate
     for (const [trackId, track] of this.active_tracks.entries()) {
       if (!matchedConfirmedIds.has(trackId)) {
         track.missed_frames++;
@@ -335,7 +326,6 @@ export class CameraTracker {
         track.movement_magnitude = 0;
         track.is_moving = false;
 
-        // Apply linear kinematic prediction during temporary occlusion
         const dtSec = Math.max(0.01, (now - track.last_update_time) / 1000);
         track.bbox = this.predictBoundingBox(track, dtSec);
         track.last_update_time = now;
@@ -347,7 +337,6 @@ export class CameraTracker {
       }
     }
 
-    // Return confirmed active tracks (including recently lost tracks under prediction window)
     return Array.from(this.active_tracks.values())
       .filter(t => t.status === 'active' || (t.status === 'lost' && t.missed_frames <= 6))
       .map(t => ({
@@ -362,9 +351,12 @@ export class CameraTracker {
         phone_confidence: t.phone_confidence,
         movement_magnitude: t.movement_magnitude,
         is_moving: t.is_moving,
+        is_confirmed_human: true,
         seat_id: t.seat_id,
         associated_student_id: t.associated_student_id,
         suspicion_score: t.suspicion_score,
+        warning_latched: t.warning_latched,
+        warning_cleared_at: t.warning_cleared_at,
         last_seen_timestamp: t.last_seen_timestamp,
         created_timestamp: t.created_timestamp,
         history_trajectory: [...t.history]
@@ -372,7 +364,7 @@ export class CameraTracker {
   }
 
   /**
-   * Reset tracker context (e.g. camera stream change or reset).
+   * Reset tracker context
    */
   public reset(): void {
     this.active_tracks.clear();
@@ -382,16 +374,47 @@ export class CameraTracker {
   }
 
   /**
-   * Update suspicion score for a track inside this camera tracker.
+   * Update suspicion score monotonically (never decreases automatically)
    */
   public setTrackSuspicion(track_id: string, score: number): void {
     const track = this.active_tracks.get(track_id);
     if (track) {
-      track.suspicion_score = score;
+      track.suspicion_score = Math.min(100, Math.max(track.suspicion_score, score));
+      track.max_reached_score = Math.max(track.max_reached_score, track.suspicion_score);
+      if (track.suspicion_score >= 65) {
+        track.warning_latched = true;
+      }
+    }
+  }
+
+  /**
+   * Admin action: Unlatch warning while preserving the suspicion score
+   */
+  public clearTrackWarning(track_id: string): void {
+    const track = this.active_tracks.get(track_id);
+    if (track) {
+      track.warning_latched = false;
+      track.warning_cleared_at = Date.now();
+    }
+  }
+
+  /**
+   * Admin action: Reset track score
+   */
+  public resetTrackScore(track_id: string): void {
+    const track = this.active_tracks.get(track_id);
+    if (track) {
+      track.suspicion_score = 0;
+      track.max_reached_score = 0;
+      track.warning_latched = false;
     }
   }
 
   public getTrackCount(): number {
     return this.active_tracks.size;
+  }
+
+  public getActiveTrackIds(): string[] {
+    return Array.from(this.active_tracks.keys());
   }
 }

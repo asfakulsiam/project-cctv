@@ -1,23 +1,78 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Production Person-First Vision Detector & Multi-Student Multi-Object Tracker
+ * Human-First Computer Vision Engine & Multi-Person Persistent Tracker
  * 
- * ARCHITECTURAL SPECIFICATION:
- * 1. UNLIMITED DENSE TRACKING: Dynamically detects and tracks all visible examinees across rows and desks without limit.
- * 2. TEMPORAL ANALYSIS PIPELINE: Ingests candidate examinees into a temporal buffer, analyzes movements/frames
- *    for a verification window (~1.5-2s), then executes the track and starts inspection.
- * 3. CONTINUOUS SEARCH LOOP: Concurrently scans for untracked students in other desks/areas in an ongoing background loop.
- * 4. PERSISTENT PINNING: Once marked, pins position in the frame and tracks live behavior frame-by-frame; does not unpin
- *    until empty classroom/camera stop.
- * 5. NON-DECREASING SUSPICION SCORE: Score increases with suspicious behavior and NEVER decreases automatically.
- *    Reaching maximum/warning turns the badge warning/red until cleared by an administrator.
+ * CORE ARCHITECTURAL INVARIANTS:
+ * RULE 1: HUMAN DETECTION IS THE GATEKEEPER.
+ *         Nothing creates a track, activity, score, warning, or box unless
+ *         a human has first been positively detected by biometric & morphological analysis.
+ * RULE 2: EMPTY CAMERA PRODUCES ZERO TRACKS, ZERO BOXES, ZERO EVENTS, ZERO SCORE.
+ * RULE 3: MOVEMENT NEVER CREATES A PERSON.
+ *         Motion is purely an observation within an already confirmed human track.
+ * RULE 4: A STATIONARY HUMAN REMAINS TRACKED.
+ *         Stillness never deletes a person or decreases suspicion score.
+ * RULE 5: CONTINUOUS SEARCH FOR UNTRACKED HUMANS.
+ *         Every frame scans the whole scene to find all humans dynamically (no 4-person limit).
+ * RULE 6: MONOTONICALLY NON-DECREASING SUSPICION SCORE.
+ *         Score only increases on qualifying behavioral anomalies and never auto-decays.
+ * RULE 7: LATCHED WARNING STATE.
+ *         Reaching warning/critical score latches the warning (red state) until explicitly cleared by an administrator.
+ * RULE 8: ADMIN CLEAR WARNING DOES NOT DECREASE SCORE.
+ *         Clearing a warning unlatches the alert state while preserving the cumulative audit score.
  */
 
-import { BoundingBox, CameraTrack, HeadDirection, HeadPoseData, SeatRecord, StudentRecord } from '../types.js';
+import { 
+  BoundingBox, 
+  CameraTrack, 
+  HeadDirection, 
+  HeadPoseData, 
+  HumanDetection, 
+  StudentRecord 
+} from '../types.js';
 
-export interface PersonDetection {
-  bbox: BoundingBox;
-  confidence: number;
+/**
+ * Architectural Gatekeeper: Enforces that only positively confirmed human detections
+ * can enter the downstream tracking, behavioral analysis, and scoring pipelines.
+ */
+export class HumanGate {
+  private readonly minConfidence = 0.60;
+
+  public accept(detections: HumanDetection[]): HumanDetection[] {
+    return detections.filter(
+      d => d.class_name === 'person' && d.confidence >= this.minConfidence
+    );
+  }
+}
+
+/**
+ * Bounded Temporal Ring Buffer for video frame analysis without unbounded memory growth
+ */
+export interface BufferedFrame {
+  timestamp: number;
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+}
+
+export class TemporalFrameBuffer {
+  private readonly maxFrames = 30; // ~2 seconds buffer at 15 FPS
+  private frames: BufferedFrame[] = [];
+
+  public push(frame: BufferedFrame): void {
+    this.frames.push(frame);
+    if (this.frames.length > this.maxFrames) {
+      this.frames.shift();
+    }
+  }
+
+  public getPrevious(): BufferedFrame | null {
+    if (this.frames.length < 2) return null;
+    return this.frames[this.frames.length - 2];
+  }
+
+  public clear(): void {
+    this.frames = [];
+  }
 }
 
 export interface CandidateBufferItem {
@@ -27,21 +82,20 @@ export interface CandidateBufferItem {
   first_detected_at: number;
   last_detected_at: number;
   sample_count: number;
-  cumulative_saliency: number;
-  motion_samples: number[];
-  seat_id?: string;
+  cumulative_confidence: number;
   associated_student_id?: string;
+  seat_id?: string;
 }
 
-export type TrackStateStatus = 'candidate' | 'active' | 'lost' | 'terminated';
+export type TrackStatus = 'candidate' | 'active' | 'lost' | 'terminated';
 
 export interface InternalPersonTrack {
   track_id: string;
   camera_id: string;
-  status: TrackStateStatus;
+  status: TrackStatus;
   bbox: BoundingBox;
   
-  // Kinematics & Prediction
+  // Kinematic state
   velocity_x: number;
   velocity_y: number;
   last_update_time: number;
@@ -56,18 +110,21 @@ export interface InternalPersonTrack {
   phone_confidence: number;
   movement_magnitude: number;
   is_moving: boolean;
+  is_confirmed_human: boolean;
   seat_id?: string;
   associated_student_id?: string;
   
-  // Behavioral & Suspicion Scoring (Monotonically Non-Decreasing)
+  // Scoring & Latched Warnings
   suspicion_score: number;
   max_reached_score: number;
-  is_admin_cleared: boolean;
+  warning_latched: boolean;
+  warning_cleared_at?: number;
+
+  // Behavioral memory
   direction_started_at: number;
   current_direction: HeadDirection;
   turn_count: number;
   last_turn_time: number;
-  last_glance_alert_time: number;
   face_hidden_since: number | null;
   phone_seen_since: number | null;
   left_seat_since: number | null;
@@ -83,17 +140,19 @@ export class MotionVisionDetector {
   private readonly width = 160;
   private readonly height = 90;
 
-  private prevFrameData: Uint8ClampedArray | null = null;
+  private frameBuffer: TemporalFrameBuffer = new TemporalFrameBuffer();
+  private humanGate: HumanGate = new HumanGate();
+
   private nextTrackNumber = 1;
   private nextCandidateNumber = 1;
 
-  // Track & Analysis Pools
+  // State maps
   private activeTracks: Map<string, InternalPersonTrack> = new Map();
-  private candidateAnalysisBuffer: Map<string, CandidateBufferItem> = new Map();
+  private candidateBuffer: Map<string, CandidateBufferItem> = new Map();
 
-  // Verification & Retention Parameters
-  private readonly temporalAnalysisRequiredFrames = 6;  // ~1.2s - 1.8s verification window
-  private readonly maxMissedFrames = 50;                  // Persistent pinning: does not unpin easily
+  // Timing & Thresholds
+  private readonly confirmationHitsRequired = 3;   // ~0.2s - 0.4s confirmation window
+  private readonly maxMissedFrames = 15;            // Grace period before eviction: ~1.0s
   private readonly associationDistThreshold = 0.35;
 
   constructor() {
@@ -104,34 +163,33 @@ export class MotionVisionDetector {
   }
 
   /**
-   * Reset detector and tracker state
+   * Reset detector and tracking state on camera change or session reset
    */
   public reset(): void {
     this.activeTracks.clear();
-    this.candidateAnalysisBuffer.clear();
-    this.prevFrameData = null;
+    this.candidateBuffer.clear();
+    this.frameBuffer.clear();
     this.nextTrackNumber = 1;
     this.nextCandidateNumber = 1;
   }
 
   /**
-   * Admin Action: Clear Warning / Reset Suspicion for a specific track
+   * Admin Action: Unlatches warning alert for a track while preserving the suspicion score
    */
   public clearTrackWarning(trackId: string): void {
     const track = this.activeTracks.get(trackId);
     if (track) {
-      track.suspicion_score = 5;
-      track.max_reached_score = 5;
-      track.is_admin_cleared = true;
+      track.warning_latched = false;
+      track.warning_cleared_at = Date.now();
       track.turn_count = 0;
       track.face_hidden_since = null;
       track.phone_seen_since = null;
-      track.left_seat_since = null;
+      // Invariant: suspicion_score is NOT decreased
     }
   }
 
   /**
-   * Admin Action: Clear Warning / Reset Suspicion for a specific student ID
+   * Admin Action: Unlatches warning alert for a specific student ID
    */
   public clearStudentWarning(studentId: string): void {
     for (const track of this.activeTracks.values()) {
@@ -142,8 +200,23 @@ export class MotionVisionDetector {
   }
 
   /**
-   * Generates camera-scoped persistent track ID upon confirmation
-   * Example: CAM1-S001, CAM1-S002, CAM1-S015
+   * Admin Action: Full session reset for a specific student
+   */
+  public resetStudentScore(studentId: string): void {
+    for (const track of this.activeTracks.values()) {
+      if (track.associated_student_id === studentId) {
+        track.suspicion_score = 0;
+        track.max_reached_score = 0;
+        track.warning_latched = false;
+        track.turn_count = 0;
+        track.face_hidden_since = null;
+      }
+    }
+  }
+
+  /**
+   * Generate permanent camera-scoped tracking identifier
+   * Example: CAM1-S001, CAM1-S002, CAM1-S012
    */
   private generateTrackId(camPrefix: string): string {
     const numStr = String(this.nextTrackNumber++).padStart(3, '0');
@@ -151,14 +224,14 @@ export class MotionVisionDetector {
   }
 
   /**
-   * Center distance between two bounding boxes
+   * Center distance between two normalized bounding boxes
    */
   private computeCenterDistance(b1: BoundingBox, b2: BoundingBox): number {
-    const ax = b1.x + b1.width / 2;
-    const ay = b1.y + b1.height / 2;
-    const bx = b2.x + b2.width / 2;
-    const by = b2.y + b2.height / 2;
-    return Math.hypot(ax - bx, ay - by);
+    const cx1 = b1.x + b1.width / 2;
+    const cy1 = b1.y + b1.height / 2;
+    const cx2 = b2.x + b2.width / 2;
+    const cy2 = b2.y + b2.height / 2;
+    return Math.hypot(cx1 - cx2, cy1 - cy2);
   }
 
   /**
@@ -170,19 +243,22 @@ export class MotionVisionDetector {
     const x2 = Math.min(b1.x + b1.width, b2.x + b2.width);
     const y2 = Math.min(b1.y + b1.height, b2.y + b2.height);
 
-    const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
-    const union = b1.width * b1.height + b2.width * b2.height - intersection;
-    if (union <= 0) return 0;
-    return intersection / union;
+    const intersectionArea = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+    const b1Area = b1.width * b1.height;
+    const b2Area = b2.width * b2.height;
+    const unionArea = b1Area + b2Area - intersectionArea;
+
+    if (unionArea <= 0) return 0;
+    return intersectionArea / unionArea;
   }
 
   /**
-   * Velocity-based position prediction for lost or moving tracks
+   * Predict bounding box location based on kinematic velocity
    */
   private predictBoundingBox(track: InternalPersonTrack, dtSec: number): BoundingBox {
-    const clampedDt = Math.min(0.5, Math.max(0, dtSec));
-    const predX = Math.max(0, Math.min(1 - track.bbox.width, track.bbox.x + track.velocity_x * clampedDt));
-    const predY = Math.max(0, Math.min(1 - track.bbox.height, track.bbox.y + track.velocity_y * clampedDt));
+    const clampedDt = Math.min(0.4, Math.max(0, dtSec));
+    const predX = Math.max(0.01, Math.min(0.99 - track.bbox.width, track.bbox.x + track.velocity_x * clampedDt));
+    const predY = Math.max(0.01, Math.min(0.99 - track.bbox.height, track.bbox.y + track.velocity_y * clampedDt));
     return {
       x: predX,
       y: predY,
@@ -192,202 +268,213 @@ export class MotionVisionDetector {
   }
 
   /**
-   * STEP 1: HIGH-DENSITY MULTI-STUDENT PERSON DETECTOR
-   * Scans fine-grained spatial grid across all classroom rows, desks, and columns.
-   * Tracks every examinee in the hall with individual tight bounding boxes.
+   * BIOMETRIC & MORPHOLOGICAL HUMAN DETECTOR
+   * Analyzes spatial color ratios, normalized chromaticity (r, g), and anatomical upper-body geometry.
+   * STRICT INVARIANT: If no human is in the frame, returns an EMPTY ARRAY.
    */
-  private detectPersons(frameData: Uint8ClampedArray): PersonDetection[] {
+  private detectHumansInFrame(frameData: Uint8ClampedArray): HumanDetection[] {
     const gridCols = 32;
     const gridRows = 18;
     const cellW = this.width / gridCols;
     const cellH = this.height / gridRows;
 
-    const skinGrid = new Float32Array(gridCols * gridRows);
-    const motionGrid = new Float32Array(gridCols * gridRows);
-    const edgeGrid = new Float32Array(gridCols * gridRows);
-    const contrastGrid = new Float32Array(gridCols * gridRows);
+    const skinCountGrid = new Int32Array(gridCols * gridRows);
+    const edgeCountGrid = new Int32Array(gridCols * gridRows);
+    let totalSkinPixelsInFrame = 0;
 
     for (let gy = 0; gy < gridRows; gy++) {
       for (let gx = 0; gx < gridCols; gx++) {
-        let skinPixels = 0;
-        let motionDiff = 0;
-        let edgeDiff = 0;
-        let lumaSum = 0;
-        let totalSamples = 0;
+        let cellSkin = 0;
+        let cellEdge = 0;
 
         const startY = Math.floor(gy * cellH);
         const endY = Math.floor((gy + 1) * cellH);
         const startX = Math.floor(gx * cellW);
         const endX = Math.floor((gx + 1) * cellW);
 
-        for (let y = startY; y < endY; y += 2) {
+        for (let y = startY; y < endY; y++) {
           const rowIdx = y * this.width * 4;
-          for (let x = startX; x < endX; x += 2) {
+          for (let x = startX; x < endX; x++) {
             const idx = rowIdx + x * 4;
             const r = frameData[idx];
             const g = frameData[idx + 1];
             const b = frameData[idx + 2];
-            const luma = (r + g + b) / 3;
+            const sum = r + g + b;
 
-            lumaSum += luma;
-            totalSamples++;
+            // Normalized chromaticity skin locus test
+            if (sum > 60) {
+              const nr = r / sum;
+              const ng = g / sum;
+              const isSkin =
+                r > 48 && g > 32 && b > 24 &&
+                r > g && r > b &&
+                (r - g) >= 8 &&
+                (r - b) >= 10 &&
+                nr >= 0.35 && nr <= 0.62 &&
+                ng >= 0.25 && ng <= 0.39;
 
-            // Human Skin Locus Modeling
-            const isSkin = r > 40 && g > 25 && b > 18 &&
-              r > g && r > b &&
-              (r - g) >= 6 &&
-              r < 250;
+              if (isSkin) {
+                cellSkin++;
+                totalSkinPixelsInFrame++;
+              }
+            }
 
-            if (isSkin) skinPixels++;
-
-            // Spatial Contrast & Edge
+            // Facial and anatomical contour edge differential
             if (x + 2 < this.width) {
               const nextIdx = rowIdx + (x + 2) * 4;
               const diff = Math.abs(r - frameData[nextIdx]) + Math.abs(g - frameData[nextIdx + 1]);
-              if (diff > 20) edgeDiff++;
-            }
-
-            // Optical Motion Differential
-            if (this.prevFrameData) {
-              const mDiff = Math.abs(r - this.prevFrameData[idx]) +
-                Math.abs(g - this.prevFrameData[idx + 1]) +
-                Math.abs(b - this.prevFrameData[idx + 2]);
-              if (mDiff > 22) motionDiff += mDiff;
+              if (diff > 25) cellEdge++;
             }
           }
         }
 
         const cellIdx = gy * gridCols + gx;
-        if (totalSamples > 0) {
-          skinGrid[cellIdx] = skinPixels / totalSamples;
-          motionGrid[cellIdx] = motionDiff / (totalSamples * 255);
-          edgeGrid[cellIdx] = edgeDiff / totalSamples;
-          contrastGrid[cellIdx] = (lumaSum / totalSamples) / 255;
-        }
+        skinCountGrid[cellIdx] = cellSkin;
+        edgeCountGrid[cellIdx] = cellEdge;
       }
     }
 
-    // Identify candidate student head/torso loci across all rows
-    const candidatePeaks: Array<{ gx: number; gy: number; score: number }> = [];
+    // RULE 1: If there is no significant human skin presence in frame, RETURN ZERO DETECTIONS
+    if (totalSkinPixelsInFrame < 15) {
+      return [];
+    }
 
-    for (let gy = 1; gy < gridRows - 1; gy++) {
-      for (let gx = 1; gx < gridCols - 1; gx++) {
+    // Connected component clustering of human head and shoulder regions
+    const visited = new Uint8Array(gridCols * gridRows);
+    const humanClusters: Array<{
+      minGx: number;
+      maxGx: number;
+      minGy: number;
+      maxGy: number;
+      skinTotal: number;
+      confidence: number;
+    }> = [];
+
+    for (let gy = 0; gy < gridRows; gy++) {
+      for (let gx = 0; gx < gridCols; gx++) {
         const idx = gy * gridCols + gx;
-        const skin = skinGrid[idx];
-        const motion = motionGrid[idx];
-        const edge = edgeGrid[idx];
-        const contrast = contrastGrid[idx];
+        if (visited[idx]) continue;
+        if (skinCountGrid[idx] < 2) continue;
 
-        // Combined examinee presence saliency
-        const score = skin * 4.0 + motion * 3.5 + edge * 2.0 + (contrast > 0.15 && contrast < 0.85 ? 0.4 : 0);
+        let minGx = gx;
+        let maxGx = gx;
+        let minGy = gy;
+        let maxGy = gy;
+        let clusterSkin = 0;
+        let cellCount = 0;
 
-        if (score >= 0.28) {
-          // Check if local maximum in neighborhood
-          let isLocalPeak = true;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              if (dx === 0 && dy === 0) continue;
-              const nIdx = (gy + dy) * gridCols + (gx + dx);
-              const nScore = skinGrid[nIdx] * 4.0 + motionGrid[nIdx] * 3.5 + edgeGrid[nIdx] * 2.0;
-              if (nScore > score) {
-                isLocalPeak = false;
-                break;
+        const queue: number[] = [idx];
+        visited[idx] = 1;
+
+        while (queue.length > 0) {
+          const cur = queue.shift()!;
+          const cy = Math.floor(cur / gridCols);
+          const cx = cur % gridCols;
+
+          clusterSkin += skinCountGrid[cur];
+          cellCount++;
+
+          if (cx < minGx) minGx = cx;
+          if (cx > maxGx) maxGx = cx;
+          if (cy < minGy) minGy = cy;
+          if (cy > maxGy) maxGy = cy;
+
+          // 4-neighborhood expansion
+          const neighbors = [
+            [cx - 1, cy],
+            [cx + 1, cy],
+            [cx, cy - 1],
+            [cx, cy + 1]
+          ];
+
+          for (const [nx, ny] of neighbors) {
+            if (nx >= 0 && nx < gridCols && ny >= 0 && ny < gridRows) {
+              const nIdx = ny * gridCols + nx;
+              if (!visited[nIdx] && skinCountGrid[nIdx] >= 1) {
+                visited[nIdx] = 1;
+                queue.push(nIdx);
               }
             }
-            if (!isLocalPeak) break;
-          }
-
-          if (isLocalPeak) {
-            candidatePeaks.push({ gx, gy, score });
           }
         }
-      }
-    }
 
-    // Perspective-aware bounding box generation
-    const rawDetections: PersonDetection[] = [];
-
-    for (const peak of candidatePeaks) {
-      const normY = peak.gy / gridRows;
-      const normX = peak.gx / gridCols;
-
-      // In surveillance / classroom CCTV perspective:
-      // Background rows (top of screen) are smaller (~0.08 - 0.12 width, 0.14 - 0.22 height)
-      // Foreground rows (bottom of screen) are larger (~0.12 - 0.18 width, 0.22 - 0.35 height)
-      const perspectiveScale = 0.70 + normY * 0.75;
-      const targetW = Math.max(0.08, Math.min(0.20, 0.11 * perspectiveScale));
-      const targetH = Math.max(0.14, Math.min(0.38, 0.20 * perspectiveScale));
-
-      const boxX = Math.max(0.01, Math.min(0.99 - targetW, normX - targetW * 0.5));
-      const boxY = Math.max(0.02, Math.min(0.98 - targetH, normY - targetH * 0.35));
-
-      rawDetections.push({
-        bbox: {
-          x: boxX,
-          y: boxY,
-          width: targetW,
-          height: targetH
-        },
-        confidence: Math.min(0.98, 0.65 + peak.score * 0.4)
-      });
-    }
-
-    // Non-Maximum Suppression (NMS) to eliminate duplicate overlapping boxes
-    rawDetections.sort((a, b) => b.confidence - a.confidence);
-    const filteredDetections: PersonDetection[] = [];
-
-    for (const det of rawDetections) {
-      let isOverlap = false;
-      for (const kept of filteredDetections) {
-        const iou = this.computeIoU(det.bbox, kept.bbox);
-        const dist = this.computeCenterDistance(det.bbox, kept.bbox);
-        if (iou > 0.30 || dist < Math.min(det.bbox.width, kept.bbox.width) * 0.85) {
-          isOverlap = true;
-          break;
-        }
-      }
-      if (!isOverlap) {
-        filteredDetections.push(det);
-      }
-    }
-
-    // Default multi-desk exam hall baseline if video is static/low-contrast
-    if (filteredDetections.length < 3) {
-      const defaultExamDesks = [
-        // Row 1 (Foreground)
-        { x: 0.10, y: 0.58, width: 0.17, height: 0.34 },
-        { x: 0.38, y: 0.58, width: 0.17, height: 0.34 },
-        { x: 0.66, y: 0.58, width: 0.17, height: 0.34 },
-        // Row 2 (Midground)
-        { x: 0.14, y: 0.34, width: 0.14, height: 0.26 },
-        { x: 0.42, y: 0.34, width: 0.14, height: 0.26 },
-        { x: 0.70, y: 0.34, width: 0.14, height: 0.26 },
-        // Row 3 (Background)
-        { x: 0.18, y: 0.14, width: 0.11, height: 0.20 },
-        { x: 0.45, y: 0.14, width: 0.11, height: 0.20 },
-        { x: 0.73, y: 0.14, width: 0.11, height: 0.20 }
-      ];
-
-      for (const desk of defaultExamDesks) {
-        const isCovered = filteredDetections.some(d => this.computeCenterDistance(d.bbox, desk) < 0.15);
-        if (!isCovered) {
-          filteredDetections.push({
-            bbox: { ...desk },
-            confidence: 0.85
+        // Require sufficient skin pixels and density to establish a genuine human head
+        if (clusterSkin >= 12 && cellCount >= 2) {
+          const confidence = Math.min(0.98, 0.72 + Math.min(0.24, clusterSkin / 70));
+          humanClusters.push({
+            minGx,
+            maxGx,
+            minGy,
+            maxGy,
+            skinTotal: clusterSkin,
+            confidence
           });
         }
       }
     }
 
-    return filteredDetections;
+    // Convert validated human clusters to normalized snug bounding boxes
+    const humanDetections: HumanDetection[] = [];
+
+    for (const cluster of humanClusters) {
+      const clusterSpanX = (cluster.maxGx - cluster.minGx + 1) / gridCols;
+      const clusterSpanY = (cluster.maxGy - cluster.minGy + 1) / gridRows;
+
+      const centerX = (cluster.minGx + cluster.maxGx + 1) / 2 / gridCols;
+      const topY = cluster.minGy / gridRows;
+
+      // Human upper body bounding box dimensions
+      const targetW = Math.max(0.12, Math.min(0.45, Math.max(clusterSpanX * 1.35, 0.14)));
+      const targetH = Math.max(0.20, Math.min(0.65, Math.max(clusterSpanY * 1.65, targetW * 1.35)));
+
+      const normX = Math.max(0.01, Math.min(0.99 - targetW, centerX - targetW / 2));
+      const normY = Math.max(0.02, Math.min(0.98 - targetH, Math.max(0.02, topY - 0.04)));
+
+      humanDetections.push({
+        class_name: 'person',
+        confidence: cluster.confidence,
+        bbox: {
+          x: normX,
+          y: normY,
+          width: targetW,
+          height: targetH
+        }
+      });
+    }
+
+    // Non-Maximum Suppression (NMS) to merge overlapping detections of the same human
+    humanDetections.sort((a, b) => b.confidence - a.confidence);
+    const filteredHumans: HumanDetection[] = [];
+
+    for (const det of humanDetections) {
+      let isDuplicate = false;
+      for (const kept of filteredHumans) {
+        const iou = this.computeIoU(det.bbox, kept.bbox);
+        const dist = this.computeCenterDistance(det.bbox, kept.bbox);
+        if (iou > 0.25 || dist < Math.min(det.bbox.width, kept.bbox.width) * 0.70) {
+          isDuplicate = true;
+          break;
+        }
+      }
+      if (!isDuplicate) {
+        filteredHumans.push(det);
+      }
+    }
+
+    return filteredHumans;
   }
 
   /**
-   * STEP 2: MULTI-OBJECT FRAME PROCESSING WITH TEMPORAL ANALYSIS PIPELINE
-   * - Scans all desks across the entire exam hall without limits.
-   * - Ingests candidate examinees into temporary storage, verifies over time (~1.5s), then executes track.
-   * - Continuously searches for untracked examinees in an ongoing background loop.
-   * - Pins position in frame and increases score on movement without auto-decay.
+   * Core frame processing pipeline executed every frame
+   * Follows the strict execution order:
+   * 1. Frame ingestion into TemporalFrameBuffer
+   * 2. Human Detection & HumanGate validation
+   * 3. Match against existing tracks (Active / Lost)
+   * 4. Unmatched humans -> Candidate Temporal Buffer
+   * 5. Promote verified candidates to Active Tracks (dynamic, no 4-person limit)
+   * 6. Inspect in-track human behavior (motion, head pose, gaze, face, phone)
+   * 7. Update suspicion scores & latched warning states
+   * 8. Return authoritative CameraTrack[]
    */
   public processFrame(
     source: HTMLVideoElement | HTMLImageElement,
@@ -409,40 +496,58 @@ export class MotionVisionDetector {
       return this.exportActiveTracks();
     }
 
-    let frame: ImageData;
+    let frameData: Uint8ClampedArray;
     try {
       this.offscreenCtx.drawImage(source, 0, 0, this.width, this.height);
-      frame = this.offscreenCtx.getImageData(0, 0, this.width, this.height);
+      const img = this.offscreenCtx.getImageData(0, 0, this.width, this.height);
+      frameData = img.data;
     } catch {
       return this.exportActiveTracks();
     }
 
-    const data = frame.data;
-
-    // Execute pure multi-student optical detection across the whole video frame
-    const opticalDetections = this.detectPersons(data);
-    const rawDetections: Array<PersonDetection & { seat_id?: string; associated_student_id?: string }> = opticalDetections.map((det, dIdx) => ({
-      ...det,
-      associated_student_id: availableStudents[dIdx]?.id
-    }));
+    // Push into temporal ring buffer
+    this.frameBuffer.push({
+      timestamp: now,
+      data: new Uint8ClampedArray(frameData),
+      width: this.width,
+      height: this.height
+    });
 
     // -------------------------------------------------------------
-    // PHASE A: MATCH DETECTIONS WITH CONFIRMED ACTIVE TRACKS
+    // STEP 1: DETECT HUMANS & APPLY HUMAN GATE
+    // -------------------------------------------------------------
+    const rawHumanDetections = this.detectHumansInFrame(frameData);
+    const confirmedHumans = this.humanGate.accept(rawHumanDetections);
+
+    // If zero humans detected in frame:
+    // Decrement missed_frames for existing active tracks and evict
+    if (confirmedHumans.length === 0) {
+      for (const [trackId, track] of this.activeTracks.entries()) {
+        track.missed_frames++;
+        track.status = 'lost';
+        track.movement_magnitude = 0;
+        track.is_moving = false;
+        if (track.missed_frames > this.maxMissedFrames) {
+          track.status = 'terminated';
+          this.activeTracks.delete(trackId);
+        }
+      }
+      this.candidateBuffer.clear();
+      return this.exportActiveTracks();
+    }
+
+    // -------------------------------------------------------------
+    // STEP 2: ASSOCIATE DETECTIONS WITH EXISTING CONFIRMED TRACKS
     // -------------------------------------------------------------
     const matchedActiveIds = new Set<string>();
-    const unmatchedDetections: typeof rawDetections = [];
+    const unmatchedHumans: HumanDetection[] = [];
 
-    for (const det of rawDetections) {
+    for (const det of confirmedHumans) {
       let bestMatchId: string | null = null;
-      let highestScore = 0;
+      let highestAffinity = 0;
 
       for (const [trackId, track] of this.activeTracks.entries()) {
         if (matchedActiveIds.has(trackId)) continue;
-
-        if (det.seat_id && track.seat_id === det.seat_id) {
-          bestMatchId = trackId;
-          break;
-        }
 
         const dtSec = (now - track.last_update_time) / 1000;
         const predictedBox = this.predictBoundingBox(track, dtSec);
@@ -451,9 +556,9 @@ export class MotionVisionDetector {
         const dist = this.computeCenterDistance(predictedBox, det.bbox);
 
         if (iou >= 0.12 || dist <= this.associationDistThreshold) {
-          const score = iou * 0.6 + Math.max(0, 1 - dist / this.associationDistThreshold) * 0.4;
-          if (score > highestScore) {
-            highestScore = score;
+          const affinity = iou * 0.6 + Math.max(0, 1 - dist / this.associationDistThreshold) * 0.4;
+          if (affinity > highestAffinity) {
+            highestAffinity = affinity;
             bestMatchId = trackId;
           }
         }
@@ -463,7 +568,7 @@ export class MotionVisionDetector {
         matchedActiveIds.add(bestMatchId);
         const track = this.activeTracks.get(bestMatchId)!;
 
-        // Kinematics & Velocity Smoothing
+        // Kinematic smoothing & velocity estimation
         const dtSec = Math.max(0.01, (now - track.last_update_time) / 1000);
         const dx = det.bbox.x - track.bbox.x;
         const dy = det.bbox.y - track.bbox.y;
@@ -474,8 +579,8 @@ export class MotionVisionDetector {
         track.velocity_x = track.velocity_x * (1 - velAlpha) + instVx * velAlpha;
         track.velocity_y = track.velocity_y * (1 - velAlpha) + instVy * velAlpha;
 
-        // Fluid Frame-by-Frame Motion Tracking (snug compact box)
-        const posAlpha = 0.40;
+        // Position smoothing
+        const posAlpha = 0.35;
         track.bbox = {
           x: track.bbox.x * (1 - posAlpha) + det.bbox.x * posAlpha,
           y: track.bbox.y * (1 - posAlpha) + det.bbox.y * posAlpha,
@@ -483,49 +588,45 @@ export class MotionVisionDetector {
           height: track.bbox.height * (1 - posAlpha) + det.bbox.height * posAlpha
         };
 
-        if (det.seat_id) track.seat_id = det.seat_id;
-        if (det.associated_student_id) track.associated_student_id = det.associated_student_id;
-
-        // Optical Movement Magnitude
-        let personMotionScore = 0;
-        if (this.prevFrameData) {
-          const startPxX = Math.floor(track.bbox.x * this.width);
-          const endPxX = Math.min(this.width, Math.floor((track.bbox.x + track.bbox.width) * this.width));
-          const startPxY = Math.floor(track.bbox.y * this.height);
-          const endPxY = Math.min(this.height, Math.floor((track.bbox.y + track.bbox.height) * this.height));
+        // Optical motion calculation ONLY INSIDE this confirmed human track's bbox
+        const prevFrame = this.frameBuffer.getPrevious();
+        let inTrackMotion = 0;
+        if (prevFrame) {
+          const startX = Math.floor(track.bbox.x * this.width);
+          const endX = Math.min(this.width, Math.floor((track.bbox.x + track.bbox.width) * this.width));
+          const startY = Math.floor(track.bbox.y * this.height);
+          const endY = Math.min(this.height, Math.floor((track.bbox.y + track.bbox.height) * this.height));
 
           let diffSum = 0;
           let samples = 0;
-
-          for (let y = startPxY; y < endPxY; y += 2) {
+          for (let y = startY; y < endY; y += 2) {
             const rowOffset = y * this.width * 4;
-            for (let x = startPxX; x < endPxX; x += 2) {
+            for (let x = startX; x < endX; x += 2) {
               const idx = rowOffset + x * 4;
-              const diff = Math.abs(data[idx] - this.prevFrameData[idx]) +
-                Math.abs(data[idx + 1] - this.prevFrameData[idx + 1]) +
-                Math.abs(data[idx + 2] - this.prevFrameData[idx + 2]);
-              
+              const diff = Math.abs(frameData[idx] - prevFrame.data[idx]) +
+                Math.abs(frameData[idx + 1] - prevFrame.data[idx + 1]) +
+                Math.abs(frameData[idx + 2] - prevFrame.data[idx + 2]);
               if (diff > 30) diffSum += diff;
               samples++;
             }
           }
           if (samples > 0) {
-            personMotionScore = Math.min(100, Math.round((diffSum / samples) * 1.8));
+            inTrackMotion = Math.min(100, Math.round((diffSum / samples) * 1.8));
           }
         }
 
         const displacement = Math.hypot(dx, dy);
         const spatialMotion = Math.min(100, Math.round(displacement * 600));
-        const totalMovementMagnitude = Math.max(personMotionScore, spatialMotion);
+        const totalMovementMagnitude = Math.max(inTrackMotion, spatialMotion);
 
         track.movement_magnitude = totalMovementMagnitude;
         track.is_moving = totalMovementMagnitude > 12;
 
-        // Head Pose & Gaze Analysis
-        this.estimateHeadPoseAndGaze(track, data);
+        // Estimate head orientation & face within the confirmed human box
+        this.inspectHumanHeadAndGaze(track, frameData);
 
-        // Monotonically Non-Decreasing Suspicion Scoring
-        this.evaluateBehaviorRules(track, now);
+        // Evaluate behavioral rules & update suspicion score
+        this.inspectHumanBehavior(track, now);
 
         track.status = 'active';
         track.hits++;
@@ -540,21 +641,20 @@ export class MotionVisionDetector {
         });
         if (track.history.length > 25) track.history.shift();
       } else {
-        unmatchedDetections.push(det);
+        unmatchedHumans.push(det);
       }
     }
 
     // -------------------------------------------------------------
-    // PHASE B: TEMPORAL CANDIDATE BUFFER & PROGRESSIVE VERIFICATION
-    // Take time to analyze movements/frames in temp storage before promoting
+    // STEP 3: SEARCH FOR REMAINING UNTRACKED HUMANS (CANDIDATE BUFFER)
     // -------------------------------------------------------------
     const matchedCandidateIds = new Set<string>();
 
-    for (const det of unmatchedDetections) {
+    for (const det of unmatchedHumans) {
       let matchedCandId: string | null = null;
-      let minCandDist = 0.28;
+      let minCandDist = 0.30;
 
-      for (const [cId, cand] of this.candidateAnalysisBuffer.entries()) {
+      for (const [cId, cand] of this.candidateBuffer.entries()) {
         const dist = this.computeCenterDistance(cand.bbox, det.bbox);
         if (dist < minCandDist) {
           minCandDist = dist;
@@ -564,26 +664,24 @@ export class MotionVisionDetector {
 
       if (matchedCandId) {
         matchedCandidateIds.add(matchedCandId);
-        const cand = this.candidateAnalysisBuffer.get(matchedCandId)!;
+        const cand = this.candidateBuffer.get(matchedCandId)!;
         cand.sample_count++;
         cand.last_detected_at = now;
+        cand.cumulative_confidence += det.confidence;
         cand.bbox = {
-          x: cand.bbox.x * 0.7 + det.bbox.x * 0.3,
-          y: cand.bbox.y * 0.7 + det.bbox.y * 0.3,
-          width: cand.bbox.width * 0.7 + det.bbox.width * 0.3,
-          height: cand.bbox.height * 0.7 + det.bbox.height * 0.3
+          x: cand.bbox.x * 0.6 + det.bbox.x * 0.4,
+          y: cand.bbox.y * 0.6 + det.bbox.y * 0.4,
+          width: cand.bbox.width * 0.6 + det.bbox.width * 0.4,
+          height: cand.bbox.height * 0.6 + det.bbox.height * 0.4
         };
-        if (det.seat_id) cand.seat_id = det.seat_id;
-        if (det.associated_student_id) cand.associated_student_id = det.associated_student_id;
 
-        // If candidate has been analyzed across required verification window, PROMOTE TO ACTIVE TRACK
-        const analysisDurationSec = (now - cand.first_detected_at) / 1000;
-        if (cand.sample_count >= this.temporalAnalysisRequiredFrames || analysisDurationSec >= 1.4 || det.seat_id) {
+        // Temporal confirmation check (~3 consecutive frames)
+        if (cand.sample_count >= this.confirmationHitsRequired) {
           const permTrackId = this.generateTrackId(camPrefix);
           const activeIndex = this.activeTracks.size;
           const assignedStudentId = cand.associated_student_id || availableStudents[activeIndex]?.id;
 
-          const newActiveTrack: InternalPersonTrack = {
+          const newTrack: InternalPersonTrack = {
             track_id: permTrackId,
             camera_id: cameraId,
             status: 'active',
@@ -600,16 +698,16 @@ export class MotionVisionDetector {
             phone_confidence: 0,
             movement_magnitude: 0,
             is_moving: false,
+            is_confirmed_human: true,
             seat_id: cand.seat_id,
             associated_student_id: assignedStudentId,
-            suspicion_score: 5,
-            max_reached_score: 5,
-            is_admin_cleared: false,
+            suspicion_score: 0,
+            max_reached_score: 0,
+            warning_latched: false,
             direction_started_at: now,
             current_direction: 'center',
             turn_count: 0,
             last_turn_time: now,
-            last_glance_alert_time: 0,
             face_hidden_since: null,
             phone_seen_since: null,
             left_seat_since: null,
@@ -618,39 +716,37 @@ export class MotionVisionDetector {
             history: [{ x: cand.bbox.x + cand.bbox.width / 2, y: cand.bbox.y + cand.bbox.height / 2, t: now }]
           };
 
-          this.activeTracks.set(permTrackId, newActiveTrack);
-          this.candidateAnalysisBuffer.delete(matchedCandId);
+          this.activeTracks.set(permTrackId, newTrack);
+          this.candidateBuffer.delete(matchedCandId);
         }
       } else {
-        // Enqueue into temporary candidate analysis storage
         const newCandId = `cand-${this.nextCandidateNumber++}`;
         matchedCandidateIds.add(newCandId);
-        this.candidateAnalysisBuffer.set(newCandId, {
+        this.candidateBuffer.set(newCandId, {
           candidate_id: newCandId,
           camera_id: cameraId,
           bbox: { ...det.bbox },
           first_detected_at: now,
           last_detected_at: now,
           sample_count: 1,
-          cumulative_saliency: det.confidence,
-          motion_samples: [],
-          seat_id: det.seat_id,
-          associated_student_id: det.associated_student_id
+          cumulative_confidence: det.confidence,
+          associated_student_id: det.associated_student_id,
+          seat_id: det.seat_id
         });
       }
     }
 
-    // Prune stale candidate buffer entries
-    for (const [cId, cand] of this.candidateAnalysisBuffer.entries()) {
+    // Prune stale unconfirmed candidate tracks
+    for (const [cId, cand] of this.candidateBuffer.entries()) {
       if (!matchedCandidateIds.has(cId)) {
-        if ((now - cand.last_detected_at) > 3000) {
-          this.candidateAnalysisBuffer.delete(cId);
+        if ((now - cand.last_detected_at) > 1500) {
+          this.candidateBuffer.delete(cId);
         }
       }
     }
 
     // -------------------------------------------------------------
-    // PHASE C: PERSISTENT PINNING (Keep locked unless entire room is empty)
+    // STEP 4: PERSISTENT PINNING & LOST TRACK MANAGEMENT
     // -------------------------------------------------------------
     for (const [trackId, track] of this.activeTracks.entries()) {
       if (!matchedActiveIds.has(trackId)) {
@@ -663,7 +759,6 @@ export class MotionVisionDetector {
         track.bbox = this.predictBoundingBox(track, dtSec);
         track.last_update_time = now;
 
-        // Persistent pinning: Only purge if permanently abandoned (empty classroom)
         if (track.missed_frames > this.maxMissedFrames) {
           track.status = 'terminated';
           this.activeTracks.delete(trackId);
@@ -671,20 +766,13 @@ export class MotionVisionDetector {
       }
     }
 
-    // Save previous frame buffer
-    if (!this.prevFrameData) {
-      this.prevFrameData = new Uint8ClampedArray(data);
-    } else {
-      this.prevFrameData.set(data);
-    }
-
     return this.exportActiveTracks();
   }
 
   /**
-   * Estimates Head Pose and Gaze direction from the head region of the bounding box
+   * Inspects head pose and gaze within confirmed human bounding box
    */
-  private estimateHeadPoseAndGaze(track: InternalPersonTrack, frameData: Uint8ClampedArray): void {
+  private inspectHumanHeadAndGaze(track: InternalPersonTrack, frameData: Uint8ClampedArray): void {
     const headX = Math.floor(track.bbox.x * this.width);
     const headW = Math.max(6, Math.floor(track.bbox.width * this.width));
     const headY = Math.floor(track.bbox.y * this.height);
@@ -729,7 +817,7 @@ export class MotionVisionDetector {
       yaw = 35;
     }
 
-    const faceVisible = totalSamples > 0 && (skinHits / totalSamples) > 0.12;
+    const faceVisible = totalSamples > 0 && (skinHits / totalSamples) > 0.10;
     const faceConfidence = Math.min(0.96, Math.max(0.60, faceVisible ? 0.90 : 0.45));
 
     track.head_pose = {
@@ -743,12 +831,13 @@ export class MotionVisionDetector {
   }
 
   /**
-   * Evaluates behavioral rules with MONOTONICALLY NON-DECREASING Suspicion Score
-   * - Score increases when movement, head glancing, face hidden, or phone is detected.
-   * - Score NEVER decreases automatically.
-   * - Once warning/red is reached, it remains until an administrator clears the warning.
+   * Evaluates behavioral rules on confirmed human track
+   * Invariants:
+   * - Suspicion score only increases on qualifying behavioral anomalies.
+   * - Suspicion score NEVER decreases automatically.
+   * - Reaching max/warning score latches warning_latched = true.
    */
-  private evaluateBehaviorRules(track: InternalPersonTrack, now: number): void {
+  private inspectHumanBehavior(track: InternalPersonTrack, now: number): void {
     const dir = track.head_pose.direction;
     let addedPenalty = 0;
 
@@ -757,20 +846,20 @@ export class MotionVisionDetector {
       if (dir === 'left' || dir === 'right') {
         track.turn_count++;
         track.last_turn_time = now;
-        addedPenalty += 15;
+        addedPenalty += 12;
       }
       track.current_direction = dir;
       track.direction_started_at = now;
     } else if (dir === 'left' || dir === 'right') {
       const sustainedSec = (now - track.direction_started_at) / 1000;
       if (sustainedSec >= 2.0) {
-        addedPenalty += 25; // Sustained looking away
+        addedPenalty += 20; // Sustained glancing away
       }
     }
 
     // 2. Repeated Looking Glance Accumulation
     if (track.turn_count >= 3) {
-      addedPenalty += 30;
+      addedPenalty += 25;
     }
 
     // 3. Face Occlusion
@@ -784,9 +873,9 @@ export class MotionVisionDetector {
       track.face_hidden_since = null;
     }
 
-    // 4. Movement / Agitation contribution
-    if (track.movement_magnitude > 40) {
-      addedPenalty += Math.min(35, Math.round(track.movement_magnitude * 0.4));
+    // 4. Agitated Movement contribution
+    if (track.movement_magnitude > 45) {
+      addedPenalty += Math.min(30, Math.round(track.movement_magnitude * 0.35));
     }
 
     // 5. Phone Detection
@@ -794,28 +883,33 @@ export class MotionVisionDetector {
       addedPenalty += 45;
     }
 
-    // If new violations occurred, compute step score
+    // Update suspicion score monotonically
     if (addedPenalty > 0) {
-      const stepScore = Math.min(100, track.suspicion_score + Math.round(addedPenalty * 0.3));
-      track.suspicion_score = Math.max(track.suspicion_score, stepScore);
+      const contribution = Math.round(addedPenalty * 0.3);
+      track.suspicion_score = Math.min(100, Math.max(track.suspicion_score, track.suspicion_score + contribution));
       track.max_reached_score = Math.max(track.max_reached_score, track.suspicion_score);
     }
-    
-    // Invariant: The suspicion score never decreases automatically
+
+    // Enforce non-decreasing invariant
     track.suspicion_score = Math.max(track.suspicion_score, track.max_reached_score);
+
+    // Latch warning if score reaches warning threshold (>= 65)
+    if (track.suspicion_score >= 65) {
+      track.warning_latched = true;
+    }
   }
 
   /**
-   * Format confirmed active tracks for frontend rendering & telemetry
+   * Export confirmed active tracks for canvas rendering & telemetry
    */
   private exportActiveTracks(): CameraTrack[] {
     return Array.from(this.activeTracks.values())
-      .filter(t => t.status === 'active' || (t.status === 'lost' && t.missed_frames <= 30))
+      .filter(t => t.status === 'active' || (t.status === 'lost' && t.missed_frames <= 10))
       .map(t => ({
         track_id: t.track_id,
         camera_id: t.camera_id,
         bbox: { ...t.bbox },
-        confidence: 0.92,
+        confidence: 0.94,
         head_pose: { ...t.head_pose },
         face_visible: t.face_visible,
         face_confidence: t.face_confidence,
@@ -823,9 +917,12 @@ export class MotionVisionDetector {
         phone_confidence: t.phone_confidence,
         movement_magnitude: t.movement_magnitude,
         is_moving: t.is_moving,
+        is_confirmed_human: true,
         seat_id: t.seat_id,
         associated_student_id: t.associated_student_id,
         suspicion_score: t.suspicion_score,
+        warning_latched: t.warning_latched,
+        warning_cleared_at: t.warning_cleared_at,
         last_seen_timestamp: t.last_seen_timestamp,
         created_timestamp: t.created_timestamp,
         history_trajectory: [...t.history]
