@@ -113,7 +113,7 @@ export class BehaviorAnalyzer {
     studentInfo?: { name: string; student_id_number: string },
     seatRegion?: { x: number; y: number; width: number; height: number },
     now: number = Date.now()
-  ): { events: BehaviorEvent[]; suspicion_score: number; current_score: number; cumulative_score: number } {
+  ): { events: BehaviorEvent[]; suspicion_score: number; current_score: number; cumulative_score: number; max_score: number } {
     const ctx = this.getOrCreateContext(track.track_id, now);
     const triggeredEvents: BehaviorEvent[] = [];
 
@@ -243,15 +243,15 @@ export class BehaviorAnalyzer {
     // 4. Seat Boundary & Leaving Seat Analysis
     // -------------------------------------------------------------
     if (seatRegion) {
-      // Check if student center is within seat bounds (with 15% tolerance margin)
-      const trackCenterX = track.bbox.x + track.bbox.width / 2;
-      const trackCenterY = track.bbox.y + track.bbox.height / 2;
-      const margin = 0.08;
+      // Bottom-center of person box represents seated desk location
+      const footX = track.bbox.x + track.bbox.width / 2;
+      const footY = track.bbox.y + track.bbox.height * 0.88;
+      const margin = 0.04; // Standardized consistent margin
       const insideSeat = 
-        trackCenterX >= (seatRegion.x - margin) &&
-        trackCenterX <= (seatRegion.x + seatRegion.width + margin) &&
-        trackCenterY >= (seatRegion.y - margin) &&
-        trackCenterY <= (seatRegion.y + seatRegion.height + margin);
+        footX >= (seatRegion.x - margin) &&
+        footX <= (seatRegion.x + seatRegion.width + margin) &&
+        footY >= (seatRegion.y - margin) &&
+        footY <= (seatRegion.y + seatRegion.height + margin);
 
       if (!insideSeat) {
         if (!ctx.left_seat_since) {
@@ -346,9 +346,10 @@ export class BehaviorAnalyzer {
     const previousCumulative = track.cumulative_score ?? track.suspicion_score ?? 0;
     const addedScore = Math.round(eventScoreContribution * 0.4);
     const cumulative_score = Math.min(100, Math.max(previousCumulative, previousCumulative + addedScore));
+    const max_score = Math.max(track.max_score || 0, current_score, cumulative_score);
     const suspicion_score = cumulative_score;
 
-    return { events: triggeredEvents, suspicion_score, current_score, cumulative_score };
+    return { events: triggeredEvents, suspicion_score, current_score, cumulative_score, max_score };
   }
 
   private createEvent(params: {

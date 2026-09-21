@@ -17,10 +17,13 @@ import {
 import { Card } from '../ui/Card.js';
 
 export function LiveStatisticsBar() {
-  const { stats, cameras, students } = useMonitoring();
+  const { stats, cameras, students, settings } = useMonitoring();
 
-  const flaggedStudents = students.filter(s => s.unified_suspicion_score >= 60).length;
-  const warningStudents = students.filter(s => s.unified_suspicion_score >= 35 && s.unified_suspicion_score < 60).length;
+  const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
+  const warningThreshold = settings?.thresholds?.warning_suspicion_threshold ?? 40;
+
+  const flaggedStudents = students.filter(s => s.unified_suspicion_score >= highThreshold).length;
+  const warningStudents = students.filter(s => s.unified_suspicion_score >= warningThreshold && s.unified_suspicion_score < highThreshold).length;
 
   const statItems = [
     {

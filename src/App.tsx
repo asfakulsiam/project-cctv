@@ -48,8 +48,12 @@ function MonitoringAppContent() {
   const { 
     students, 
     selectedStudent, 
-    setSelectedStudent 
+    setSelectedStudent,
+    settings
   } = useMonitoring();
+
+  const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
+  const warningThreshold = settings?.thresholds?.warning_suspicion_threshold ?? 40;
 
   // URL-synchronized navigation handler
   const navigate = (view: AppView) => {
@@ -167,8 +171,8 @@ function MonitoringAppContent() {
                     </div>
                   ) : (
                     students.map(student => {
-                      const isHigh = student.unified_suspicion_score >= 60;
-                      const isWarn = student.unified_suspicion_score >= 35 && !isHigh;
+                      const isHigh = student.unified_suspicion_score >= highThreshold;
+                      const isWarn = student.unified_suspicion_score >= warningThreshold && !isHigh;
 
                       return (
                         <div

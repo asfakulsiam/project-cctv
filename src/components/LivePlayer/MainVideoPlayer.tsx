@@ -356,29 +356,12 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           const activeSource = isMjpeg ? mjpegEl : videoEl;
           const now = Date.now();
 
-          // Client-Side Real-Time Optical Motion & Person Detection (~10 FPS)
-          if (now - lastDetectionTimeRef.current >= 95 && activeSource) {
-            lastDetectionTimeRef.current = now;
-            try {
-              const detectedTracks = detectorRef.current.processFrame(
-                activeSource, 
-                focusedCamera.camera_id,
-                studentsRef.current
-              );
-              liveTracksRef.current = detectedTracks || [];
-              setLiveTrackCount(liveTracksRef.current.length);
-              // Throttled broadcast to global context & server (broadcasts empty array if 0 humans)
-              if (now - lastBroadcastTimeRef.current >= 600) {
-                lastBroadcastTimeRef.current = now;
-                broadcastDetectionsRef.current(focusedCamera.camera_id, detectedTracks || []);
-              }
-            } catch {
-              // ignore frame read exceptions
-            }
+          // Authoritative Server Tracks: browser is purely a viewer
+          // Displays verified tracks received via server WebSocket telemetry
+          const effectiveTracks = tracksRef.current || [];
+          if (effectiveTracks.length !== liveTrackCount) {
+            setLiveTrackCount(effectiveTracks.length);
           }
-
-          // Use authoritative live client detections: if 0 humans detected in camera, render 0 tracks
-          const effectiveTracks = liveTracksRef.current;
 
           drawCameraFeed(
             ctx,

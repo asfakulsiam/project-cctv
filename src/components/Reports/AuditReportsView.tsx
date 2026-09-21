@@ -17,9 +17,12 @@ import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 
 export function AuditReportsView() {
-  const { session, students, cameras, events } = useMonitoring();
+  const { session, students, cameras, events, settings } = useMonitoring();
   const [reportData, setReportData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
+  const warningThreshold = settings?.thresholds?.warning_suspicion_threshold ?? 40;
 
   useEffect(() => {
     fetch('/api/reports/session')
@@ -49,8 +52,8 @@ export function AuditReportsView() {
     URL.revokeObjectURL(url);
   };
 
-  const highRisk = students.filter(s => s.unified_suspicion_score >= 60);
-  const warnings = students.filter(s => s.unified_suspicion_score >= 35 && s.unified_suspicion_score < 60);
+  const highRisk = students.filter(s => s.unified_suspicion_score >= highThreshold);
+  const warnings = students.filter(s => s.unified_suspicion_score >= warningThreshold && s.unified_suspicion_score < highThreshold);
 
   return (
     <div className="space-y-6">
@@ -170,8 +173,8 @@ export function AuditReportsView() {
                 </tr>
               )}
               {students.map(s => {
-                const isHigh = s.unified_suspicion_score >= 60;
-                const isWarn = s.unified_suspicion_score >= 35 && !isHigh;
+                const isHigh = s.unified_suspicion_score >= highThreshold;
+                const isWarn = s.unified_suspicion_score >= warningThreshold && !isHigh;
 
                 return (
                   <tr key={s.id} className="hover:bg-[var(--system-fill-secondary)] transition-colors">

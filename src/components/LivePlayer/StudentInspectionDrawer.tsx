@@ -26,7 +26,7 @@ interface StudentInspectionDrawerProps {
 }
 
 export function StudentInspectionDrawer({ student, onClose }: StudentInspectionDrawerProps) {
-  const { cameras, setFocusedCameraId, events, clearStudentWarning } = useMonitoring();
+  const { cameras, setFocusedCameraId, events, clearStudentWarning, settings } = useMonitoring();
   const [clearing, setClearing] = useState(false);
   const [clearedSuccess, setClearedSuccess] = useState(false);
 
@@ -41,18 +41,25 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
   const studentEvents = events.filter(e => e.student_id === student.id).slice(0, 10);
   const bestObservation = student.active_observations.find(o => o.is_best_view);
 
+  const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
+  const warningThreshold = settings?.thresholds?.warning_suspicion_threshold ?? 40;
+
+  const currentScore = student.current_score ?? 0;
+  const cumulativeScore = student.cumulative_score ?? student.unified_suspicion_score ?? 0;
+  const maxScore = student.max_score ?? Math.max(currentScore, cumulativeScore);
+
   const getSuspicionVariant = (score: number): 'success' | 'warning' | 'destructive' => {
-    if (score >= 60) return 'destructive';
-    if (score >= 35) return 'warning';
+    if (score >= highThreshold) return 'destructive';
+    if (score >= warningThreshold) return 'warning';
     return 'success';
   };
 
-  const suspicionVariant = getSuspicionVariant(student.unified_suspicion_score);
-  const suspicionLabel = student.unified_suspicion_score >= 60 
-    ? 'ELEVATED MONITORING (WARN/RED)' 
-    : student.unified_suspicion_score >= 35 
-      ? 'ATTENTION ADVISORY (YELLOW)' 
-      : 'NORMAL PATTERN (CLEAN)';
+  const suspicionVariant = getSuspicionVariant(cumulativeScore);
+  const suspicionLabel = cumulativeScore >= highThreshold 
+    ? 'CRITICAL MONITORING (RED)' 
+    : cumulativeScore >= warningThreshold 
+      ? 'WARNING ADVISORY (YELLOW)' 
+      : 'NORMAL PATTERN (GREEN)';
 
   return (
     <Sheet
@@ -76,13 +83,20 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
           </div>
 
           <div className="flex items-baseline justify-between">
-            <div className="flex items-baseline space-x-2">
-              <span className="text-[32px] font-bold font-mono-apple text-[var(--system-text-primary)]">
-                {student.unified_suspicion_score}
-              </span>
-              <span className="text-[12px] text-[var(--system-text-tertiary)] font-mono-apple">
-                / 100 max index
-              </span>
+            <div className="space-y-1">
+              <div className="flex items-baseline space-x-2">
+                <span className="text-[28px] font-bold font-mono-apple text-[var(--system-text-primary)]">
+                  {cumulativeScore}
+                </span>
+                <span className="text-[12px] text-[var(--system-text-tertiary)] font-mono-apple">
+                  / 100 cumulative
+                </span>
+              </div>
+              <div className="flex items-center space-x-3 text-[11px] font-mono-apple">
+                <span className="text-[var(--system-accent)]">Current: <strong>{currentScore}</strong></span>
+                <span className="text-[var(--system-text-tertiary)]">•</span>
+                <span className="text-amber-400">Peak: <strong>{maxScore}</strong></span>
+              </div>
             </div>
 
             {/* Admin Clear Warning Button */}
@@ -113,15 +127,15 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
           <div className="w-full bg-[var(--system-fill)] h-2 rounded-full overflow-hidden">
             <div 
               className={`h-full rounded-full transition-all duration-500 ${
-                student.unified_suspicion_score >= 60 ? 'bg-[var(--system-destructive)]' :
-                student.unified_suspicion_score >= 35 ? 'bg-[var(--system-warning)]' : 'bg-[var(--system-accent)]'
+                cumulativeScore >= highThreshold ? 'bg-[var(--system-destructive)]' :
+                cumulativeScore >= warningThreshold ? 'bg-[var(--system-warning)]' : 'bg-[var(--system-accent)]'
               }`}
-              style={{ width: `${student.unified_suspicion_score}%` }}
+              style={{ width: `${cumulativeScore}%` }}
             />
           </div>
 
           <p className="text-[11px] text-[var(--system-text-tertiary)] italic leading-relaxed">
-            * Score accumulates with candidate movements and remains flagged until cleared by an administrator.
+            * Cumulative score tracks session history; clearing resets active immediate window while maintaining audit trail.
           </p>
         </Card>
 

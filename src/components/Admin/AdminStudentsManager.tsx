@@ -13,7 +13,8 @@ import { StudentRecord } from '../../types.js';
 import { Users, Edit3, Trash2, Plus, Check, X, AlertCircle } from 'lucide-react';
 
 export function AdminStudentsManager() {
-  const { students, refreshData } = useMonitoring();
+  const { students, refreshData, settings } = useMonitoring();
+  const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
 
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
   const [editIdNumber, setEditIdNumber] = useState<string>('');
@@ -317,7 +318,7 @@ export function AdminStudentsManager() {
                       {student.seat_id?.toUpperCase() || 'N/A'}
                     </td>
                     <td className="px-4 py-3 font-mono">
-                      <span className={student.unified_suspicion_score >= 60 ? 'text-rose-400 font-bold' : 'text-slate-300'}>
+                      <span className={student.unified_suspicion_score >= highThreshold ? 'text-rose-400 font-bold' : 'text-slate-300'}>
                         {student.unified_suspicion_score}
                       </span>
                     </td>

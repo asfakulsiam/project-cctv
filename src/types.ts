@@ -43,21 +43,42 @@ export interface BoundingBox {
   height: number; // 0 - 1 normalized or pixel
 }
 
-export type DetectionClass = 'person' | 'other';
+export type DetectionClass = 'person' | 'cell phone' | 'other';
+
+export interface CandidateEvidence {
+  detectionCount: number;
+  firstSeen: number;
+  lastSeen: number;
+  confidenceMean: number;
+  confidenceMin: number;
+  centerVariance: number;
+  sizeVariance: number;
+  appearanceConsistency: number;
+  detectorAgreement: number;
+}
 
 export interface HumanDetection {
-  detection_id?: string;       // Layer 1: Ephemeral detection ID (e.g. "det-1049")
+  detection_id?: string;       // Layer 1: Ephemeral detection ID (e.g. "det-001049")
   class_name: 'person';
   confidence: number;
   bbox: BoundingBox;
+  appearance_embedding?: number[]; // Re-ID visual descriptor vector
   head_pose?: HeadPoseData;
   face_visible?: boolean;
   face_confidence?: number;
   phone_detected?: boolean;
   phone_confidence?: number;
+  phone_bbox?: BoundingBox;
   seat_id?: string;
   associated_student_id?: string;
   global_person_id?: string;
+}
+
+export interface SecondaryObjectDetection {
+  detection_id: string;
+  class_name: 'cell phone';
+  confidence: number;
+  bbox: BoundingBox;
 }
 
 export interface CameraTrack {
@@ -66,6 +87,7 @@ export interface CameraTrack {
   global_person_id?: string;   // Layer 3: Global Person ID across all cameras (e.g. "P-001")
   bbox: BoundingBox;           // Bounding box in normalized coords (0 to 1)
   confidence: number;          // Detection confidence (0 - 1)
+  appearance_embedding?: number[]; // Re-ID appearance descriptor vector
   head_pose: HeadPoseData;
   face_visible: boolean;
   face_confidence: number;
@@ -73,12 +95,13 @@ export interface CameraTrack {
   phone_confidence: number;
   movement_magnitude: number;  // Relative velocity / spatial delta
   is_moving: boolean;
-  is_confirmed_human: boolean; // Guaranteed true human invariant (passed morphology & temporal evidence)
+  is_confirmed_human: boolean; // Guaranteed true human invariant (passed detector & temporal evidence)
   seat_id?: string;
   associated_student_id?: string;
-  suspicion_score: number;     // Monotonically non-decreasing score (0 - 100)
+  suspicion_score: number;     // Suspicion score (0 - 100)
   current_score?: number;      // Current immediate behavioral anomaly risk window (0 - 100)
   cumulative_score?: number;   // Cumulative non-decreasing suspicion score for audit (0 - 100)
+  max_score?: number;          // Peak instantaneous current_score reached
   warning_latched?: boolean;   // Latched warning state until explicit admin clearance
   warning_cleared_at?: number;
   last_seen_timestamp: number;
@@ -106,6 +129,7 @@ export interface GlobalPerson {
   seat_id?: string;
   active?: boolean;
   primary_camera_id?: string;
+  appearance_embedding?: number[]; // Running average visual appearance embedding
   camera_tracks?: Array<{
     camera_id: string;
     track_id: string;
@@ -114,6 +138,7 @@ export interface GlobalPerson {
   }>;
   current_score: number;         // Immediate penalty (resettable by admin)
   cumulative_score: number;      // Lifetime non-decreasing penalty
+  max_score?: number;            // Highest peak score
   warning_latched: boolean;
   observations?: Record<string, GlobalPersonObservation>;
   first_seen?: number;
@@ -132,6 +157,7 @@ export interface StudentObservation {
   suspicion_score?: number;
   current_score?: number;
   cumulative_score?: number;
+  max_score?: number;
 }
 
 export interface StudentRecord {
@@ -144,6 +170,7 @@ export interface StudentRecord {
   unified_suspicion_score: number; // Cross-camera integrated score (0 - 100)
   current_score?: number;          // Current behavioral anomaly risk (0 - 100)
   cumulative_score?: number;       // Monotonically non-decreasing audit score (0 - 100)
+  max_score?: number;              // Peak score reached
   active_observations: StudentObservation[];
   notes?: string;
   last_activity?: string;
@@ -238,6 +265,7 @@ export interface MonitoringThresholds {
   high_suspicion_threshold: number;
   warning_suspicion_threshold: number;
   movement_threshold_px: number;
+  min_person_confidence?: number;
 }
 
 export interface AppSettings {
