@@ -122,11 +122,11 @@ export function ActiveCameraDetailsPanel({ onInspectStudent }: ActiveCameraDetai
                   <div className="flex items-center space-x-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-[var(--system-accent)]" />
                     <div>
-                      <span className="font-semibold text-[var(--system-text-primary)]">
-                        {matchedStudent ? matchedStudent.name : t.track_id}
+                      <span className="font-semibold text-[var(--system-text-primary)] font-mono-apple">
+                        {matchedStudent ? matchedStudent.student_id_number : t.track_id}
                       </span>
                       <span className="text-[10px] font-mono-apple text-[var(--system-text-tertiary)] block">
-                        {t.track_id} • Score: {t.suspicion_score}
+                        Track: {t.track_id} • Score: {t.suspicion_score}
                       </span>
                     </div>
                   </div>

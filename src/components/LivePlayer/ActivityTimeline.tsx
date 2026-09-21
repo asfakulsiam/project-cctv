@@ -170,13 +170,6 @@ export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityT
                       )}
                     </div>
 
-                    {/* Student Name */}
-                    {studentNameDisplay && (
-                      <div className="text-[11px] font-medium text-slate-300 mt-0.5">
-                        {studentNameDisplay}
-                      </div>
-                    )}
-
                     {/* Description */}
                     <p className="text-[12px] text-[var(--system-text-secondary)] mt-0.5 leading-relaxed">
                       {event.description}

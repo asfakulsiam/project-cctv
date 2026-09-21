@@ -46,8 +46,8 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
     <Sheet
       isOpen={true}
       onClose={onClose}
-      title={student.name}
-      description={`ID: ${student.student_id_number} • Desk: ${student.seat_id?.toUpperCase() || 'Assigned'}`}
+      title={`Candidate ${student.student_id_number}`}
+      description={`Seat: ${student.seat_id?.toUpperCase() || 'Assigned'} • System ID: ${student.id}`}
       size="md"
     >
       <div className="space-y-4">

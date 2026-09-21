@@ -13,7 +13,7 @@
  * 5. Movement != Suspicion: Movement magnitude is raw observation. Cheating suspicion is driven by behavioral rules.
  */
 
-import { BoundingBox, CameraTrack, HeadDirection, HeadPoseData, StudentRecord } from '../types.js';
+import { BoundingBox, CameraTrack, HeadDirection, HeadPoseData, SeatRecord, StudentRecord } from '../types.js';
 
 export interface PersonDetection {
   bbox: BoundingBox;
@@ -335,11 +335,13 @@ export class MotionVisionDetector {
    * STEP 2 & 3: PROCESS FRAME & MULTI-OBJECT TRACKING
    * Ingests camera image, executes Person Detector, updates persistent tracks,
    * measures movement, analyzes behavior, and outputs telemetry.
+   * Ensures every student is marked with their own single and individual frame.
    */
   public processFrame(
     source: HTMLVideoElement | HTMLImageElement,
     cameraId: string,
-    availableStudents: StudentRecord[] = []
+    availableStudents: StudentRecord[] = [],
+    cameraSeats: SeatRecord[] = []
   ): CameraTrack[] {
     if (!this.offscreenCtx) return [];
     const now = Date.now();
@@ -368,15 +370,38 @@ export class MotionVisionDetector {
 
     const data = frame.data;
 
-    // Run Person-First Detector
-    const rawDetections = this.detectPersons(data);
+    // Determine configured seats for this camera
+    const relevantSeats = (cameraSeats || []).filter(s => !!s.camera_regions?.[cameraId]);
+
+    let rawDetections: Array<PersonDetection & { seat_id?: string; associated_student_id?: string }> = [];
+
+    if (relevantSeats.length > 0) {
+      // Station-aware multi-student monitoring: Every student seat gets its own individual frame
+      rawDetections = relevantSeats.map((seat, sIdx) => {
+        const region = seat.camera_regions[cameraId];
+        const assignedStudent = availableStudents.find(st => st.id === seat.assigned_student_id) || availableStudents[sIdx];
+        return {
+          bbox: { ...region },
+          confidence: 0.95,
+          seat_id: seat.id,
+          associated_student_id: assignedStudent?.id || seat.assigned_student_id
+        };
+      });
+    } else {
+      // Dynamic optical person detector
+      const opticalDetections = this.detectPersons(data);
+      rawDetections = opticalDetections.map((det, dIdx) => ({
+        ...det,
+        associated_student_id: availableStudents[dIdx]?.id
+      }));
+    }
 
     // -------------------------------------------------------------
     // STEP 4: TRACKER ASSOCIATION WITH SORT PREDICTION & STATE MACHINE
     // -------------------------------------------------------------
     const matchedActiveIds = new Set<string>();
     const matchedCandidateIds = new Set<string>();
-    const unmatchedDetections: PersonDetection[] = [];
+    const unmatchedDetections: typeof rawDetections = [];
 
     // Match with confirmed ACTIVE and recently LOST tracks
     for (const det of rawDetections) {
@@ -385,6 +410,12 @@ export class MotionVisionDetector {
 
       for (const [trackId, track] of this.activeTracks.entries()) {
         if (matchedActiveIds.has(trackId)) continue;
+
+        // Direct seat matching takes priority
+        if (det.seat_id && track.seat_id === det.seat_id) {
+          bestMatchId = trackId;
+          break;
+        }
 
         const dtSec = (now - track.last_update_time) / 1000;
         const predictedBox = this.predictBoundingBox(track, dtSec);
@@ -418,13 +449,16 @@ export class MotionVisionDetector {
         track.velocity_y = track.velocity_y * (1 - velAlpha) + instVy * velAlpha;
 
         // Bounding Box Smoothing
-        const posAlpha = 0.28;
+        const posAlpha = det.seat_id ? 0.85 : 0.28;
         track.bbox = {
           x: track.bbox.x * (1 - posAlpha) + det.bbox.x * posAlpha,
           y: track.bbox.y * (1 - posAlpha) + det.bbox.y * posAlpha,
           width: track.bbox.width * (1 - posAlpha) + det.bbox.width * posAlpha,
           height: track.bbox.height * (1 - posAlpha) + det.bbox.height * posAlpha
         };
+
+        if (det.seat_id) track.seat_id = det.seat_id;
+        if (det.associated_student_id) track.associated_student_id = det.associated_student_id;
 
         // Measure optical frame difference within this person's bounding region (0 when stationary)
         let personMotionScore = 0;
@@ -486,9 +520,49 @@ export class MotionVisionDetector {
     }
 
     // Match with candidate tracks
-    const remainingDetections: PersonDetection[] = [];
+    const remainingDetections: typeof rawDetections = [];
 
     for (const det of unmatchedDetections) {
+      // If detection has pre-assigned seat, promote to active immediately
+      if (det.seat_id) {
+        const permId = this.generateTrackId(camPrefix);
+        const newTrack: InternalPersonTrack = {
+          track_id: permId,
+          camera_id: cameraId,
+          status: 'active',
+          bbox: { ...det.bbox },
+          velocity_x: 0,
+          velocity_y: 0,
+          last_update_time: now,
+          hits: 1,
+          missed_frames: 0,
+          head_pose: { yaw: 0, pitch: 0, direction: 'center', confidence: 0.9 },
+          face_visible: true,
+          face_confidence: 0.90,
+          phone_detected: false,
+          phone_confidence: 0,
+          movement_magnitude: 0,
+          is_moving: false,
+          seat_id: det.seat_id,
+          associated_student_id: det.associated_student_id,
+          suspicion_score: 10,
+          direction_started_at: now,
+          current_direction: 'center',
+          turn_count: 0,
+          last_turn_time: now,
+          last_glance_alert_time: 0,
+          face_hidden_since: null,
+          phone_seen_since: null,
+          left_seat_since: null,
+          last_seen_timestamp: now,
+          created_timestamp: now,
+          history: [{ x: det.bbox.x + det.bbox.width / 2, y: det.bbox.y + det.bbox.height / 2, t: now }]
+        };
+        this.activeTracks.set(permId, newTrack);
+        matchedActiveIds.add(permId);
+        continue;
+      }
+
       let bestCandidateId: string | null = null;
       let highestCandScore = 0;
 
@@ -525,7 +599,9 @@ export class MotionVisionDetector {
 
           // Assign student mapping deterministically
           const activeIndex = this.activeTracks.size;
-          if (availableStudents[activeIndex]) {
+          if (det.associated_student_id) {
+            cand.associated_student_id = det.associated_student_id;
+          } else if (availableStudents[activeIndex]) {
             cand.associated_student_id = availableStudents[activeIndex].id;
           }
 

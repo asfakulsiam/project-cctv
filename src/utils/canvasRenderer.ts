@@ -250,10 +250,14 @@ export function drawCameraFeed(
     ctx.stroke();
 
     // -------------------------------------------------------------
-    // E. Prominent Header Tag: Fixed ID + Suspicion Score + Status
-    // (e.g. "CAM1-S001 • SCORE: 48 [WARNING]")
+    // E. Prominent Header Tag: Fixed Track ID + Student ID + Suspicion Score + Status
+    // (e.g. "CAM1-S001 | ID: STU-2026-001 • SCORE: 48 [WARNING]")
+    // STRICTLY ID ONLY - NO DUMMY NAMES
     // -------------------------------------------------------------
-    const tagText = `${track.track_id} • SCORE: ${score} [${statusLabel}]`;
+    const student = students.find(s => s.id === track.associated_student_id);
+    const studentIdText = student?.student_id_number ? ` | ID: ${student.student_id_number}` : '';
+    const tagText = `${track.track_id}${studentIdText} • SCORE: ${score} [${statusLabel}]`;
+    
     ctx.font = 'bold 11px "JetBrains Mono", monospace';
     const tagWidth = ctx.measureText(tagText).width + 16;
     const tagHeight = 22;
@@ -266,35 +270,13 @@ export function drawCameraFeed(
     ctx.fillRect(px, headerY, tagWidth, tagHeight);
 
     // Border around header badge for high visual crispness
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
     ctx.lineWidth = 1;
     ctx.strokeRect(px, headerY, tagWidth, tagHeight);
 
     // Header badge text
     ctx.fillStyle = badgeTextColor;
     ctx.fillText(tagText, px + 8, headerY + 15);
-
-    // -------------------------------------------------------------
-    // F. Attached Student Identity Pill
-    // (e.g. "Alex Johnson • STU-2026-001")
-    // -------------------------------------------------------------
-    const student = students.find(s => s.id === track.associated_student_id);
-    if (student) {
-      const studentLabel = `${student.name} • ${student.student_id_number}`;
-      ctx.font = '600 10px "Plus Jakarta Sans", sans-serif';
-      const labelW = ctx.measureText(studentLabel).width + 14;
-      const studentTagX = px + tagWidth + 4;
-
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-      ctx.fillRect(studentTagX, headerY, labelW, tagHeight);
-
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(studentTagX, headerY, labelW, tagHeight);
-
-      ctx.fillStyle = '#f8fafc';
-      ctx.fillText(studentLabel, studentTagX + 7, headerY + 15);
-    }
 
     // -------------------------------------------------------------
     // G. Bottom Telemetry Pills: Behavior Reasons & Alerts

@@ -56,6 +56,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     tracksByCamera, 
     students, 
     settings, 
+    seats,
     selectedTrack, 
     setSelectedTrack,
     setSelectedStudent,
@@ -132,6 +133,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   tracksRef.current = tracks;
   const studentsRef = useRef(students);
   studentsRef.current = students;
+  const seatsRef = useRef(seats);
+  seatsRef.current = seats;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const zoomLevelRef = useRef(zoomLevel);
@@ -359,7 +362,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               const detectedTracks = detectorRef.current.processFrame(
                 activeSource, 
                 focusedCamera.camera_id,
-                studentsRef.current
+                studentsRef.current,
+                seatsRef.current
               );
               liveTracksRef.current = detectedTracks || [];
               // Throttled broadcast to global context & server
