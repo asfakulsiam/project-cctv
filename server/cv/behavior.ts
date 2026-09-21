@@ -106,14 +106,14 @@ export class BehaviorAnalyzer {
 
   /**
    * Evaluates a live track against behavioral heuristics and temporal filters.
-   * Returns newly triggered events (if any) and the updated explainable suspicion score.
+   * Returns newly triggered events (if any) and the updated explainable suspicion scores.
    */
   public analyzeTrack(
     track: CameraTrack,
     studentInfo?: { name: string; student_id_number: string },
     seatRegion?: { x: number; y: number; width: number; height: number },
     now: number = Date.now()
-  ): { events: BehaviorEvent[]; suspicion_score: number } {
+  ): { events: BehaviorEvent[]; suspicion_score: number; current_score: number; cumulative_score: number } {
     const ctx = this.getOrCreateContext(track.track_id, now);
     const triggeredEvents: BehaviorEvent[] = [];
 
@@ -325,8 +325,17 @@ export class BehaviorAnalyzer {
     }
 
     // -------------------------------------------------------------
-    // 6. Calculate Explainable Composite Suspicion Score (Monotonically Non-Decreasing)
+    // 6. Calculate Explainable Dual Scores (Current Risk & Cumulative Audit)
     // -------------------------------------------------------------
+    const activePenaltiesSum = 
+      ctx.active_penalties.looking_turn +
+      ctx.active_penalties.face_obscured +
+      ctx.active_penalties.phone_present +
+      ctx.active_penalties.out_of_seat +
+      ctx.active_penalties.abnormal_motion;
+    
+    const current_score = Math.min(100, Math.max(0, activePenaltiesSum));
+
     let eventScoreContribution = 0;
     for (const evt of triggeredEvents) {
       if (evt.score_contribution > 0) {
@@ -334,17 +343,19 @@ export class BehaviorAnalyzer {
       }
     }
 
-    const previousScore = track.suspicion_score || 0;
+    const previousCumulative = track.cumulative_score ?? track.suspicion_score ?? 0;
     const addedScore = Math.round(eventScoreContribution * 0.4);
-    const suspicion_score = Math.min(100, Math.max(previousScore, previousScore + addedScore));
+    const cumulative_score = Math.min(100, Math.max(previousCumulative, previousCumulative + addedScore));
+    const suspicion_score = cumulative_score;
 
-    return { events: triggeredEvents, suspicion_score };
+    return { events: triggeredEvents, suspicion_score, current_score, cumulative_score };
   }
 
   private createEvent(params: {
     event_type: BehaviorEventType;
     camera_id: string;
     track_id?: string;
+    global_person_id?: string;
     student_id?: string;
     student_name?: string;
     student_id_number?: string;
@@ -362,12 +373,37 @@ export class BehaviorAnalyzer {
       student_name: params.student_name,
       camera_id: params.camera_id,
       track_id: params.track_id,
+      global_person_id: params.global_person_id,
       timestamp: now,
       confidence: Math.round(params.confidence * 100) / 100,
       score_contribution: params.score_contribution,
       severity: params.severity,
       description: params.description
     };
+  }
+
+  /**
+   * Admin action: clear active penalties for a track
+   */
+  public clearTrackWarning(track_id: string): void {
+    const ctx = this.track_contexts.get(track_id);
+    if (ctx) {
+      ctx.active_penalties = {
+        looking_turn: 0,
+        face_obscured: 0,
+        phone_present: 0,
+        out_of_seat: 0,
+        abnormal_motion: 0
+      };
+      ctx.looking_turn_count = 0;
+      ctx.looking_alert_fired = false;
+      ctx.face_missing_since = null;
+      ctx.face_missing_alert_fired = false;
+      ctx.phone_detected_since = null;
+      ctx.is_out_of_seat = false;
+      ctx.left_seat_since = null;
+      ctx.left_seat_alert_fired = false;
+    }
   }
 
   public pruneStaleContexts(activeTrackIds: Set<string>): void {

@@ -23,18 +23,40 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'academic_exam_2026';
 
 let cvEngine: MultiCameraCVEngine | null = null;
 
-// Lightweight token generator for admin session
-const activeAdminTokens = new Set<string>();
+// Lightweight token generator for admin session with expiration TTL
+interface AdminSession {
+  token: string;
+  createdAt: number;
+  expiresAt: number;
+}
+const activeAdminSessions = new Map<string, AdminSession>();
+const ADMIN_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function cleanExpiredSessions() {
+  const now = Date.now();
+  for (const [tok, sess] of activeAdminSessions.entries()) {
+    if (sess.expiresAt <= now) {
+      activeAdminSessions.delete(tok);
+    }
+  }
+}
+
+function isSessionValid(token?: string): boolean {
+  if (!token) return false;
+  cleanExpiredSessions();
+  const sess = activeAdminSessions.get(token);
+  return !!sess && sess.expiresAt > Date.now();
+}
 
 function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
-    // Return plain 404 so existence of admin endpoints is never leaked to non-admins
-    return res.status(404).send('Cannot ' + req.method + ' ' + req.url);
+    // Return 401 unauthorized
+    return res.status(401).json({ error: 'Authorization header required' });
   }
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-  if (!activeAdminTokens.has(token)) {
-    return res.status(404).send('Cannot ' + req.method + ' ' + req.url);
+  if (!isSessionValid(token)) {
+    return res.status(401).json({ error: 'Invalid or expired administrator token' });
   }
   next();
 }
@@ -205,13 +227,15 @@ async function startServer() {
   // -------------------------------------------------------------
   app.post('/api/admin/login', (req, res) => {
     const { username, password } = req.body;
-    const isPasswordValid =
-      password === ADMIN_PASSWORD ||
-      password === 'academic_exam_2026' ||
-      password === 'Aa627550';
+    const isPasswordValid = password === ADMIN_PASSWORD;
     if (username === ADMIN_USERNAME && isPasswordValid) {
-      const token = `adm_token_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-      activeAdminTokens.add(token);
+      const now = Date.now();
+      const token = `adm_token_${now}_${Math.random().toString(36).substring(2, 10)}`;
+      activeAdminSessions.set(token, {
+        token,
+        createdAt: now,
+        expiresAt: now + ADMIN_SESSION_TTL_MS
+      });
       return res.json({
         success: true,
         token,
@@ -227,7 +251,7 @@ async function startServer() {
 
   app.post('/api/admin/verify', (req, res) => {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '').trim();
-    if (token && activeAdminTokens.has(token)) {
+    if (token && isSessionValid(token)) {
       return res.json({ valid: true });
     }
     return res.status(401).json({ valid: false });
@@ -248,27 +272,72 @@ async function startServer() {
     }
   });
 
-  // Clear Warning / Reset Suspicion for Student (Admin / Proctor Action)
-  app.post('/api/students/:id/clear-warning', async (req, res) => {
+  // Clear Warning / Reset Active Risk for Student (Admin / Proctor Action)
+  // Invariant: Unlatches warning and resets immediate risk, but PRESERVES cumulative audit score
+  app.post('/api/students/:id/clear-warning', requireAdminAuth, async (req, res) => {
     try {
       const studentId = req.params.id;
+      const now = Date.now();
+
       await db.updateStudent(studentId, {
-        unified_suspicion_score: 5,
+        current_score: 0,
         status: 'present'
       });
+
       if (cvEngine) {
-        await cvEngine.reloadConfiguration();
+        await cvEngine.clearStudentWarning(studentId);
       }
-      res.json({ success: true, student_id: studentId, message: 'Warning cleared and suspicion score reset.' });
+
+      // Record administrative audit trail event
+      await db.recordEvent({
+        id: `evt-clear-${now}-${Math.floor(Math.random() * 1000)}`,
+        session_id: 'session-active',
+        event_type: 'WARNING_CLEARED',
+        student_id: studentId,
+        timestamp: now,
+        confidence: 1.0,
+        score_contribution: 0,
+        severity: 'info',
+        description: `Proctor cleared warning alert for student ${studentId}. Immediate anomaly risk reset to 0; cumulative audit score preserved.`
+      });
+
+      res.json({ 
+        success: true, 
+        student_id: studentId, 
+        message: 'Student warning unlatched and immediate anomaly score reset. Cumulative score preserved.' 
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post('/api/tracks/:trackId/clear-warning', async (req, res) => {
+  // Clear Warning for specific Camera Track
+  app.post('/api/tracks/:trackId/clear-warning', requireAdminAuth, async (req, res) => {
     try {
       const trackId = req.params.trackId;
-      res.json({ success: true, track_id: trackId, message: 'Track warning cleared.' });
+      const now = Date.now();
+
+      if (cvEngine) {
+        await cvEngine.clearTrackWarning(trackId);
+      }
+
+      await db.recordEvent({
+        id: `evt-clear-trk-${now}-${Math.floor(Math.random() * 1000)}`,
+        session_id: 'session-active',
+        event_type: 'WARNING_CLEARED',
+        track_id: trackId,
+        timestamp: now,
+        confidence: 1.0,
+        score_contribution: 0,
+        severity: 'info',
+        description: `Proctor unlatched warning alert for camera track ${trackId}. Cumulative audit score preserved.`
+      });
+
+      res.json({ 
+        success: true, 
+        track_id: trackId, 
+        message: 'Camera track warning unlatched. Cumulative audit score preserved.' 
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

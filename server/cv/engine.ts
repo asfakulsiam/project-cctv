@@ -181,7 +181,7 @@ export class MultiCameraCVEngine {
         const seat = this.seats.find(s => s.id === track.seat_id);
         const seatRegion = seat?.camera_regions[cameraId];
 
-        const { events, suspicion_score } = this.behaviorAnalyzer.analyzeTrack(
+        const { events, suspicion_score, current_score, cumulative_score } = this.behaviorAnalyzer.analyzeTrack(
           track,
           studentInfo ? { name: studentInfo.name, student_id_number: studentInfo.student_id_number } : undefined,
           seatRegion,
@@ -189,9 +189,14 @@ export class MultiCameraCVEngine {
         );
 
         track.suspicion_score = suspicion_score;
-        tracker.setTrackSuspicion(track.track_id, suspicion_score);
+        track.current_score = current_score;
+        track.cumulative_score = cumulative_score;
+        tracker.setTrackSuspicion(track.track_id, suspicion_score, current_score);
 
         for (const evt of events) {
+          if (track.global_person_id) {
+            evt.global_person_id = track.global_person_id;
+          }
           newEvents.push(evt);
           await db.recordEvent(evt);
         }
@@ -202,9 +207,9 @@ export class MultiCameraCVEngine {
 
     this.behaviorAnalyzer.pruneStaleContexts(allActiveTrackIds);
 
-    // UNIFIED STUDENT MODEL (cross-camera association without duplicating students)
+    // UNIFIED STUDENT MODEL (cross-camera association & Layer 3 Global Person Registry)
     const cameraList = Array.from(this.cameras.values());
-    const unifiedStudents = this.unifiedStudentManager.syncCrossCameraObservations(
+    const { students: unifiedStudents, globalPersons } = this.unifiedStudentManager.syncCrossCameraObservations(
       cameraTracksMap,
       cameraList,
       now
@@ -222,9 +227,28 @@ export class MultiCameraCVEngine {
       timestamp: now,
       tracks_by_camera: Object.fromEntries(cameraTracksMap.entries()),
       students: unifiedStudents,
+      global_persons: globalPersons,
       stats,
       new_event: newEvents.length > 0 ? newEvents[newEvents.length - 1] : undefined
     });
+  }
+
+  public async clearTrackWarning(trackId: string): Promise<boolean> {
+    for (const tracker of this.trackers.values()) {
+      tracker.clearTrackWarning(trackId);
+    }
+    this.behaviorAnalyzer.clearTrackWarning(trackId);
+    return true;
+  }
+
+  public async clearStudentWarning(studentId: string): Promise<boolean> {
+    this.unifiedStudentManager.clearStudentWarning(studentId);
+    for (const tracker of this.trackers.values()) {
+      for (const trackId of tracker.getActiveTrackIds()) {
+        tracker.clearTrackWarning(trackId);
+      }
+    }
+    return true;
   }
 
 

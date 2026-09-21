@@ -390,41 +390,71 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
     }
   };
 
-  // Clear Student Warning / Reset Suspicion
+  // Clear Student Warning / Reset Immediate Risk (Admin / Proctor Action)
+  // Invariant: Unlatches warning and resets immediate risk, but preserves cumulative score
   const clearStudentWarning = useCallback(async (studentId: string): Promise<boolean> => {
-    setStudents(prev => prev.map(s => s.id === studentId ? { ...s, unified_suspicion_score: 5, status: 'present' } : s));
+    const adminToken = localStorage.getItem('admin_token') || '';
+    setStudents(prev => prev.map(s => s.id === studentId ? { ...s, current_score: 0, status: 'present' } : s));
     if (selectedStudent?.id === studentId) {
-      setSelectedStudent(prev => prev ? { ...prev, unified_suspicion_score: 5, status: 'present' } : null);
+      setSelectedStudent(prev => prev ? { ...prev, current_score: 0, status: 'present' } : null);
     }
     setTracksByCamera(prev => {
       const updated: Record<string, CameraTrack[]> = {};
       for (const [camId, trks] of Object.entries(prev)) {
-        updated[camId] = trks.map(t => t.associated_student_id === studentId ? { ...t, suspicion_score: 5 } : t);
+        updated[camId] = trks.map(t => t.associated_student_id === studentId ? { 
+          ...t, 
+          current_score: 0, 
+          warning_latched: false, 
+          warning_cleared_at: Date.now() 
+        } : t);
       }
       return updated;
     });
     try {
-      await fetch(`/api/students/${studentId}/clear-warning`, { method: 'POST' });
+      await fetch(`/api/students/${studentId}/clear-warning`, { 
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
     } catch {
       // ignore
     }
     return true;
   }, [selectedStudent]);
 
-  // Clear Track Warning / Reset Suspicion
+  // Clear Track Warning / Reset Immediate Risk
   const clearTrackWarning = useCallback(async (trackId: string): Promise<boolean> => {
+    const adminToken = localStorage.getItem('admin_token') || '';
     setTracksByCamera(prev => {
       const updated: Record<string, CameraTrack[]> = {};
       for (const [camId, trks] of Object.entries(prev)) {
-        updated[camId] = trks.map(t => t.track_id === trackId ? { ...t, suspicion_score: 5 } : t);
+        updated[camId] = trks.map(t => t.track_id === trackId ? { 
+          ...t, 
+          current_score: 0, 
+          warning_latched: false, 
+          warning_cleared_at: Date.now() 
+        } : t);
       }
       return updated;
     });
     if (selectedTrack?.track_id === trackId) {
-      setSelectedTrack(prev => prev ? { ...prev, suspicion_score: 5 } : null);
+      setSelectedTrack(prev => prev ? { 
+        ...prev, 
+        current_score: 0, 
+        warning_latched: false, 
+        warning_cleared_at: Date.now() 
+      } : null);
     }
     try {
-      await fetch(`/api/tracks/${trackId}/clear-warning`, { method: 'POST' });
+      await fetch(`/api/tracks/${trackId}/clear-warning`, { 
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${adminToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
     } catch {}
     return true;
   }, [selectedTrack]);

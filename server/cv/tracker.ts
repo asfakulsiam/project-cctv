@@ -4,10 +4,11 @@
  * 
  * ARCHITECTURAL INVARIANTS:
  * 1. Human Detection is the Gatekeeper: Only positive human detections enter the tracker.
- * 2. Independent Per-Camera Context: All track IDs are strictly camera-scoped (e.g., CAM1-S001).
+ * 2. Independent Per-Camera Context: All track IDs are strictly camera-scoped (e.g., CAM1-T001).
  * 3. Temporal Candidate Confirmation: Human detections must pass multi-frame confirmation before receiving a permanent ID.
  * 4. Stationary Persistence: Tracks never vanish or cycle simply because a student remains still.
- * 5. Monotonically Non-Decreasing Score: Suspicion score never auto-decays; warnings latch until cleared by admin.
+ * 5. Monotonically Non-Decreasing Cumulative Score: Suspicion score never auto-decays; warnings latch until cleared by admin.
+ * 6. Admin Clear Warning: Unlatches warning and resets immediate current_score = 0 while preserving cumulative_score.
  */
 
 import { BoundingBox, CameraTrack, HeadPoseData, HumanDetection } from '../../src/types.js';
@@ -15,8 +16,9 @@ import { BoundingBox, CameraTrack, HeadPoseData, HumanDetection } from '../../sr
 export type TrackStatus = 'candidate' | 'active' | 'lost' | 'terminated';
 
 export interface InternalTrackState {
-  track_id: string;
+  track_id: string;            // Layer 2: CAM1-T001
   camera_id: string;
+  global_person_id?: string;   // Layer 3: P-001
   status: TrackStatus;
   bbox: BoundingBox;
   target_bbox: BoundingBox;
@@ -40,6 +42,10 @@ export interface InternalTrackState {
   is_confirmed_human: boolean;
   seat_id?: string;
   associated_student_id?: string;
+  
+  // Dual scores
+  current_score: number;      // Immediate anomaly window (0 - 100)
+  cumulative_score: number;   // Monotonically non-decreasing lifetime score (0 - 100)
   suspicion_score: number;
   max_reached_score: number;
   warning_latched: boolean;
@@ -58,9 +64,9 @@ export class CameraTracker {
   private next_candidate_number = 1;
 
   // Configuration thresholds
-  private readonly confirmation_hits_required = 3; // Must be detected in 3 frames to confirm
-  private readonly max_missed_frames = 18;         // Maintain lost track with prediction for up to ~1.2s
-  private readonly iou_threshold = 0.15;           // Relaxed IoU when combined with center distance
+  private readonly confirmation_hits_required = 4; // Multi-frame confirmation
+  private readonly max_missed_frames = 20;         // Maintain lost track with prediction for up to ~1.4s
+  private readonly iou_threshold = 0.14;           // Relaxed IoU when combined with center distance
 
   constructor(camera_id: string) {
     this.camera_id = camera_id;
@@ -69,12 +75,12 @@ export class CameraTracker {
   }
 
   /**
-   * Generate permanent camera-scoped tracking identifier upon track confirmation.
-   * Example: CAM1-S001, CAM1-S002
+   * Generate permanent Layer 2 camera-scoped tracking identifier upon track confirmation.
+   * Example: CAM1-T001, CAM1-T002
    */
   private generateTrackId(): string {
     const numStr = String(this.next_track_number++).padStart(3, '0');
-    return `${this.camera_prefix}-S${numStr}`;
+    return `${this.camera_prefix}-T${numStr}`;
   }
 
   /**
@@ -206,6 +212,7 @@ export class CameraTracker {
         track.is_moving = is_moving;
         if (det.seat_id) track.seat_id = det.seat_id;
         if (det.associated_student_id) track.associated_student_id = det.associated_student_id;
+        if (det.global_person_id) track.global_person_id = det.global_person_id;
         
         // Status & Lifecycle
         track.status = 'active';
@@ -278,6 +285,7 @@ export class CameraTracker {
       const newCand: InternalTrackState = {
         track_id: candId,
         camera_id: this.camera_id,
+        global_person_id: det.global_person_id,
         status: 'candidate',
         bbox: { ...det.bbox },
         target_bbox: { ...det.bbox },
@@ -297,6 +305,8 @@ export class CameraTracker {
         is_confirmed_human: true,
         seat_id: det.seat_id,
         associated_student_id: det.associated_student_id,
+        current_score: 0,
+        cumulative_score: 0,
         suspicion_score: 0,
         max_reached_score: 0,
         warning_latched: false,
@@ -313,7 +323,7 @@ export class CameraTracker {
     for (const [candId, cand] of this.candidate_tracks.entries()) {
       if (!matchedCandidateIds.has(candId)) {
         cand.missed_frames++;
-        if (cand.missed_frames > 2) {
+        if (cand.missed_frames > 3) {
           this.candidate_tracks.delete(candId);
         }
       }
@@ -338,10 +348,11 @@ export class CameraTracker {
     }
 
     return Array.from(this.active_tracks.values())
-      .filter(t => t.status === 'active' || (t.status === 'lost' && t.missed_frames <= 6))
+      .filter(t => t.status === 'active' || (t.status === 'lost' && t.missed_frames <= 8))
       .map(t => ({
         track_id: t.track_id,
         camera_id: t.camera_id,
+        global_person_id: t.global_person_id,
         bbox: { ...t.bbox },
         confidence: t.confidence,
         head_pose: { ...t.head_pose },
@@ -355,6 +366,8 @@ export class CameraTracker {
         seat_id: t.seat_id,
         associated_student_id: t.associated_student_id,
         suspicion_score: t.suspicion_score,
+        current_score: t.current_score,
+        cumulative_score: t.cumulative_score,
         warning_latched: t.warning_latched,
         warning_cleared_at: t.warning_cleared_at,
         last_seen_timestamp: t.last_seen_timestamp,
@@ -374,27 +387,30 @@ export class CameraTracker {
   }
 
   /**
-   * Update suspicion score monotonically (never decreases automatically)
+   * Update suspicion scores (sets current risk and monotonically updates cumulative score)
    */
-  public setTrackSuspicion(track_id: string, score: number): void {
+  public setTrackSuspicion(track_id: string, score: number, currentScore: number = 0): void {
     const track = this.active_tracks.get(track_id);
     if (track) {
-      track.suspicion_score = Math.min(100, Math.max(track.suspicion_score, score));
-      track.max_reached_score = Math.max(track.max_reached_score, track.suspicion_score);
-      if (track.suspicion_score >= 65) {
+      track.current_score = Math.min(100, Math.max(0, currentScore));
+      track.cumulative_score = Math.min(100, Math.max(track.cumulative_score, score));
+      track.suspicion_score = track.cumulative_score;
+      track.max_reached_score = Math.max(track.max_reached_score, track.cumulative_score);
+      if (track.cumulative_score >= 60 || track.current_score >= 60) {
         track.warning_latched = true;
       }
     }
   }
 
   /**
-   * Admin action: Unlatch warning while preserving the suspicion score
+   * Admin action: Unlatch warning and reset current_score, preserving cumulative audit score
    */
   public clearTrackWarning(track_id: string): void {
     const track = this.active_tracks.get(track_id);
     if (track) {
       track.warning_latched = false;
       track.warning_cleared_at = Date.now();
+      track.current_score = 0;
     }
   }
 
@@ -404,6 +420,8 @@ export class CameraTracker {
   public resetTrackScore(track_id: string): void {
     const track = this.active_tracks.get(track_id);
     if (track) {
+      track.current_score = 0;
+      track.cumulative_score = 0;
       track.suspicion_score = 0;
       track.max_reached_score = 0;
       track.warning_latched = false;

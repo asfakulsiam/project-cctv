@@ -46,6 +46,7 @@ export interface BoundingBox {
 export type DetectionClass = 'person' | 'other';
 
 export interface HumanDetection {
+  detection_id?: string;       // Layer 1: Ephemeral detection ID (e.g. "det-1049")
   class_name: 'person';
   confidence: number;
   bbox: BoundingBox;
@@ -56,11 +57,13 @@ export interface HumanDetection {
   phone_confidence?: number;
   seat_id?: string;
   associated_student_id?: string;
+  global_person_id?: string;
 }
 
 export interface CameraTrack {
-  track_id: string;            // Camera-scoped: e.g. "CAM1-S001"
-  camera_id: string;           // Parent camera
+  track_id: string;            // Layer 2: Camera-scoped track ID: e.g. "CAM1-T001"
+  camera_id: string;           // Parent camera ID
+  global_person_id?: string;   // Layer 3: Global Person ID across all cameras (e.g. "P-001")
   bbox: BoundingBox;           // Bounding box in normalized coords (0 to 1)
   confidence: number;          // Detection confidence (0 - 1)
   head_pose: HeadPoseData;
@@ -70,25 +73,65 @@ export interface CameraTrack {
   phone_confidence: number;
   movement_magnitude: number;  // Relative velocity / spatial delta
   is_moving: boolean;
-  is_confirmed_human: boolean; // Guaranteed true human invariant
+  is_confirmed_human: boolean; // Guaranteed true human invariant (passed morphology & temporal evidence)
   seat_id?: string;
   associated_student_id?: string;
-  suspicion_score: number;     // 0 - 100 explainable score (monotonically non-decreasing)
-  warning_latched?: boolean;   // Latched warning state until admin clearance
+  suspicion_score: number;     // Monotonically non-decreasing score (0 - 100)
+  current_score?: number;      // Current immediate behavioral anomaly risk window (0 - 100)
+  cumulative_score?: number;   // Cumulative non-decreasing suspicion score for audit (0 - 100)
+  warning_latched?: boolean;   // Latched warning state until explicit admin clearance
   warning_cleared_at?: number;
   last_seen_timestamp: number;
   created_timestamp: number;
   history_trajectory?: Array<{ x: number; y: number; t: number }>;
 }
 
+export interface GlobalPersonObservation {
+  camera_id: string;
+  track_id: string;
+  bbox: BoundingBox;
+  quality: number;
+  last_seen: number;
+}
+
+export interface GlobalPerson {
+  id: string;                    // Primary Layer 3 ID (e.g. "P-001")
+  global_person_id?: string;     // Alias for id
+  classroom_id?: string;
+  associated_student_id?: string;// Associated formal student record in DB
+  associated_student_name?: string;
+  student_id?: string;
+  student_id_number?: string;
+  student_name?: string;
+  seat_id?: string;
+  active?: boolean;
+  primary_camera_id?: string;
+  camera_tracks?: Array<{
+    camera_id: string;
+    track_id: string;
+    quality: number;
+    is_best_view: boolean;
+  }>;
+  current_score: number;         // Immediate penalty (resettable by admin)
+  cumulative_score: number;      // Lifetime non-decreasing penalty
+  warning_latched: boolean;
+  observations?: Record<string, GlobalPersonObservation>;
+  first_seen?: number;
+  last_seen: number;
+  status?: 'in_seat' | 'left_seat' | 'unassigned';
+}
+
 export interface StudentObservation {
   camera_id: string;
   track_id: string;
+  global_person_id?: string;
   quality: number;             // View clarity score (0 - 100)
   is_best_view: boolean;       // Set when this camera has the highest observation clarity
   timestamp: number;
   bbox: BoundingBox;
   suspicion_score?: number;
+  current_score?: number;
+  cumulative_score?: number;
 }
 
 export interface StudentRecord {
@@ -99,6 +142,8 @@ export interface StudentRecord {
   seat_id?: string;
   status: 'present' | 'absent' | 'left_seat' | 'flagged';
   unified_suspicion_score: number; // Cross-camera integrated score (0 - 100)
+  current_score?: number;          // Current behavioral anomaly risk (0 - 100)
+  cumulative_score?: number;       // Monotonically non-decreasing audit score (0 - 100)
   active_observations: StudentObservation[];
   notes?: string;
   last_activity?: string;
@@ -140,7 +185,8 @@ export type BehaviorEventType =
   | 'REPEATED_LOOKING'
   | 'ABNORMAL_MOVEMENT'
   | 'CAMERA_OFFLINE'
-  | 'CAMERA_RECONNECTED';
+  | 'CAMERA_RECONNECTED'
+  | 'WARNING_CLEARED';
 
 export type EventSeverity = 'info' | 'warning' | 'high';
 
@@ -151,11 +197,14 @@ export interface BehaviorEvent {
   student_id?: string;
   student_id_number?: string;
   student_name?: string;
-  camera_id: string;
+  camera_id?: string;
   track_id?: string;
+  global_person_id?: string;
   timestamp: number;
   confidence: number;
   score_contribution: number;
+  current_score?: number;
+  cumulative_score?: number;
   severity: EventSeverity;
   description: string;
   metadata?: Record<string, any>;
@@ -232,6 +281,7 @@ export interface RealtimeStateMessage {
   cameras?: CameraConfig[];
   tracks_by_camera?: Record<string, CameraTrack[]>;
   students?: StudentRecord[];
+  global_persons?: GlobalPerson[];
   events?: BehaviorEvent[];
   stats?: SystemStats;
   new_event?: BehaviorEvent;

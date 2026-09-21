@@ -1,9 +1,11 @@
 """
 Smart Classroom Exam Monitoring System
-Python Computer Vision Engine - Behavioral Analysis & Suspicion Scoring
+Python Computer Vision Engine - Behavioral Analysis & Dual Suspicion Scoring
 
 Applies temporal thresholds, duration persistence, glance cooldowns,
-and generates explainable Suspicion Scores (0 - 100).
+and generates explainable Dual Suspicion Scores (0 - 100):
+- current_score: Immediate anomaly penalty sum (resettable by proctor)
+- cumulative_score: Monotonically non-decreasing audit score (preserved)
 """
 
 from typing import List, Dict, Tuple, Optional
@@ -46,6 +48,7 @@ class PythonBehaviorAnalyzer:
                 "left_seat_since": None,
                 "left_seat_alerted": False,
                 "is_out_of_seat": False,
+                "cumulative_score": 0,
                 "penalties": {
                     "looking": 0,
                     "face": 0,
@@ -59,15 +62,21 @@ class PythonBehaviorAnalyzer:
         """
         Evaluates temporal behavior rules on a track.
         Returns: (list of newly triggered events, suspicion_score)
+        Where suspicion_score represents the non-decreasing cumulative score,
+        while track is also enriched with current_score and cumulative_score.
         """
         if now is None:
             now = time.time()
 
-        ctx = self._get_context(track["track_id"], now)
+        track_id = track["track_id"]
+        ctx = self._get_context(track_id, now)
         events = []
+        global_person_id = track.get("global_person_id")
 
         # 1. Gaze Direction & Sustained Head Turn
-        current_gaze = track.get("head_pose", "center")
+        head_pose = track.get("head_pose", "center")
+        current_gaze = head_pose.get("direction", "center") if isinstance(head_pose, dict) else head_pose
+
         if current_gaze != ctx["gaze"]:
             if current_gaze in ("left", "right"):
                 ctx["turn_count"] += 1
@@ -79,17 +88,21 @@ class PythonBehaviorAnalyzer:
             duration = now - ctx["gaze_started_at"]
             if duration >= self.looking_duration_sec and not ctx["gaze_alerted"]:
                 ctx["gaze_alerted"] = True
-                ctx["penalties"]["looking"] = self.weights["repeated_looking"]
-                events.append({
+                penalty = self.weights["repeated_looking"]
+                ctx["penalties"]["looking"] = penalty
+                evt = {
                     "event_type": "LOOKING_LEFT" if current_gaze == "left" else "LOOKING_RIGHT",
                     "camera_id": track["camera_id"],
-                    "track_id": track["track_id"],
+                    "track_id": track_id,
                     "student_id": track.get("associated_student_id"),
                     "timestamp": now,
                     "severity": "warning",
-                    "score_contribution": self.weights["repeated_looking"],
+                    "score_contribution": penalty,
                     "description": f"Sustained head orientation to {current_gaze} for {duration:.1f}s"
-                })
+                }
+                if global_person_id:
+                    evt["global_person_id"] = global_person_id
+                events.append(evt)
         else:
             ctx["penalties"]["looking"] = max(0, ctx["penalties"]["looking"] - 1)
 
@@ -101,17 +114,21 @@ class PythonBehaviorAnalyzer:
             hidden_dur = now - ctx["face_hidden_since"]
             if hidden_dur >= self.face_hidden_duration_sec and not ctx["face_hidden_alerted"]:
                 ctx["face_hidden_alerted"] = True
-                ctx["penalties"]["face"] = self.weights["face_hidden"]
-                events.append({
+                penalty = self.weights["face_hidden"]
+                ctx["penalties"]["face"] = penalty
+                evt = {
                     "event_type": "FACE_NOT_VISIBLE",
                     "camera_id": track["camera_id"],
-                    "track_id": track["track_id"],
+                    "track_id": track_id,
                     "student_id": track.get("associated_student_id"),
                     "timestamp": now,
                     "severity": "warning",
-                    "score_contribution": self.weights["face_hidden"],
+                    "score_contribution": penalty,
                     "description": f"Facial landmarks obstructed from camera view for {hidden_dur:.1f}s"
-                })
+                }
+                if global_person_id:
+                    evt["global_person_id"] = global_person_id
+                events.append(evt)
         else:
             ctx["face_hidden_since"] = None
             ctx["face_hidden_alerted"] = False
@@ -127,25 +144,30 @@ class PythonBehaviorAnalyzer:
             cooldown = (now - ctx["last_phone_alert"]) > 20.0
             if phone_dur >= 1.5 and cooldown:
                 ctx["last_phone_alert"] = now
-                ctx["penalties"]["phone"] = self.weights["phone_detected"]
-                events.append({
+                penalty = self.weights["phone_detected"]
+                ctx["penalties"]["phone"] = penalty
+                evt = {
                     "event_type": "PHONE_DETECTED",
                     "camera_id": track["camera_id"],
-                    "track_id": track["track_id"],
+                    "track_id": track_id,
                     "student_id": track.get("associated_student_id"),
                     "timestamp": now,
                     "severity": "high",
-                    "score_contribution": self.weights["phone_detected"],
+                    "score_contribution": penalty,
                     "description": f"Mobile device identified with {phone_conf*100:.0f}% confidence"
-                })
+                }
+                if global_person_id:
+                    evt["global_person_id"] = global_person_id
+                events.append(evt)
         else:
             ctx["phone_since"] = None
             ctx["penalties"]["phone"] = max(0, ctx["penalties"]["phone"] - 1)
 
         # 4. Seat Boundaries
         if seat_region and "bbox" in track:
-            bx = track["bbox"].x + track["bbox"].width / 2
-            by = track["bbox"].y + track["bbox"].height / 2
+            bbox = track["bbox"]
+            bx = (bbox.x + bbox.width / 2) if hasattr(bbox, "x") else (bbox["x"] + bbox["width"] / 2)
+            by = (bbox.y + bbox.height / 2) if hasattr(bbox, "y") else (bbox["y"] + bbox["height"] / 2)
             margin = 0.08
             inside = (
                 (seat_region["x"] - margin) <= bx <= (seat_region["x"] + seat_region["width"] + margin) and
@@ -158,36 +180,67 @@ class PythonBehaviorAnalyzer:
                 if left_dur >= self.leave_seat_grace_sec and not ctx["left_seat_alerted"]:
                     ctx["left_seat_alerted"] = True
                     ctx["is_out_of_seat"] = True
-                    ctx["penalties"]["seat"] = self.weights["leaving_seat"]
-                    events.append({
+                    penalty = self.weights["leaving_seat"]
+                    ctx["penalties"]["seat"] = penalty
+                    evt = {
                         "event_type": "LEFT_SEAT",
                         "camera_id": track["camera_id"],
-                        "track_id": track["track_id"],
+                        "track_id": track_id,
                         "student_id": track.get("associated_student_id"),
                         "timestamp": now,
                         "severity": "high",
-                        "score_contribution": self.weights["leaving_seat"],
+                        "score_contribution": penalty,
                         "description": f"Student exited designated seating perimeter for {left_dur:.1f}s"
-                    })
+                    }
+                    if global_person_id:
+                        evt["global_person_id"] = global_person_id
+                    events.append(evt)
             else:
                 if ctx["is_out_of_seat"]:
                     ctx["is_out_of_seat"] = False
                     ctx["left_seat_alerted"] = False
                     ctx["left_seat_since"] = None
                     ctx["penalties"]["seat"] = 0
-                    events.append({
+                    evt = {
                         "event_type": "RETURNED_TO_SEAT",
                         "camera_id": track["camera_id"],
-                        "track_id": track["track_id"],
+                        "track_id": track_id,
                         "student_id": track.get("associated_student_id"),
                         "timestamp": now,
                         "severity": "info",
-                        "score_contribution": -15,
+                        "score_contribution": 0,
                         "description": "Student returned to designated workstation"
-                    })
+                    }
+                    if global_person_id:
+                        evt["global_person_id"] = global_person_id
+                    events.append(evt)
                 else:
                     ctx["left_seat_since"] = None
 
-        raw_score = sum(ctx["penalties"].values())
-        suspicion_score = min(100, max(5, raw_score))
-        return events, suspicion_score
+        # Dual score calculation:
+        current_score = min(100, max(0, sum(ctx["penalties"].values())))
+        # Cumulative score is monotonically non-decreasing
+        ctx["cumulative_score"] = min(100, max(ctx.get("cumulative_score", 0), current_score))
+        cumulative_score = ctx["cumulative_score"]
+
+        track["current_score"] = current_score
+        track["cumulative_score"] = cumulative_score
+        track["suspicion_score"] = cumulative_score
+
+        if cumulative_score >= 60 or current_score >= 60:
+            track["warning_latched"] = True
+
+        return events, cumulative_score
+
+    def clear_track_warning(self, track_id: str) -> None:
+        """
+        Admin action: Resets immediate penalties and unlatches warnings.
+        Preserves cumulative_score for audit retention.
+        """
+        if track_id in self.contexts:
+            ctx = self.contexts[track_id]
+            for k in ctx["penalties"]:
+                ctx["penalties"][k] = 0
+            ctx["gaze_alerted"] = False
+            ctx["face_hidden_alerted"] = False
+            ctx["left_seat_alerted"] = False

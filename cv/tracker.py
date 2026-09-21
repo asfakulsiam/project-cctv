@@ -5,45 +5,61 @@ Python Computer Vision Engine - Per-Camera Independent Human Tracker
 Architectural Invariants:
 1. Human Detection is the Gatekeeper: Only confirmed human detections enter the tracker.
 2. Independent Per-Camera Context: All track IDs are strictly camera-scoped (e.g. CAM1-S001).
-3. Candidate Temporal Buffer: Tracks require multi-frame confirmation before receiving a permanent ID.
-4. Stationary Persistence: Tracks never vanish simply because a student sits still.
-5. Monotonically Non-Decreasing Suspicion Score: Score never auto-decays; warnings latch until cleared by admin.
+3. Layer 1, 2, 3 Identity Architecture:
+   - Layer 1: Ephemeral per-frame Detection ID (det_xxx)
+   - Layer 2: Camera-scoped Track ID (e.g. CAM1-S001)
+   - Layer 3: Cross-camera Global Person ID (e.g. P-001)
+4. Dual Scoring & Monotonically Non-Decreasing Cumulative Score:
+   - current_score: Immediate window anomaly score (0 - 100)
+   - cumulative_score: Monotonically non-decreasing audit score (0 - 100)
+5. Stationary Persistence: Tracks never vanish simply because a student sits still.
+6. Admin Clearance: Unlatches warnings and resets current_score without decreasing cumulative_score.
 """
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Union
 import time
 import math
 
 class BoundingBox:
     def __init__(self, x: float, y: float, width: float, height: float):
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
+        self.x = float(x)
+        self.y = float(y)
+        self.width = float(width)
+        self.height = float(height)
 
     def to_dict(self) -> Dict[str, float]:
         return {"x": self.x, "y": self.y, "width": self.width, "height": self.height}
 
-    def iou(self, other: 'BoundingBox') -> float:
-        x1 = max(self.x, other.x)
-        y1 = max(self.y, other.y)
-        x2 = min(self.x + self.width, other.x + other.width)
-        y2 = min(self.y + self.height, other.y + other.height)
+    def iou(self, other: Union['BoundingBox', dict]) -> float:
+        ox = other["x"] if isinstance(other, dict) else other.x
+        oy = other["y"] if isinstance(other, dict) else other.y
+        ow = other["width"] if isinstance(other, dict) else other.width
+        oh = other["height"] if isinstance(other, dict) else other.height
+
+        x1 = max(self.x, ox)
+        y1 = max(self.y, oy)
+        x2 = min(self.x + self.width, ox + ow)
+        y2 = min(self.y + self.height, oy + oh)
 
         intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
         area1 = self.width * self.height
-        area2 = other.width * other.height
+        area2 = ow * oh
         union = area1 + area2 - intersection
 
         if union <= 0:
             return 0.0
         return intersection / union
 
-    def center_dist(self, other: 'BoundingBox') -> float:
+    def center_dist(self, other: Union['BoundingBox', dict]) -> float:
+        ox = other["x"] if isinstance(other, dict) else other.x
+        oy = other["y"] if isinstance(other, dict) else other.y
+        ow = other["width"] if isinstance(other, dict) else other.width
+        oh = other["height"] if isinstance(other, dict) else other.height
+
         cx1 = self.x + self.width / 2.0
         cy1 = self.y + self.height / 2.0
-        cx2 = other.x + other.width / 2.0
-        cy2 = other.y + other.height / 2.0
+        cx2 = ox + ow / 2.0
+        cy2 = oy + oh / 2.0
         return math.hypot(cx1 - cx2, cy1 - cy2)
 
 
@@ -52,7 +68,7 @@ class PythonCameraTracker:
     Independent tracker instance for a single camera feed.
     Guarantees isolation of track IDs across cameras.
     """
-    def __init__(self, camera_id: str, iou_threshold: float = 0.15, max_missed: int = 15):
+    def __init__(self, camera_id: str, iou_threshold: float = 0.14, max_missed: int = 18, confirmation_hits: int = 1):
         self.camera_id = camera_id
         # Derive uppercase alphanumeric prefix (e.g. cam-1 -> CAM1)
         self.camera_prefix = "".join(c for c in camera_id.upper() if c.isalnum())
@@ -62,6 +78,7 @@ class PythonCameraTracker:
         self.candidate_tracks: Dict[str, dict] = {}
         self.iou_threshold = iou_threshold
         self.max_missed = max_missed
+        self.confirmation_hits = confirmation_hits
 
     def generate_track_id(self) -> str:
         """Generates a camera-scoped tracking identifier."""
@@ -71,19 +88,25 @@ class PythonCameraTracker:
 
     def update(self, human_detections: List[dict], now: Optional[float] = None) -> List[dict]:
         """
-        Updates the track pool with confirmed human detections using multi-frame confirmation.
+        Updates the track pool with confirmed human detections.
         """
         if now is None:
             now = time.time()
 
         # Enforce Rule 1: Human-First Gatekeeper
-        valid_humans = [
-            d for d in human_detections 
-            if d.get("class_name", "person") == "person" and d.get("confidence", 0.0) >= 0.60
-        ]
+        valid_humans = []
+        for d in human_detections:
+            if d.get("class_name", "person") == "person" and d.get("confidence", 0.0) >= 0.55:
+                # Wrap bbox if dict
+                bbox_raw = d["bbox"]
+                if isinstance(bbox_raw, dict):
+                    b_obj = BoundingBox(bbox_raw["x"], bbox_raw["y"], bbox_raw["width"], bbox_raw["height"])
+                else:
+                    b_obj = bbox_raw
+                valid_humans.append({**d, "bbox": b_obj})
 
         if not valid_humans:
-            # Handle empty room / frame
+            # Handle empty room / frame: Decay missed frames, retain stationary context
             for tid, track in list(self.active_tracks.items()):
                 track["missed_frames"] += 1
                 track["status"] = "lost"
@@ -109,8 +132,11 @@ class PythonCameraTracker:
                     continue
                 iou = track["bbox"].iou(bbox)
                 dist = track["bbox"].center_dist(bbox)
-                if iou >= self.iou_threshold or dist <= 0.35:
-                    score = iou * 0.6 + max(0.0, 1.0 - dist / 0.35) * 0.4
+                # Adaptive association threshold based on bbox size
+                max_dist = max(0.20, min(0.45, math.hypot(track["bbox"].width, track["bbox"].height) * 0.75))
+
+                if iou >= self.iou_threshold or dist <= max_dist:
+                    score = iou * 0.6 + max(0.0, 1.0 - dist / max_dist) * 0.4
                     if score > best_score:
                         best_score = score
                         best_id = tid
@@ -132,11 +158,17 @@ class PythonCameraTracker:
                 track["missed_frames"] = 0
                 track["last_seen"] = now
 
-                # Suspicion Score non-decreasing update
+                # Preserve or adopt global_person_id (Layer 3)
+                if det.get("global_person_id"):
+                    track["global_person_id"] = det["global_person_id"]
+
+                # Dual score update: non-decreasing cumulative score
                 contrib = det.get("score_contribution", 0)
                 if contrib > 0:
-                    track["suspicion_score"] = min(100, max(track["suspicion_score"], track["suspicion_score"] + contrib))
-                    if track["suspicion_score"] >= 65:
+                    track["current_score"] = min(100, (track.get("current_score", 0) + contrib))
+                    track["cumulative_score"] = min(100, max(track.get("cumulative_score", 0), track["cumulative_score"] + contrib))
+                    track["suspicion_score"] = track["cumulative_score"]
+                    if track["cumulative_score"] >= 60 or track["current_score"] >= 60:
                         track["warning_latched"] = True
             else:
                 unmatched_dets.append(det)
@@ -164,11 +196,13 @@ class PythonCameraTracker:
                 cand["hits"] += 1
                 cand["missed"] = 0
                 cand["bbox"] = bbox
-                if cand["hits"] >= 3:
+                if cand["hits"] >= self.confirmation_hits:
                     del self.candidate_tracks[best_cand_id]
                     perm_id = self.generate_track_id()
                     cand["track_id"] = perm_id
                     cand["status"] = "active"
+                    cand["current_score"] = 0
+                    cand["cumulative_score"] = 0
                     cand["suspicion_score"] = 0
                     cand["warning_latched"] = False
                     cand["missed_frames"] = 0
@@ -178,24 +212,50 @@ class PythonCameraTracker:
             else:
                 still_unmatched.append(det)
 
-        # Step 3: Spawn New Candidates
+        # Step 3: Spawn New Candidates (or promote immediately if confirmation_hits <= 1)
         for det in still_unmatched:
-            cid = f"cand_{self.next_cand_num}"
-            self.next_cand_num += 1
-            self.candidate_tracks[cid] = {
-                "track_id": cid,
-                "camera_id": self.camera_id,
-                "bbox": det["bbox"],
-                "confidence": det.get("confidence", 0.8),
-                "head_pose": det.get("head_pose", {"direction": "center"}),
-                "face_visible": det.get("face_visible", True),
-                "phone_detected": det.get("phone_detected", False),
-                "phone_confidence": det.get("phone_confidence", 0.0),
-                "hits": 1,
-                "missed": 0,
-                "created_at": now,
-                "status": "candidate"
-            }
+            if self.confirmation_hits <= 1:
+                perm_id = self.generate_track_id()
+                self.active_tracks[perm_id] = {
+                    "track_id": perm_id,
+                    "camera_id": self.camera_id,
+                    "global_person_id": det.get("global_person_id"),
+                    "bbox": det["bbox"],
+                    "confidence": det.get("confidence", 0.85),
+                    "head_pose": det.get("head_pose", {"direction": "center"}),
+                    "face_visible": det.get("face_visible", True),
+                    "phone_detected": det.get("phone_detected", False),
+                    "phone_confidence": det.get("phone_confidence", 0.0),
+                    "current_score": 0,
+                    "cumulative_score": 0,
+                    "suspicion_score": 0,
+                    "warning_latched": False,
+                    "status": "active",
+                    "hits": 1,
+                    "missed_frames": 0,
+                    "last_seen": now,
+                    "is_confirmed_human": True,
+                    "is_moving": False,
+                    "movement_magnitude": 0
+                }
+            else:
+                cid = f"cand_{self.next_cand_num}"
+                self.next_cand_num += 1
+                self.candidate_tracks[cid] = {
+                    "track_id": cid,
+                    "camera_id": self.camera_id,
+                    "global_person_id": det.get("global_person_id"),
+                    "bbox": det["bbox"],
+                    "confidence": det.get("confidence", 0.8),
+                    "head_pose": det.get("head_pose", {"direction": "center"}),
+                    "face_visible": det.get("face_visible", True),
+                    "phone_detected": det.get("phone_detected", False),
+                    "phone_confidence": det.get("phone_confidence", 0.0),
+                    "hits": 1,
+                    "missed": 0,
+                    "created_at": now,
+                    "status": "candidate"
+                }
 
         # Step 4: Prune candidates and mark lost tracks
         for cid, cand in list(self.candidate_tracks.items()):
@@ -215,14 +275,33 @@ class PythonCameraTracker:
 
         return self._export_tracks()
 
-    def clear_track_warning(self, track_id: str) -> None:
-        """Admin action: Unlatch warning without decreasing suspicion score."""
+    def set_track_suspicion(self, track_id: str, suspicion_score: int, current_score: Optional[int] = None) -> None:
+        """Sets suspicion score with non-decreasing guarantee for cumulative score."""
         if track_id in self.active_tracks:
-            self.active_tracks[track_id]["warning_latched"] = False
+            track = self.active_tracks[track_id]
+            if current_score is not None:
+                track["current_score"] = current_score
+            track["cumulative_score"] = min(100, max(track.get("cumulative_score", 0), suspicion_score))
+            track["suspicion_score"] = track["cumulative_score"]
+            if track["cumulative_score"] >= 60 or track.get("current_score", 0) >= 60:
+                track["warning_latched"] = True
+
+    def clear_track_warning(self, track_id: str) -> None:
+        """
+        Admin action: Unlatch warning and reset immediate risk without decreasing cumulative score.
+        Invariant: Cumulative score is preserved for audit trail.
+        """
+        if track_id in self.active_tracks:
+            track = self.active_tracks[track_id]
+            track["warning_latched"] = False
+            track["current_score"] = 0
+            track["warning_cleared_at"] = time.time()
 
     def reset_track_score(self, track_id: str) -> None:
-        """Admin action: Reset score for a track."""
+        """Full admin reset if explicitly requested."""
         if track_id in self.active_tracks:
+            self.active_tracks[track_id]["current_score"] = 0
+            self.active_tracks[track_id]["cumulative_score"] = 0
             self.active_tracks[track_id]["suspicion_score"] = 0
             self.active_tracks[track_id]["warning_latched"] = False
 
