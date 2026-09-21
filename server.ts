@@ -348,13 +348,15 @@ async function startServer() {
     try {
       // Whitelist only editable profile fields: student_id_number, name, seat_id, notes, classroom_id
       // CV state (current_score, cumulative_score, max_score, warning_latched, global_person_id) remains owned by CV engine
-      const { student_id_number, name, seat_id, notes, classroom_id } = req.body;
+      const { student_id_number, name, seat_id, notes, classroom_id, person_id, global_person_id } = req.body;
       const allowedUpdates: any = {};
       if (student_id_number !== undefined) allowedUpdates.student_id_number = student_id_number;
       if (name !== undefined) allowedUpdates.name = name;
       if (seat_id !== undefined) allowedUpdates.seat_id = seat_id;
       if (notes !== undefined) allowedUpdates.notes = notes;
       if (classroom_id !== undefined) allowedUpdates.classroom_id = classroom_id;
+      if (person_id !== undefined) allowedUpdates.person_id = person_id;
+      if (global_person_id !== undefined) allowedUpdates.global_person_id = global_person_id;
 
       const updated = await db.updateStudent(req.params.id, allowedUpdates);
       if (!updated) return res.status(404).json({ error: 'Student not found' });
@@ -959,6 +961,15 @@ async function startServer() {
   app.post('/api/events/clear', requireAdminAuth, async (_req, res) => {
     try {
       const result = await db.clearEvents();
+      // Broadcast activity cleared event to all connected WebSockets
+      const clearMsg = JSON.stringify({ type: 'ACTIVITY_CLEARED', timestamp: Date.now() });
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          try {
+            client.send(clearMsg);
+          } catch {}
+        }
+      });
       res.json({
         success: true,
         cleared: true,

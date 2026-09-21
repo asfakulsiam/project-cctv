@@ -29,9 +29,6 @@ export function AdminStudentsManager() {
   const [newClassroom, setNewClassroom] = useState<string>('');
 
   const [selectedStudentForPerson, setSelectedStudentForPerson] = useState<Record<string, string>>({});
-  const [customPersonId, setCustomPersonId] = useState<string>('');
-  const [customAssignStudentId, setCustomAssignStudentId] = useState<string>('');
-
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const detectedPersonIds = useMemo(() => {
@@ -396,43 +393,6 @@ export function AdminStudentsManager() {
           <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-1 rounded">
             {detectedPersonIds.length} Detected Identity{detectedPersonIds.length === 1 ? '' : 'ies'}
           </span>
-        </div>
-
-        {/* Manual Association Quick Form */}
-        <div className="p-4 bg-slate-900/40 border-b border-slate-800 flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-slate-300">Assign Specific Person ID:</span>
-          <input
-            type="text"
-            placeholder="e.g. P-001"
-            value={customPersonId}
-            onChange={e => setCustomPersonId(e.target.value)}
-            className="px-2.5 py-1 bg-slate-900 border border-slate-700 rounded text-xs text-white font-mono w-28"
-          />
-          <select
-            value={customAssignStudentId}
-            onChange={e => setCustomAssignStudentId(e.target.value)}
-            className="px-2.5 py-1 bg-slate-900 border border-slate-700 rounded text-xs text-slate-200"
-          >
-            <option value="">-- Select Candidate --</option>
-            {students.map(s => (
-              <option key={s.id} value={s.id}>
-                {s.student_id_number} - {s.name} ({s.seat_id || 'No seat'})
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={() => {
-              if (customPersonId.trim() && customAssignStudentId) {
-                handleAssignPerson(customPersonId.trim().toUpperCase(), customAssignStudentId);
-                setCustomPersonId('');
-                setCustomAssignStudentId('');
-              }
-            }}
-            disabled={!customPersonId.trim() || !customAssignStudentId}
-            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded text-xs font-medium transition-colors cursor-pointer"
-          >
-            Assign
-          </button>
         </div>
 
         {/* Person Association Table */}

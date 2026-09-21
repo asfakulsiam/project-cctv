@@ -53,6 +53,8 @@ export interface FrameSource {
 export class StandardFrameSource implements FrameSource {
   private camera: CameraConfig;
   private isConnected = false;
+  private currentFrame: any | null = null;
+  private lastFrameTime = 0;
 
   constructor(camera: CameraConfig) {
     this.camera = camera;
@@ -62,13 +64,23 @@ export class StandardFrameSource implements FrameSource {
     this.isConnected = this.camera.status === 'online' && this.camera.enabled !== false;
   }
 
+  public pushFrame(frame: any): void {
+    this.currentFrame = frame;
+    this.lastFrameTime = Date.now();
+  }
+
   public async readFrame(): Promise<any | null> {
     if (!this.isConnected || this.camera.status !== 'online') return null;
-    return { timestamp: Date.now(), cameraId: this.camera.camera_id };
+    // Expire frames older than 2.5 seconds to prevent stale data
+    if (this.currentFrame && Date.now() - this.lastFrameTime > 2500) {
+      this.currentFrame = null;
+    }
+    return this.currentFrame;
   }
 
   public async close(): Promise<void> {
     this.isConnected = false;
+    this.currentFrame = null;
   }
 
   public getStatus(): { connected: boolean; fps: number; error?: string } {
@@ -234,6 +246,13 @@ export class CVEngine {
   /**
    * Core processing tick executed across all active cameras.
    */
+  public pushCameraFrame(cameraId: string, frame: any): void {
+    const source = this.cameraSources.get(cameraId);
+    if (source && typeof (source as any).pushFrame === 'function') {
+      (source as any).pushFrame(frame);
+    }
+  }
+
   private async processFrameTick(): Promise<void> {
     const now = Date.now();
     const cameraTracksMap = new Map<string, CameraTrack[]>();
@@ -249,9 +268,7 @@ export class CVEngine {
       this.lastFpsCalcTime = now;
     }
 
-    const registeredStudents = this.unifiedStudentManager.getStudents();
-
-    // Run independent per-camera detection & tracking
+    // Step 1: Run independent per-camera frame ingestion & detection
     for (const [cameraId, camera] of this.cameras.entries()) {
       const tracker = this.trackers.get(cameraId);
       if (!tracker) continue;
@@ -263,25 +280,60 @@ export class CVEngine {
         continue;
       }
 
-      // Real Detection Gatekeeper:
-      // Ingest real detections from queue (if injected) or process frame.
-      // ZERO fake people: If queue has no detections and no frame, confirmedHumans is empty!
-      let confirmedHumans: any[] = [];
-      if (this.cameraDetectionsQueue.has(cameraId)) {
-        const rawDetections = this.cameraDetectionsQueue.get(cameraId) || [];
-        const rawPhones = this.cameraPhonesQueue.get(cameraId) || [];
-        this.cameraDetectionsQueue.delete(cameraId);
-        this.cameraPhonesQueue.delete(cameraId);
-        confirmedHumans = this.personDetector.processDetections(rawDetections, rawPhones);
+      // Check camera source and detection queues
+      const source = this.cameraSources.get(cameraId);
+      const queuedDetections = this.cameraDetectionsQueue.get(cameraId);
+      const queuedPhones = this.cameraPhonesQueue.get(cameraId);
+      this.cameraDetectionsQueue.delete(cameraId);
+      this.cameraPhonesQueue.delete(cameraId);
+
+      let frame = source ? await source.readFrame() : null;
+      if (!frame && queuedDetections && queuedDetections.length > 0) {
+        frame = {
+          camera_id: cameraId,
+          timestamp: now,
+          detections: queuedDetections,
+          phones: queuedPhones || []
+        };
       }
 
-      // Update independent per-camera tracker
-      const tracks = tracker.updateDetections(confirmedHumans, now);
+      // If no actual video frame or real detection exists: do not fabricate tracks!
+      if (!frame) {
+        const remainingLostTracks = tracker.handleNoFrame(now);
+        cameraTracksMap.set(cameraId, remainingLostTracks);
+        continue;
+      }
 
-      // Evaluate temporal behavior and scoring for each real track
+      // Pass real frame & real detections to gatekeeper detector
+      const confirmedHumans = await this.personDetector.detectFrame(
+        frame,
+        cameraId,
+        now,
+        queuedDetections || [],
+        queuedPhones || []
+      );
+
+      // Update independent per-camera tracker with confirmed real humans
+      const tracks = tracker.updateDetections(confirmedHumans, now);
+      cameraTracksMap.set(cameraId, tracks);
+    }
+
+    // Step 2: UNIFIED IDENTITY ASSOCIATION (Layer 3 Global Person Registry)
+    // CRITICAL: Must run BEFORE BehaviorAnalyzer so tracks have global_person_id and student association!
+    const cameraList = Array.from(this.cameras.values());
+    const { students: unifiedStudents, globalPersons } = this.unifiedStudentManager.syncCrossCameraObservations(
+      cameraTracksMap,
+      cameraList,
+      now
+    );
+
+    // Step 3: Temporal behavior analysis with established identity metadata
+    for (const [cameraId, tracks] of cameraTracksMap.entries()) {
+      const tracker = this.trackers.get(cameraId);
+
       for (const track of tracks) {
         allActiveTrackIds.add(track.track_id);
-        const studentInfo = registeredStudents.find(s => s.id === track.associated_student_id);
+        const studentInfo = unifiedStudents.find(s => s.id === track.associated_student_id);
         const seat = this.seats.find(s => s.id === track.seat_id);
         const seatRegion = seat?.camera_regions[cameraId];
 
@@ -296,12 +348,17 @@ export class CVEngine {
         track.current_score = current_score;
         track.cumulative_score = cumulative_score;
         track.max_score = max_score;
-        tracker.setTrackSuspicion(track.track_id, cumulative_score, current_score, max_score);
+        if (tracker) {
+          tracker.setTrackSuspicion(track.track_id, cumulative_score, current_score, max_score);
+        }
 
-        // Cross-camera event deduplication
+        // Cross-camera event deduplication and enrichment
         for (const evt of events) {
-          if (track.global_person_id) {
-            evt.global_person_id = track.global_person_id;
+          evt.global_person_id = track.global_person_id;
+          evt.student_id = track.associated_student_id;
+          if (studentInfo) {
+            evt.student_id_number = studentInfo.student_id_number;
+            evt.student_name = studentInfo.name;
           }
           const shouldEmit = track.global_person_id
             ? this.unifiedStudentManager.shouldEmitCrossCameraEvent(track.global_person_id, evt.event_type, now)
@@ -313,19 +370,9 @@ export class CVEngine {
           }
         }
       }
-
-      cameraTracksMap.set(cameraId, tracks);
     }
 
     this.behaviorAnalyzer.pruneStaleContexts(allActiveTrackIds);
-
-    // UNIFIED STUDENT MODEL (cross-camera association & Layer 3 Global Person Registry)
-    const cameraList = Array.from(this.cameras.values());
-    const { students: unifiedStudents, globalPersons } = this.unifiedStudentManager.syncCrossCameraObservations(
-      cameraTracksMap,
-      cameraList,
-      now
-    );
 
     // Calculate Real-Time Stats
     const stats = this.computeRealtimeStats(cameraTracksMap, unifiedStudents, globalPersons);
@@ -351,6 +398,16 @@ export class CVEngine {
       tracker.clearTrackWarning(trackId);
     }
     this.behaviorAnalyzer.clearTrackWarning(trackId);
+    // Immediately unlatch and reset score on cached track
+    for (const tracks of this.latestTracksByCamera.values()) {
+      for (const t of tracks) {
+        if (t.track_id === trackId) {
+          t.warning_latched = false;
+          t.current_score = 0;
+          t.warning_cleared_at = Date.now();
+        }
+      }
+    }
     return true;
   }
 
@@ -362,6 +419,16 @@ export class CVEngine {
         if (track && track.associated_student_id === studentId) {
           tracker.clearTrackWarning(trackId);
           this.behaviorAnalyzer.clearTrackWarning(trackId);
+        }
+      }
+    }
+    // Immediately unlatch and reset score on associated cached tracks
+    for (const tracks of this.latestTracksByCamera.values()) {
+      for (const t of tracks) {
+        if (t.associated_student_id === studentId) {
+          t.warning_latched = false;
+          t.current_score = 0;
+          t.warning_cleared_at = Date.now();
         }
       }
     }

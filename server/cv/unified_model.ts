@@ -78,14 +78,43 @@ export class UnifiedStudentManager {
       this.thresholds = { ...this.thresholds, ...thresholds };
     }
     for (const student of initialStudents) {
+      const pid = student.person_id || student.global_person_id;
+      if (pid && /^P-\d+$/i.test(pid)) {
+        const num = parseInt(pid.replace(/^P-/i, ''), 10);
+        if (!isNaN(num) && num >= this.next_person_number) {
+          this.next_person_number = num + 1;
+        }
+      }
       this.students.set(student.id, {
         ...student,
+        person_id: pid,
+        global_person_id: pid,
         current_score: 0,
         cumulative_score: 0,
         max_score: 0,
         warning_level: 'normal',
         active_observations: []
       });
+      if (pid && !this.global_persons.has(pid)) {
+        this.global_persons.set(pid, {
+          id: pid,
+          person_id: pid,
+          global_person_id: pid,
+          associated_student_id: student.id,
+          associated_student_name: student.name,
+          student_id: student.id,
+          student_id_number: student.student_id_number,
+          student_name: student.name,
+          seat_id: student.seat_id,
+          camera_tracks: [],
+          current_score: 0,
+          cumulative_score: 0,
+          max_score: 0,
+          warning_latched: false,
+          last_seen: Date.now(),
+          status: student.seat_id ? 'in_seat' : 'unassigned'
+        });
+      }
     }
   }
 
@@ -98,7 +127,8 @@ export class UnifiedStudentManager {
   }
 
   /**
-   * Update student roster. Ensures removed students are cleaned up and associations severed.
+   * Update student roster. Ensures removed students are cleaned up and associations severed,
+   * while preserving persistent person_id and global_person_id assignments.
    */
   public updateStudentList(students: StudentRecord[]): void {
     const newStudentIds = new Set(students.map(s => s.id));
@@ -112,14 +142,25 @@ export class UnifiedStudentManager {
           if (gp.associated_student_id === id) {
             gp.associated_student_id = undefined;
             gp.associated_student_name = undefined;
+            gp.student_id = undefined;
+            gp.student_id_number = undefined;
+            gp.student_name = undefined;
           }
         }
       }
     }
 
-    // Update or insert students
+    // Update or insert students, preserving person_id
     for (const s of students) {
       const existing = this.students.get(s.id);
+      const pid = s.person_id || s.global_person_id || existing?.person_id || existing?.global_person_id;
+      if (pid && /^P-\d+$/i.test(pid)) {
+        const num = parseInt(pid.replace(/^P-/i, ''), 10);
+        if (!isNaN(num) && num >= this.next_person_number) {
+          this.next_person_number = num + 1;
+        }
+      }
+
       if (existing) {
         this.students.set(s.id, {
           ...existing,
@@ -127,17 +168,50 @@ export class UnifiedStudentManager {
           name: s.name,
           classroom_id: s.classroom_id,
           seat_id: s.seat_id,
-          notes: s.notes
+          notes: s.notes,
+          person_id: pid,
+          global_person_id: pid
         });
+        // Update associated Global Person display name without mutating person_id
+        if (pid) {
+          const gp = this.global_persons.get(pid);
+          if (gp) {
+            gp.associated_student_name = s.name;
+            gp.student_name = s.name;
+            gp.student_id_number = s.student_id_number;
+          }
+        }
       } else {
         this.students.set(s.id, {
           ...s,
+          person_id: pid,
+          global_person_id: pid,
           current_score: 0,
           cumulative_score: 0,
           max_score: 0,
           warning_level: 'normal',
           active_observations: []
         });
+        if (pid && !this.global_persons.has(pid)) {
+          this.global_persons.set(pid, {
+            id: pid,
+            person_id: pid,
+            global_person_id: pid,
+            associated_student_id: s.id,
+            associated_student_name: s.name,
+            student_id: s.id,
+            student_id_number: s.student_id_number,
+            student_name: s.name,
+            seat_id: s.seat_id,
+            camera_tracks: [],
+            current_score: 0,
+            cumulative_score: 0,
+            max_score: 0,
+            warning_latched: false,
+            last_seen: Date.now(),
+            status: s.seat_id ? 'in_seat' : 'unassigned'
+          });
+        }
       }
     }
   }
@@ -349,17 +423,36 @@ export class UnifiedStudentManager {
         }
 
         // Layer 3: Visual Re-ID Global Person Matching
-        let globalPersonId = track.global_person_id;
-        if (!globalPersonId || cameraAssignedGPs.has(globalPersonId)) {
+        let globalPersonId = track.global_person_id || track.person_id;
+        if (globalPersonId && cameraAssignedGPs.has(globalPersonId)) {
+          globalPersonId = undefined;
+        }
+
+        // Association Priority C: Check if associated student already has a known person ID
+        const studentRec = matchedStudentId ? this.students.get(matchedStudentId) : null;
+        const existingStudentPersonId = studentRec?.person_id || studentRec?.global_person_id;
+        if (!globalPersonId && existingStudentPersonId && !cameraAssignedGPs.has(existingStudentPersonId)) {
+          globalPersonId = existingStudentPersonId;
+        }
+
+        if (!globalPersonId) {
           // Find match respecting single-camera uniqueness
           globalPersonId = this.matchGlobalPerson(track, matchedStudentId, matchedSeatId, cameraAssignedGPs) || undefined;
         }
 
-        // Allocate a new Global Person ID if no existing person matched
+        // Allocate or reuse Global Person ID
         if (!globalPersonId) {
-          globalPersonId = this.generateGlobalPersonId();
-          const studentRec = matchedStudentId ? this.students.get(matchedStudentId) : null;
-          this.global_persons.set(globalPersonId, {
+          if (existingStudentPersonId && !cameraAssignedGPs.has(existingStudentPersonId)) {
+            globalPersonId = existingStudentPersonId;
+          } else {
+            globalPersonId = this.generateGlobalPersonId();
+          }
+        }
+
+        // Ensure global person is present in registry
+        let gp = this.global_persons.get(globalPersonId);
+        if (!gp) {
+          gp = {
             id: globalPersonId,
             person_id: globalPersonId,
             global_person_id: globalPersonId,
@@ -377,11 +470,11 @@ export class UnifiedStudentManager {
             warning_latched: track.warning_latched || false,
             last_seen: now,
             status: matchedSeatId ? 'in_seat' : 'unassigned'
-          });
+          };
+          this.global_persons.set(globalPersonId, gp);
         } else {
           // Update running appearance embedding for matched Global Person
-          const gp = this.global_persons.get(globalPersonId);
-          if (gp && track.appearance_embedding) {
+          if (track.appearance_embedding) {
             if (!gp.appearance_embedding) {
               gp.appearance_embedding = [...track.appearance_embedding];
             } else {
@@ -391,12 +484,11 @@ export class UnifiedStudentManager {
               );
             }
           }
-          if (gp && matchedSeatId && !gp.seat_id) {
+          if (matchedSeatId && !gp.seat_id) {
             gp.seat_id = matchedSeatId;
           }
-          if (gp && matchedStudentId && !gp.associated_student_id) {
+          if (matchedStudentId && !gp.associated_student_id) {
             gp.associated_student_id = matchedStudentId;
-            const studentRec = this.students.get(matchedStudentId);
             if (studentRec) {
               gp.associated_student_name = studentRec.name;
               gp.student_id = studentRec.id;
@@ -406,10 +498,21 @@ export class UnifiedStudentManager {
           }
         }
 
+        // Update student record link if known
+        if (studentRec) {
+          if (!studentRec.person_id) studentRec.person_id = globalPersonId;
+          if (!studentRec.global_person_id) studentRec.global_person_id = globalPersonId;
+        }
+
         // Enforce uniqueness per camera
         cameraAssignedGPs.add(globalPersonId);
+
+        // Propagate GlobalPerson association back to CameraTrack!
         track.global_person_id = globalPersonId;
         track.person_id = globalPersonId;
+        if (gp.associated_student_id) {
+          track.associated_student_id = gp.associated_student_id;
+        }
         const quality = this.computeObservationQuality(track, camera);
 
         // Record active link for Global Person
@@ -614,6 +717,12 @@ export class UnifiedStudentManager {
       gp.student_id = undefined;
       gp.student_id_number = undefined;
       gp.student_name = undefined;
+      for (const s of this.students.values()) {
+        if (s.person_id === personId || s.global_person_id === personId) {
+          s.person_id = undefined;
+          s.global_person_id = undefined;
+        }
+      }
       return true;
     }
 
@@ -630,6 +739,15 @@ export class UnifiedStudentManager {
         otherGp.student_name = undefined;
       }
     }
+    for (const otherS of this.students.values()) {
+      if (otherS.id !== studentId && (otherS.person_id === personId || otherS.global_person_id === personId)) {
+        otherS.person_id = undefined;
+        otherS.global_person_id = undefined;
+      }
+    }
+
+    student.person_id = personId;
+    student.global_person_id = personId;
 
     gp.associated_student_id = student.id;
     gp.associated_student_name = student.name;
@@ -656,17 +774,18 @@ export class UnifiedStudentManager {
   }
 
   public reset(): void {
-    this.global_persons.clear();
     this.trackSeatStability.clear();
     this.recentEventsCache.clear();
-    this.next_person_number = 1;
+    // Non-destructive: Preserve persistent person_id, global_person_id, cumulative audit scores, and sequence
+    for (const gp of this.global_persons.values()) {
+      gp.camera_tracks = [];
+      gp.current_score = 0;
+      gp.warning_latched = false;
+    }
     for (const s of this.students.values()) {
       s.current_score = 0;
-      s.cumulative_score = 0;
-      s.max_score = 0;
       s.warning_level = 'normal';
       s.active_observations = [];
-      s.status = 'present';
     }
   }
 }

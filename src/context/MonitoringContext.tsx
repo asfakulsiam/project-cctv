@@ -161,6 +161,8 @@ export function MonitoringProvider({ children }: { children: React.ReactNode }) 
             if (msg.students) setStudents(msg.students);
             if (msg.events) setEvents(prev => mergeDeduplicatedEvents(prev, msg.events || []));
             if (msg.stats) setStats(msg.stats);
+          } else if ((msg as any).type === 'ACTIVITY_CLEARED') {
+            setEvents([]);
           } else if (msg.type === 'TELEMETRY_UPDATE') {
             if (msg.tracks_by_camera) {
               setTracksByCamera(msg.tracks_by_camera);

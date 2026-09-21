@@ -58,9 +58,11 @@ export interface InternalTrackState {
   // Observation attributes (secondary evidence)
   head_pose: HeadPoseData;
   face_visible: boolean;
+  face_occluded?: boolean;
   face_confidence: number;
   phone_detected: boolean;
   phone_confidence: number;
+  phone_bbox?: BoundingBox;
   movement_magnitude: number;
   is_moving: boolean;
   is_confirmed_human: boolean;
@@ -446,9 +448,11 @@ export class CameraTracker {
         missed_frames: 0,
         head_pose: det.head_pose || { yaw: 0, pitch: 0, direction: 'center', confidence: 0 },
         face_visible: det.face_visible ?? false,
+        face_occluded: det.face_visible === false && (det.head_pose?.direction === 'center' || (det.face_confidence ?? 0) > 0.4),
         face_confidence: det.face_confidence ?? 0,
         phone_detected: det.phone_detected ?? false,
         phone_confidence: det.phone_confidence ?? 0,
+        phone_bbox: det.phone_bbox,
         movement_magnitude: 0,
         is_moving: false,
         is_confirmed_human: true,
@@ -585,9 +589,11 @@ export class CameraTracker {
     track.confidence = det.confidence;
     track.head_pose = det.head_pose || track.head_pose;
     track.face_visible = det.face_visible !== undefined ? det.face_visible : track.face_visible;
+    track.face_occluded = det.face_visible === false && (det.head_pose?.direction === 'center' || (det.face_confidence ?? 0) > 0.4);
     track.face_confidence = det.face_confidence ?? track.face_confidence;
     track.phone_detected = det.phone_detected ?? false;
     track.phone_confidence = det.phone_confidence ?? 0;
+    track.phone_bbox = det.phone_bbox;
     track.movement_magnitude = movement_magnitude;
     track.is_moving = is_moving;
     if (det.seat_id) track.seat_id = det.seat_id;
@@ -620,9 +626,11 @@ export class CameraTracker {
       appearance_embedding: t.appearance_embedding ? [...t.appearance_embedding] : undefined,
       head_pose: { ...t.head_pose },
       face_visible: t.face_visible,
+      face_occluded: t.face_occluded,
       face_confidence: t.face_confidence,
       phone_detected: t.phone_detected,
       phone_confidence: t.phone_confidence,
+      phone_bbox: t.phone_bbox ? { ...t.phone_bbox } : undefined,
       movement_magnitude: t.movement_magnitude,
       is_moving: t.is_moving,
       is_confirmed_human: true,

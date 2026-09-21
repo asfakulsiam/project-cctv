@@ -105,9 +105,11 @@ export interface CameraTrack {
   appearance_embedding?: number[]; // Re-ID appearance descriptor vector
   head_pose: HeadPoseData;
   face_visible: boolean;
+  face_occluded?: boolean;
   face_confidence: number;
   phone_detected: boolean;
   phone_confidence: number;
+  phone_bbox?: BoundingBox;
   movement_magnitude: number;  // Relative velocity / spatial delta
   is_moving: boolean;
   is_confirmed_human: boolean; // Guaranteed true human invariant (passed detector & temporal evidence)

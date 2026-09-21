@@ -28,7 +28,8 @@ export interface DrawCameraFeedOptions {
   zoomLevel: number;
   panOffset: { x: number; y: number };
   selectedTrackId?: string | null;
-  highSuspicionThreshold: number;
+  warningSuspicionThreshold?: number;
+  highSuspicionThreshold?: number;
   videoSource?: HTMLVideoElement | HTMLImageElement | null;
   fitMode?: 'contain' | 'cover';
 }
@@ -48,6 +49,7 @@ export function drawCameraFeed(
     zoomLevel = 1.0,
     panOffset = { x: 0, y: 0 },
     selectedTrackId = null,
+    warningSuspicionThreshold = 35,
     highSuspicionThreshold = 65
   } = options;
 
@@ -98,14 +100,12 @@ export function drawCameraFeed(
     const ph = track.bbox.height * height;
 
     const isSelected = track.track_id === selectedTrackId;
-    const score = Math.max(0, Math.min(100, Math.round(track.suspicion_score || 0)));
+    const liveScore = Math.max(0, Math.min(100, Math.round(track.current_score !== undefined ? track.current_score : (track.suspicion_score || 0))));
+    const cumulativeScore = Math.max(0, Math.min(100, Math.round(track.cumulative_score !== undefined ? track.cumulative_score : (track.suspicion_score || 0))));
     
-    // Status Classification:
-    // Warning: 35 <= score < highSuspicionThreshold (turns box and badges YELLOW)
-    // Critical / Latched Warning: track.warning_latched === true OR score >= highSuspicionThreshold (turns box and badges RED)
-    // Normal: score < 35 (turns box and badges GREEN/EMERALD)
-    const isCritical = Boolean(track.warning_latched) || score >= highSuspicionThreshold;
-    const isWarning = !isCritical && score >= 35;
+    // Status Classification based on live current_score and warning_latched
+    const isCritical = Boolean(track.warning_latched) || liveScore >= highSuspicionThreshold;
+    const isWarning = !isCritical && liveScore >= warningSuspicionThreshold;
 
     let borderColor = '#10b981'; // Normal: Emerald Green
     let cornerColor = '#10b981';
@@ -179,11 +179,12 @@ export function drawCameraFeed(
     }
 
     // C. Mobile Phone Detection Reticle Overlay
-    if (track.phone_detected) {
-      const phoneX = px + pw * 0.6;
-      const phoneY = py + ph * 0.55;
-      const phoneW = pw * 0.24;
-      const phoneH = ph * 0.22;
+    // Only render phone box if real phone_bbox was detected
+    if (track.phone_detected && track.phone_bbox) {
+      const phoneX = track.phone_bbox.x * width;
+      const phoneY = track.phone_bbox.y * height;
+      const phoneW = track.phone_bbox.width * width;
+      const phoneH = track.phone_bbox.height * height;
 
       // Glow pulsation
       const pulse = (Math.sin(now / 180) + 1) / 2;
@@ -197,7 +198,7 @@ export function drawCameraFeed(
       ctx.strokeRect(phoneX, phoneY, phoneW, phoneH);
 
       ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(phoneX + 2, phoneY + 2, phoneW - 4, phoneH - 4);
+      ctx.fillRect(phoneX + 2, phoneY + 2, Math.max(1, phoneW - 4), Math.max(1, phoneH - 4));
     }
 
     // -------------------------------------------------------------
@@ -261,7 +262,7 @@ export function drawCameraFeed(
     const personIdText = personId ? ` | ${personId}` : '';
     const studentIdText = student?.student_id_number ? ` [${student.student_id_number}]` : (student?.name ? ` [${student.name}]` : '');
     const statusPrefix = isCritical ? '🚨 ' : (isWarning ? '⚠️ ' : '');
-    const tagText = `${statusPrefix}${track.track_id}${personIdText}${studentIdText} • ${score}`;
+    const tagText = `${statusPrefix}${track.track_id}${personIdText}${studentIdText} • ${liveScore}`;
     
     // Sleek small font to avoid blocking camera views
     ctx.font = 'bold 8.5px "JetBrains Mono", monospace';
@@ -316,8 +317,8 @@ export function drawCameraFeed(
       badgeOffset += phoneW + 3;
     }
 
-    // Face Occlusion Alert
-    if (!track.face_visible) {
+    // Face Occlusion Alert - Only when face_occluded is confirmed, not merely off-angle face
+    if (track.face_occluded) {
       const faceText = 'FACE OCCLUDED';
       ctx.font = 'bold 8px "JetBrains Mono", monospace';
       const faceW = ctx.measureText(faceText).width + 8;
@@ -373,6 +374,7 @@ export function renderTelemetryCanvas(
     students: StudentRecord[];
     cameraId: string;
     selectedTrackId?: string | null;
+    warningSuspicionThreshold?: number;
     highSuspicionThreshold?: number;
     zoomLevel?: number;
     panOffset?: { x: number; y: number };
@@ -392,6 +394,7 @@ export function renderTelemetryCanvas(
     zoomLevel: options.zoomLevel || 1.0,
     panOffset: options.panOffset || { x: 0, y: 0 },
     selectedTrackId: options.selectedTrackId,
+    warningSuspicionThreshold: options.warningSuspicionThreshold || 35,
     highSuspicionThreshold: options.highSuspicionThreshold || 65
   });
 }

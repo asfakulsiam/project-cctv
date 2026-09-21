@@ -131,9 +131,12 @@ export class RealPersonDetector {
 
   /**
    * Primary frame-processing boundary for person and secondary object detection.
+   * Accepts either structured PersonDetectorInput or raw video frame with optional detections.
    */
   public async detectFrame(
-    input: PersonDetectorInput,
+    frameOrInput: PersonDetectorInput | any,
+    cameraId?: string,
+    timestamp: number = Date.now(),
     rawDetections: Array<{
       class_name: string;
       confidence: number;
@@ -143,15 +146,22 @@ export class RealPersonDetector {
       face_confidence?: number;
       seat_id?: string;
       associated_student_id?: string;
+      appearance_embedding?: number[];
     }> = [],
     rawPhones: SecondaryObjectDetection[] = []
-  ): Promise<DetectorOutput> {
-    const humans = this.processDetections(rawDetections, rawPhones);
-    return {
-      humans,
-      phones: rawPhones,
-      timestamp: input.timestamp
-    };
+  ): Promise<HumanDetection[]> {
+    if (!frameOrInput) return [];
+
+    // Support extracting embedded detections from frame container if not explicitly passed
+    const detections = (rawDetections && rawDetections.length > 0)
+      ? rawDetections
+      : (frameOrInput.detections || []);
+
+    const phones = (rawPhones && rawPhones.length > 0)
+      ? rawPhones
+      : (frameOrInput.phones || []);
+
+    return this.processDetections(detections, phones);
   }
 
   /**
