@@ -376,12 +376,62 @@ export class MotionVisionDetector {
     let rawDetections: Array<PersonDetection & { seat_id?: string; associated_student_id?: string }> = [];
 
     if (relevantSeats.length > 0) {
-      // Station-aware multi-student monitoring: Every student seat gets its own individual frame
+      // Dynamic station-aware optical tracking: detect live person position & motion within each station
       rawDetections = relevantSeats.map((seat, sIdx) => {
-        const region = seat.camera_regions[cameraId];
+        const baseRegion = seat.camera_regions[cameraId];
         const assignedStudent = availableStudents.find(st => st.id === seat.assigned_student_id) || availableStudents[sIdx];
+        
+        // Scan optical frame data within baseRegion to find live head/torso centroid & movement
+        const startX = Math.max(0, Math.floor(baseRegion.x * this.width));
+        const endX = Math.min(this.width, Math.floor((baseRegion.x + baseRegion.width) * this.width));
+        const startY = Math.max(0, Math.floor(baseRegion.y * this.height));
+        const endY = Math.min(this.height, Math.floor((baseRegion.y + baseRegion.height) * this.height));
+        
+        let weightedX = 0;
+        let weightedY = 0;
+        let totalWeight = 0;
+        
+        for (let y = startY; y < endY; y += 2) {
+          const rowOffset = y * this.width * 4;
+          for (let x = startX; x < endX; x += 2) {
+            const idx = rowOffset + x * 4;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            
+            const isSkin = r > 45 && g > 30 && b > 20 && r > g && r > b && (r - g) >= 8;
+            let motionDiff = 0;
+            if (this.prevFrameData) {
+              motionDiff = Math.abs(r - this.prevFrameData[idx]) + Math.abs(g - this.prevFrameData[idx + 1]) + Math.abs(b - this.prevFrameData[idx + 2]);
+            }
+            
+            const weight = (isSkin ? 2.5 : 0.4) + (motionDiff > 25 ? 3.0 : 0);
+            if (weight > 0.5) {
+              weightedX += x * weight;
+              weightedY += y * weight;
+              totalWeight += weight;
+            }
+          }
+        }
+        
+        let liveBbox = { ...baseRegion };
+        if (totalWeight > 10) {
+          const centerNormX = (weightedX / totalWeight) / this.width;
+          const centerNormY = (weightedY / totalWeight) / this.height;
+          
+          // Allow bounding box to dynamically shift and breathe with student movements frame-by-frame
+          const dynamicX = Math.max(0.01, Math.min(0.95 - baseRegion.width, centerNormX - baseRegion.width / 2));
+          const dynamicY = Math.max(0.02, Math.min(0.95 - baseRegion.height, centerNormY - baseRegion.height * 0.45));
+          liveBbox = {
+            x: dynamicX,
+            y: dynamicY,
+            width: baseRegion.width,
+            height: baseRegion.height
+          };
+        }
+
         return {
-          bbox: { ...region },
+          bbox: liveBbox,
           confidence: 0.95,
           seat_id: seat.id,
           associated_student_id: assignedStudent?.id || seat.assigned_student_id
@@ -448,8 +498,8 @@ export class MotionVisionDetector {
         track.velocity_x = track.velocity_x * (1 - velAlpha) + instVx * velAlpha;
         track.velocity_y = track.velocity_y * (1 - velAlpha) + instVy * velAlpha;
 
-        // Bounding Box Smoothing
-        const posAlpha = det.seat_id ? 0.85 : 0.28;
+        // Bounding Box Smoothing (fluid, responsive frame-by-frame motion tracking)
+        const posAlpha = 0.42;
         track.bbox = {
           x: track.bbox.x * (1 - posAlpha) + det.bbox.x * posAlpha,
           y: track.bbox.y * (1 - posAlpha) + det.bbox.y * posAlpha,
