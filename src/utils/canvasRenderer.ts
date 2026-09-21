@@ -1,218 +1,162 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Live Computer Vision Canvas Renderer
+ * Canvas Overlay Telemetry & Real-Time Computer Vision Renderer
  * 
- * Draws high-resolution simulated video frames and live CV overlay graphics:
- * Bounding boxes, camera-safe tracking IDs (CAM1-S001), head vectors,
- * suspicion metrics, face landmarks, and phone alerts.
+ * CORE REQUIREMENTS:
+ * 1. Fixed Person Tracking ID & Suspicion Score Display:
+ *    - Bounding boxes prominently show the fixed ID (e.g. CAM1-S001) and real-time Suspicion Score (0 - 100).
+ * 2. Visual Warning / Alert Color Hierarchy:
+ *    - WARNING (Score 35 - 64): Pure High-Visibility Yellow (#eab308 / #fbbf24) bounding box, tag & brackets.
+ *    - CRITICAL ALERT (Score >= 65): Bright Crimson Red (#ef4444) bounding box & alert badge.
+ *    - NORMAL (Score < 35): Crisp Emerald Green (#10b981) bounding box & normal tag.
+ * 3. Optical Gaze Vector & Behavior Overlay:
+ *    - Renders head orientation vector, phone detection reticle, and student identification.
  */
 
-import { CameraTrack, StudentRecord } from '../types.js';
+import { CameraTrack, SeatRecord, StudentRecord } from '../types.js';
+import { getTrackVisualState, VISUAL_STATE_CONFIG } from './visualState.js';
 
-interface RenderOptions {
+export interface DrawCameraFeedOptions {
   width: number;
   height: number;
   cameraName: string;
   cameraId: string;
   isPrimary: boolean;
   tracks: CameraTrack[];
+  seats?: SeatRecord[];
   students: StudentRecord[];
   zoomLevel: number;
   panOffset: { x: number; y: number };
-  selectedTrackId: string | null;
+  selectedTrackId?: string | null;
   highSuspicionThreshold: number;
-  videoSource?: CanvasImageSource | null;
+  videoSource?: HTMLVideoElement | HTMLImageElement | null;
   fitMode?: 'contain' | 'cover';
 }
 
 export function drawCameraFeed(
   ctx: CanvasRenderingContext2D,
-  options: RenderOptions,
-  now: number
-) {
-  const { 
-    width, 
-    height, 
-    cameraName, 
-    cameraId, 
-    tracks, 
-    students, 
-    zoomLevel, 
-    panOffset, 
-    selectedTrackId, 
-    highSuspicionThreshold, 
-    videoSource,
-    fitMode = 'contain'
+  options: DrawCameraFeedOptions,
+  now: number = Date.now()
+): void {
+  const {
+    width,
+    height,
+    cameraId,
+    tracks,
+    seats = [],
+    students,
+    zoomLevel = 1.0,
+    panOffset = { x: 0, y: 0 },
+    selectedTrackId = null,
+    highSuspicionThreshold = 65
   } = options;
 
-  ctx.save();
+  // Clear canvas buffer completely
   ctx.clearRect(0, 0, width, height);
 
-  // Apply Zoom and Pan transform
+  // Apply zoom and pan transformation (matching video player)
+  ctx.save();
   ctx.translate(panOffset.x, panOffset.y);
   ctx.scale(zoomLevel, zoomLevel);
 
   // -------------------------------------------------------------
-  // 1. Calculate Pristine Aspect-Ratio Auto-Framing (No Squeeze / Stretch)
+  // 1. Render Configured Seat Grid & Zones
   // -------------------------------------------------------------
-  let drawX = 0;
-  let drawY = 0;
-  let drawW = width;
-  let drawH = height;
-  let hasDrawnRealVideo = false;
+  for (const seat of seats) {
+    const region = seat.camera_regions?.[cameraId];
+    if (!region) continue;
 
-  if (videoSource) {
-    let srcW = 0;
-    let srcH = 0;
-    if (videoSource instanceof HTMLVideoElement && videoSource.videoWidth > 0) {
-      srcW = videoSource.videoWidth;
-      srcH = videoSource.videoHeight;
-    } else if (videoSource instanceof HTMLImageElement && videoSource.naturalWidth > 0) {
-      srcW = videoSource.naturalWidth;
-      srcH = videoSource.naturalHeight;
-    }
+    const sx = region.x * width;
+    const sy = region.y * height;
+    const sw = region.width * width;
+    const sh = region.height * height;
 
-    if (srcW > 0 && srcH > 0) {
-      const srcAspect = srcW / srcH;
-      const canvasAspect = width / height;
-
-      if (fitMode === 'cover') {
-        // Crop-to-fill mode
-        if (srcAspect > canvasAspect) {
-          drawH = height;
-          drawW = height * srcAspect;
-          drawX = (width - drawW) / 2;
-          drawY = 0;
-        } else {
-          drawW = width;
-          drawH = width / srcAspect;
-          drawX = 0;
-          drawY = (height - drawH) / 2;
-        }
-      } else {
-        // Auto-Fit (contain) - Best View, 100% natural aspect ratio, no stretching/squishing!
-        if (srcAspect > canvasAspect) {
-          drawW = width;
-          drawH = width / srcAspect;
-          drawX = 0;
-          drawY = (height - drawH) / 2;
-        } else {
-          drawH = height;
-          drawW = height * srcAspect;
-          drawX = (width - drawW) / 2;
-          drawY = 0;
-        }
-      }
-    }
-
-    if (videoSource instanceof HTMLVideoElement) {
-      if (videoSource.readyState >= 1 && videoSource.videoWidth > 0) {
-        try {
-          ctx.drawImage(videoSource, drawX, drawY, drawW, drawH);
-          hasDrawnRealVideo = true;
-        } catch {
-          hasDrawnRealVideo = false;
-        }
-      }
-    } else if (videoSource instanceof HTMLImageElement) {
-      if (videoSource.complete && videoSource.naturalWidth > 0) {
-        try {
-          ctx.drawImage(videoSource, drawX, drawY, drawW, drawH);
-          hasDrawnRealVideo = true;
-        } catch {
-          hasDrawnRealVideo = false;
-        }
-      }
-    }
-  }
-
-  if (!hasDrawnRealVideo && !videoSource) {
-    // Clean optical standby background when completely disconnected
-    const gradFloor = ctx.createLinearGradient(0, 0, 0, height);
-    gradFloor.addColorStop(0, '#090d16');
-    gradFloor.addColorStop(1, '#020617');
-    ctx.fillStyle = gradFloor;
-    ctx.fillRect(0, 0, width, height);
-
-    // Subtle optical center target
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.15)';
+    // Subtle seat bounding perimeter
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
     ctx.lineWidth = 1;
-    const centerX = width / 2;
-    const centerY = height / 2;
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 32, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(sx, sy, sw, sh);
+    ctx.setLineDash([]);
 
-    ctx.fillStyle = 'rgba(148, 163, 184, 0.7)';
-    ctx.font = '12px "JetBrains Mono", monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(`STREAM BUFFERING: ${cameraName.toUpperCase()}`, centerX, centerY + 54);
-    ctx.font = '10px "Plus Jakarta Sans", sans-serif';
-    ctx.fillStyle = 'rgba(100, 116, 139, 0.8)';
-    ctx.fillText('Establishing optical decoder feed...', centerX, centerY + 70);
-    ctx.textAlign = 'left';
+    // Seat label pill
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.65)';
+    ctx.fillRect(sx + 2, sy + 2, 60, 14);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 9px "JetBrains Mono", monospace';
+    const label = seat.seat_number || seat.seat_label || `S-${seat.id}`;
+    ctx.fillText(`SEAT ${label}`, sx + 6, sy + 12);
   }
 
-  // Viewport Frame Brackets (aligned with active video frame)
-  const vLeft = Math.max(0, drawX);
-  const vTop = Math.max(0, drawY);
-  const vRight = Math.min(width, drawX + drawW);
-  const vBottom = Math.min(height, drawY + drawH);
-  const bracketLen = 18;
-  const bracketPadding = 12;
-
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
-  ctx.lineWidth = 1.5;
-
-  // Top-Left Bracket
-  ctx.beginPath();
-  ctx.moveTo(vLeft + bracketPadding, vTop + bracketPadding + bracketLen);
-  ctx.lineTo(vLeft + bracketPadding, vTop + bracketPadding);
-  ctx.lineTo(vLeft + bracketPadding + bracketLen, vTop + bracketPadding);
-  ctx.stroke();
-
-  // Top-Right Bracket
-  ctx.beginPath();
-  ctx.moveTo(vRight - bracketPadding - bracketLen, vTop + bracketPadding);
-  ctx.lineTo(vRight - bracketPadding, vTop + bracketPadding);
-  ctx.lineTo(vRight - bracketPadding, vTop + bracketPadding + bracketLen);
-  ctx.stroke();
-
-  // Bottom-Left Bracket
-  ctx.beginPath();
-  ctx.moveTo(vLeft + bracketPadding, vBottom - bracketPadding - bracketLen);
-  ctx.lineTo(vLeft + bracketPadding, vBottom - bracketPadding);
-  ctx.lineTo(vLeft + bracketPadding + bracketLen, vBottom - bracketPadding);
-  ctx.stroke();
-
-  // Bottom-Right Bracket
-  ctx.beginPath();
-  ctx.moveTo(vRight - bracketPadding - bracketLen, vBottom - bracketPadding);
-  ctx.lineTo(vRight - bracketPadding, vBottom - bracketPadding);
-  ctx.lineTo(vRight - bracketPadding, vBottom - bracketPadding - bracketLen);
-  ctx.stroke();
-
   // -------------------------------------------------------------
-  // 2. Draw Live Computer Vision Overlays (Bounding Boxes & Telemetry)
+  // 2. Render Real-Time Person Tracks, Fixed IDs & Suspicion Scores
   // -------------------------------------------------------------
   for (const track of tracks) {
-    const px = drawX + track.bbox.x * drawW;
-    const py = drawY + track.bbox.y * drawH;
-    const pw = track.bbox.width * drawW;
-    const ph = track.bbox.height * drawH;
+    // Convert normalized bounding box to canvas pixels
+    const px = track.bbox.x * width;
+    const py = track.bbox.y * height;
+    const pw = track.bbox.width * width;
+    const ph = track.bbox.height * height;
 
-    const centerX = px + pw / 2;
-    const headRadius = Math.max(12, pw * 0.28);
-    const headCenterY = py + headRadius + 4;
+    const isSelected = track.track_id === selectedTrackId;
+    const score = Math.max(0, Math.min(100, Math.round(track.suspicion_score || 0)));
+    
+    // Status Classification:
+    // Warning: 35 <= score < highSuspicionThreshold (turns box and badges YELLOW)
+    // Critical: score >= highSuspicionThreshold (turns box and badges RED)
+    // Normal: score < 35 (turns box and badges GREEN/EMERALD)
+    const isCritical = score >= highSuspicionThreshold;
+    const isWarning = score >= 35 && !isCritical;
 
-    // Head orientation vector (visual gaze ray)
+    let borderColor = '#10b981'; // Normal: Emerald Green
+    let cornerColor = '#10b981';
+    let badgeBg = '#10b981';
+    let badgeTextColor = '#ffffff';
+    let statusLabel = 'NORMAL';
+
+    if (isCritical) {
+      borderColor = '#ef4444'; // Critical: Bright Red
+      cornerColor = '#ef4444';
+      badgeBg = '#ef4444';
+      badgeTextColor = '#ffffff';
+      statusLabel = 'CRITICAL ALERT';
+    } else if (isWarning) {
+      borderColor = '#eab308'; // Warning: High-Visibility Yellow
+      cornerColor = '#fbbf24';
+      badgeBg = '#eab308';
+      badgeTextColor = '#0f172a'; // High contrast black text on yellow
+      statusLabel = 'WARNING';
+    }
+
+    if (isSelected) {
+      borderColor = '#38bdf8';
+    }
+
+    // A. Motion history trajectory trail
+    if (track.history_trajectory && track.history_trajectory.length > 1) {
+      ctx.beginPath();
+      ctx.strokeStyle = isCritical ? 'rgba(239, 68, 68, 0.4)' : (isWarning ? 'rgba(234, 179, 8, 0.4)' : 'rgba(16, 185, 129, 0.3)');
+      ctx.lineWidth = 2;
+      for (let i = 0; i < track.history_trajectory.length; i++) {
+        const pt = track.history_trajectory[i];
+        const hx = pt.x * width;
+        const hy = pt.y * height;
+        if (i === 0) ctx.moveTo(hx, hy);
+        else ctx.lineTo(hx, hy);
+      }
+      ctx.stroke();
+    }
+
+    // B. Optical Head Gaze Direction Ray
     if (track.head_pose) {
-      const gazeLength = headRadius * 1.8;
-      let gazeAngle = Math.PI / 2; // downwards facing paper by default
+      const centerX = px + pw / 2;
+      const headCenterY = py + ph * 0.22;
+      const gazeLength = Math.min(pw * 0.7, 45);
+
+      let gazeAngle = Math.PI / 2; // Looking down / straight
       if (track.head_pose.direction === 'left') {
-        gazeAngle = Math.PI * 0.85;
+        gazeAngle = Math.PI * 0.92;
       } else if (track.head_pose.direction === 'right') {
-        gazeAngle = Math.PI * 0.15;
+        gazeAngle = Math.PI * 0.08;
       } else if (track.head_pose.direction === 'up') {
         gazeAngle = -Math.PI / 2;
       }
@@ -220,73 +164,60 @@ export function drawCameraFeed(
       const gazeEndX = centerX + Math.cos(gazeAngle) * gazeLength;
       const gazeEndY = headCenterY + Math.sin(gazeAngle) * gazeLength;
 
-      ctx.strokeStyle = track.head_pose.direction !== 'center' ? '#f59e0b' : 'rgba(56, 189, 248, 0.4)';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = track.head_pose.direction !== 'center' ? '#eab308' : 'rgba(56, 189, 248, 0.6)';
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.moveTo(centerX, headCenterY);
       ctx.lineTo(gazeEndX, gazeEndY);
       ctx.stroke();
 
-      // Small directional gaze arrow tip
+      // Directional gaze tip
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath();
-      ctx.arc(gazeEndX, gazeEndY, 3, 0, Math.PI * 2);
+      ctx.arc(gazeEndX, gazeEndY, 3.5, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Mobile Phone Object Overlay if detected
+    // C. Mobile Phone Detection Reticle Overlay
     if (track.phone_detected) {
       const phoneX = px + pw * 0.6;
       const phoneY = py + ph * 0.55;
-      const phoneW = pw * 0.22;
-      const phoneH = ph * 0.20;
+      const phoneW = pw * 0.24;
+      const phoneH = ph * 0.22;
 
       // Glow pulsation
       const pulse = (Math.sin(now / 180) + 1) / 2;
       ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + pulse * 0.4})`;
       ctx.fillRect(phoneX - 3, phoneY - 3, phoneW + 6, phoneH + 6);
 
-      // Phone screen
       ctx.fillStyle = '#0f172a';
       ctx.strokeStyle = '#ef4444';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.fillRect(phoneX, phoneY, phoneW, phoneH);
       ctx.strokeRect(phoneX, phoneY, phoneW, phoneH);
 
-      // Phone screen luminescence
       ctx.fillStyle = '#38bdf8';
       ctx.fillRect(phoneX + 2, phoneY + 2, phoneW - 4, phoneH - 4);
     }
 
-    const isSelected = track.track_id === selectedTrackId;
-    const isHighSuspicion = track.suspicion_score >= highSuspicionThreshold;
-    const isWarning = track.suspicion_score >= 35 && !isHighSuspicion;
-
-    // Color schema based on explainable suspicion score
-    let borderColor = '#06b6d4'; // Cyan default (normal monitoring)
-    let badgeBg = 'rgba(6, 182, 212, 0.9)';
-    if (isHighSuspicion) {
-      borderColor = '#ef4444'; // Red for high monitoring alert
-      badgeBg = 'rgba(239, 68, 68, 0.95)';
-    } else if (isWarning) {
-      borderColor = '#f59e0b'; // Amber for warning threshold
-      badgeBg = 'rgba(245, 158, 11, 0.95)';
-    }
-
-    if (isSelected) {
-      borderColor = '#38bdf8'; // Bright sky blue when user selects track
-    }
-
-    // High precision bounding box corners (military/pro surveillance styling)
+    // D. Main Bounding Box (Yellow for Warning, Red for Critical, Green for Normal)
     ctx.strokeStyle = borderColor;
-    ctx.lineWidth = isSelected ? 2.5 : 1.5;
-
-    // Main box
+    ctx.lineWidth = isSelected ? 3 : (isWarning || isCritical ? 2.5 : 1.8);
     ctx.strokeRect(px, py, pw, ph);
 
+    // Subtle box inner tint on warning / critical
+    if (isWarning) {
+      ctx.fillStyle = 'rgba(234, 179, 8, 0.08)';
+      ctx.fillRect(px, py, pw, ph);
+    } else if (isCritical) {
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.12)';
+      ctx.fillRect(px, py, pw, ph);
+    }
+
     // Accent corner brackets
-    const cornerLen = Math.min(14, pw * 0.2);
-    ctx.lineWidth = 3;
+    const cornerLen = Math.min(16, pw * 0.22);
+    ctx.strokeStyle = cornerColor;
+    ctx.lineWidth = 3.5;
     ctx.beginPath();
     // Top-Left
     ctx.moveTo(px, py + cornerLen);
@@ -306,8 +237,8 @@ export function drawCameraFeed(
     ctx.lineTo(px + pw, py + ph - cornerLen);
     ctx.stroke();
 
-    // Center crosshair
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    // Center targeting crosshair
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
     ctx.lineWidth = 1;
     const cx = px + pw / 2;
     const cy = py + ph / 2;
@@ -319,83 +250,105 @@ export function drawCameraFeed(
     ctx.stroke();
 
     // -------------------------------------------------------------
-    // Header Tag: Scoped Track ID (CAM1-S001) & Associated Student
+    // E. Prominent Header Tag: Fixed ID + Suspicion Score + Status
+    // (e.g. "CAM1-S001 • SCORE: 48 [WARNING]")
+    // -------------------------------------------------------------
+    const tagText = `${track.track_id} • SCORE: ${score} [${statusLabel}]`;
+    ctx.font = 'bold 11px "JetBrains Mono", monospace';
+    const tagWidth = ctx.measureText(tagText).width + 16;
+    const tagHeight = 22;
+
+    // Header Y position (clamped so it is never clipped by top canvas border)
+    const headerY = py >= tagHeight + 4 ? py - tagHeight - 2 : py + 2;
+
+    // Draw header background badge
+    ctx.fillStyle = badgeBg;
+    ctx.fillRect(px, headerY, tagWidth, tagHeight);
+
+    // Border around header badge for high visual crispness
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(px, headerY, tagWidth, tagHeight);
+
+    // Header badge text
+    ctx.fillStyle = badgeTextColor;
+    ctx.fillText(tagText, px + 8, headerY + 15);
+
+    // -------------------------------------------------------------
+    // F. Attached Student Identity Pill
+    // (e.g. "Alex Johnson • STU-2026-001")
     // -------------------------------------------------------------
     const student = students.find(s => s.id === track.associated_student_id);
-    const tagText = `${track.track_id} (${Math.round(track.confidence * 100)}%)`;
-    
-    ctx.font = 'bold 11px "JetBrains Mono", monospace';
-    const tagWidth = ctx.measureText(tagText).width + 12;
-    const tagHeight = 18;
-
-    // Header badge background
-    ctx.fillStyle = badgeBg;
-    ctx.fillRect(px, py - tagHeight, tagWidth, tagHeight);
-
-    // Header text
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(tagText, px + 6, py - 6);
-
-    // Student Identification Tag below header
     if (student) {
       const studentLabel = `${student.name} • ${student.student_id_number}`;
-      ctx.font = '500 10px "Plus Jakarta Sans", sans-serif';
-      const labelW = ctx.measureText(studentLabel).width + 12;
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-      ctx.fillRect(px + tagWidth + 2, py - tagHeight, labelW, tagHeight);
+      ctx.font = '600 10px "Plus Jakarta Sans", sans-serif';
+      const labelW = ctx.measureText(studentLabel).width + 14;
+      const studentTagX = px + tagWidth + 4;
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.fillRect(studentTagX, headerY, labelW, tagHeight);
+
       ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(px + tagWidth + 2, py - tagHeight, labelW, tagHeight);
-      ctx.fillStyle = '#e2e8f0';
-      ctx.fillText(studentLabel, px + tagWidth + 8, py - 6);
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(studentTagX, headerY, labelW, tagHeight);
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(studentLabel, studentTagX + 7, headerY + 15);
     }
 
     // -------------------------------------------------------------
-    // Footer Telemetry: Suspicion Score & Behavior Status Pills
+    // G. Bottom Telemetry Pills: Behavior Reasons & Alerts
     // -------------------------------------------------------------
-    const scoreText = `Score: ${track.suspicion_score}`;
-    ctx.font = '600 10px "JetBrains Mono", monospace';
-    const scoreW = ctx.measureText(scoreText).width + 10;
-    const footerY = py + ph + 16;
+    const footerY = Math.min(height - 12, py + ph + 20);
+    let badgeOffset = 0;
 
-    // Score badge
-    ctx.fillStyle = isHighSuspicion ? 'rgba(239, 68, 68, 0.9)' : (isWarning ? 'rgba(245, 158, 11, 0.9)' : 'rgba(15, 23, 42, 0.85)');
-    ctx.fillRect(px, footerY - 12, scoreW, 16);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(scoreText, px + 5, footerY);
+    // Main Score Telemetry Pill
+    const scorePillText = `Score: ${score}/100`;
+    ctx.font = 'bold 10px "JetBrains Mono", monospace';
+    const scorePillW = ctx.measureText(scorePillText).width + 12;
 
-    // Behavior badges (Gaze / Phone / Face)
-    let badgeOffset = scoreW + 4;
-    if (track.head_pose.direction !== 'center') {
+    ctx.fillStyle = isCritical ? 'rgba(239, 68, 68, 0.95)' : (isWarning ? 'rgba(234, 179, 8, 0.95)' : 'rgba(15, 23, 42, 0.88)');
+    ctx.fillRect(px + badgeOffset, footerY - 14, scorePillW, 18);
+    ctx.fillStyle = isWarning ? '#0f172a' : '#ffffff';
+    ctx.fillText(scorePillText, px + badgeOffset + 6, footerY - 1);
+    badgeOffset += scorePillW + 4;
+
+    // Gaze Direction Alert
+    if (track.head_pose && track.head_pose.direction !== 'center') {
       const dirText = `LOOKING ${track.head_pose.direction.toUpperCase()}`;
-      ctx.font = '600 9px "JetBrains Mono", monospace';
-      const dirW = ctx.measureText(dirText).width + 8;
-      ctx.fillStyle = 'rgba(245, 158, 11, 0.9)';
-      ctx.fillRect(px + badgeOffset, footerY - 12, dirW, 16);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(dirText, px + badgeOffset + 4, footerY);
+      ctx.font = 'bold 9px "JetBrains Mono", monospace';
+      const dirW = ctx.measureText(dirText).width + 10;
+
+      ctx.fillStyle = 'rgba(234, 179, 8, 0.95)';
+      ctx.fillRect(px + badgeOffset, footerY - 14, dirW, 18);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillText(dirText, px + badgeOffset + 5, footerY - 1);
       badgeOffset += dirW + 4;
     }
 
+    // Phone Detected Alert
     if (track.phone_detected) {
       const phoneText = 'PHONE DETECTED';
       ctx.font = 'bold 9px "JetBrains Mono", monospace';
-      const phoneW = ctx.measureText(phoneText).width + 8;
+      const phoneW = ctx.measureText(phoneText).width + 10;
+
       ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
-      ctx.fillRect(px + badgeOffset, footerY - 12, phoneW, 16);
+      ctx.fillRect(px + badgeOffset, footerY - 14, phoneW, 18);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(phoneText, px + badgeOffset + 4, footerY);
+      ctx.fillText(phoneText, px + badgeOffset + 5, footerY - 1);
       badgeOffset += phoneW + 4;
     }
 
+    // Face Occlusion Alert
     if (!track.face_visible) {
       const faceText = 'FACE OCCLUDED';
-      ctx.font = '600 9px "JetBrains Mono", monospace';
-      const faceW = ctx.measureText(faceText).width + 8;
-      ctx.fillStyle = 'rgba(234, 88, 12, 0.9)';
-      ctx.fillRect(px + badgeOffset, footerY - 12, faceW, 16);
+      ctx.font = 'bold 9px "JetBrains Mono", monospace';
+      const faceW = ctx.measureText(faceText).width + 10;
+
+      ctx.fillStyle = 'rgba(234, 88, 12, 0.95)';
+      ctx.fillRect(px + badgeOffset, footerY - 14, faceW, 18);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(faceText, px + badgeOffset + 4, footerY);
+      ctx.fillText(faceText, px + badgeOffset + 5, footerY - 1);
       badgeOffset += faceW + 4;
     }
 
@@ -404,17 +357,17 @@ export function drawCameraFeed(
       const myObs = student.active_observations.find(o => o.camera_id === cameraId);
       const isBest = myObs ? myObs.is_best_view : false;
       const bestObs = student.active_observations.find(o => o.is_best_view);
-      
-      const bestText = isBest 
-        ? `★ BEST VIEW (${Math.round(myObs?.quality || 90)}%)` 
+
+      const bestText = isBest
+        ? `★ BEST VIEW (${Math.round(myObs?.quality || 92)}%)`
         : `BEST: ${bestObs ? bestObs.camera_id.toUpperCase().replace('-', ' ') : 'OTHER'}`;
-      
+
       ctx.font = 'bold 9px "JetBrains Mono", monospace';
-      const bestW = ctx.measureText(bestText).width + 8;
-      ctx.fillStyle = isBest ? 'rgba(16, 185, 129, 0.95)' : 'rgba(51, 65, 85, 0.85)';
-      ctx.fillRect(px + badgeOffset, footerY - 12, bestW, 16);
+      const bestW = ctx.measureText(bestText).width + 10;
+      ctx.fillStyle = isBest ? 'rgba(16, 185, 129, 0.95)' : 'rgba(51, 65, 85, 0.88)';
+      ctx.fillRect(px + badgeOffset, footerY - 14, bestW, 18);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(bestText, px + badgeOffset + 4, footerY);
+      ctx.fillText(bestText, px + badgeOffset + 5, footerY - 1);
     }
   }
 
@@ -422,17 +375,46 @@ export function drawCameraFeed(
   ctx.restore();
 
   // -------------------------------------------------------------
-  // 4. Clean Viewport (No blocking overlays on top of video)
+  // 3. Zoom Factor Overlay Indicator
   // -------------------------------------------------------------
-
-  // Zoom factor indicator if zoomed
   if (zoomLevel > 1.0) {
     const zoomText = `ZOOM ${zoomLevel.toFixed(1)}X (DRAG TO PAN)`;
-    ctx.fillStyle = 'rgba(234, 88, 12, 0.9)';
+    ctx.fillStyle = 'rgba(234, 179, 8, 0.95)';
     ctx.font = 'bold 10px "JetBrains Mono", monospace';
-    const zw = ctx.measureText(zoomText).width + 14;
+    const zw = ctx.measureText(zoomText).width + 16;
     ctx.fillRect(14, height - 34, zw, 22);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(zoomText, 21, height - 19);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(zoomText, 22, height - 19);
   }
+}
+
+export function renderTelemetryCanvas(
+  canvas: HTMLCanvasElement,
+  options: {
+    tracks: CameraTrack[];
+    seats: SeatRecord[];
+    students: StudentRecord[];
+    cameraId: string;
+    selectedTrackId?: string | null;
+    highSuspicionThreshold?: number;
+    zoomLevel?: number;
+    panOffset?: { x: number; y: number };
+  }
+): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  drawCameraFeed(ctx, {
+    width: canvas.width,
+    height: canvas.height,
+    cameraName: options.cameraId,
+    cameraId: options.cameraId,
+    isPrimary: true,
+    tracks: options.tracks,
+    seats: options.seats,
+    students: options.students,
+    zoomLevel: options.zoomLevel || 1.0,
+    panOffset: options.panOffset || { x: 0, y: 0 },
+    selectedTrackId: options.selectedTrackId,
+    highSuspicionThreshold: options.highSuspicionThreshold || 65
+  });
 }

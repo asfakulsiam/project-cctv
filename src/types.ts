@@ -90,6 +90,7 @@ export interface ClassroomRecord {
   id: string;
   name: string;
   code: string;
+  building?: string;
   capacity: number;
   camera_ids: string[];
 }
@@ -98,6 +99,7 @@ export interface SeatRecord {
   id: string;
   classroom_id: string;
   seat_label: string;
+  seat_number?: string;
   grid_row: number;
   grid_col: number;
   // Normalized bounding polygon / box coordinates mapped to specific cameras

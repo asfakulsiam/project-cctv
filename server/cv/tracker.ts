@@ -1,21 +1,35 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Per-Camera Independent Object Tracker
+ * Production Multi-Object Person Tracker (SORT-Enhanced with Velocity Prediction & Multi-Frame Confirmation)
  * 
- * CRITICAL ARCHITECTURAL DIRECTIVE:
- * Every live camera MUST have its own independent processing/tracking context.
- * Global trackers are strictly forbidden. Track IDs are scoped with camera prefixes
- * (e.g., CAM1-S001, CAM2-S001) to prevent ID collision across multiple cameras.
+ * ARCHITECTURAL DIRECTIVES:
+ * 1. Independent Per-Camera Context: All track IDs are strictly camera-scoped (e.g., CAM1-S001).
+ * 2. Prediction + Combined Association Metric: Uses velocity estimation + IoU (>= 0.15) + center distance.
+ * 3. Robust State Machine: Candidate (3-frame confirmation gate) -> Active -> Lost (predicted) -> Terminated.
+ * 4. Zero False-Positive Cycling: 1-frame detection noise never creates permanent IDs or fragments tracks.
+ * 5. Stationary Persistence: Tracks never vanish or cycle simply because a student remains still.
  */
 
 import { BoundingBox, CameraTrack, HeadPoseData } from '../../src/types.js';
 
-interface InternalTrackState {
+export type TrackStatus = 'candidate' | 'active' | 'lost' | 'terminated';
+
+export interface InternalTrackState {
   track_id: string;
   camera_id: string;
+  status: TrackStatus;
   bbox: BoundingBox;
   target_bbox: BoundingBox;
   confidence: number;
+  
+  // Kinematics & Prediction
+  velocity_x: number; // Normalized coordinate delta per second
+  velocity_y: number;
+  last_update_time: number;
+  hits: number;
+  missed_frames: number;
+
+  // Observation attributes
   head_pose: HeadPoseData;
   face_visible: boolean;
   face_confidence: number;
@@ -28,7 +42,6 @@ interface InternalTrackState {
   suspicion_score: number;
   last_seen_timestamp: number;
   created_timestamp: number;
-  missed_frames: number;
   history: Array<{ x: number; y: number; t: number }>;
 }
 
@@ -37,26 +50,38 @@ export class CameraTracker {
   private readonly camera_prefix: string;
   private next_track_number = 1;
   private active_tracks: Map<string, InternalTrackState> = new Map();
-  private max_missed_frames = 15; // Track dropped after 15 consecutive missing frames
-  private iou_threshold = 0.25;
+  private candidate_tracks: Map<string, InternalTrackState> = new Map();
+  private next_candidate_number = 1;
 
-  /**
-   * Initializes an independent tracker context for a single camera stream.
-   * @param camera_id Unique camera identifier (e.g., "cam-1")
-   */
+  // Configuration thresholds
+  private readonly confirmation_hits_required = 3; // Must be detected in 3 consecutive frames to confirm
+  private readonly max_missed_frames = 18;         // Maintain lost track with prediction for up to ~1.2s
+  private readonly iou_threshold = 0.15;           // Relaxed IoU when combined with center distance
+
   constructor(camera_id: string) {
     this.camera_id = camera_id;
-    // Derive clean prefix: "cam-1" -> "CAM1"
+    // Derive clean uppercase camera prefix: "cam-1" -> "CAM1"
     this.camera_prefix = camera_id.toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
   /**
-   * Generate a strictly scoped, camera-safe tracking identifier.
+   * Generate permanent camera-scoped tracking identifier upon track confirmation.
    * Example: CAM1-S001, CAM1-S002
    */
   private generateTrackId(): string {
     const numStr = String(this.next_track_number++).padStart(3, '0');
     return `${this.camera_prefix}-S${numStr}`;
+  }
+
+  /**
+   * Calculate center-to-center Euclidean distance between two bounding boxes.
+   */
+  private computeCenterDistance(b1: BoundingBox, b2: BoundingBox): number {
+    const ax = b1.x + b1.width / 2;
+    const ay = b1.y + b1.height / 2;
+    const bx = b2.x + b2.width / 2;
+    const by = b2.y + b2.height / 2;
+    return Math.hypot(ax - bx, ay - by);
   }
 
   /**
@@ -78,8 +103,30 @@ export class CameraTracker {
   }
 
   /**
-   * Ingest raw detections for the current frame and update the camera's active track pool.
-   * Applies smoothing, track association, velocity estimation, and track termination.
+   * Predict bounding box location at timestamp based on velocity estimation.
+   */
+  private predictBoundingBox(track: InternalTrackState, dtSec: number): BoundingBox {
+    const clampedDt = Math.min(0.5, Math.max(0, dtSec));
+    const predX = Math.max(0, Math.min(1 - track.bbox.width, track.bbox.x + track.velocity_x * clampedDt));
+    const predY = Math.max(0, Math.min(1 - track.bbox.height, track.bbox.y + track.velocity_y * clampedDt));
+    return {
+      x: predX,
+      y: predY,
+      width: track.bbox.width,
+      height: track.bbox.height
+    };
+  }
+
+  /**
+   * Compute maximum allowable association distance scaled to bounding box diagonal.
+   */
+  private maxAssociationDistance(bbox: BoundingBox): number {
+    const diag = Math.hypot(bbox.width, bbox.height);
+    return Math.max(0.18, Math.min(0.45, diag * 0.75));
+  }
+
+  /**
+   * Ingest raw detections for the current frame, execute state machine updates, and output active tracks.
    */
   public updateDetections(
     rawDetections: Array<{
@@ -95,45 +142,67 @@ export class CameraTracker {
     }>,
     now: number = Date.now()
   ): CameraTrack[] {
-    const matchedTrackIds = new Set<string>();
-    const unmatchedDetections: typeof rawDetections = [];
+    const matchedConfirmedIds = new Set<string>();
+    const matchedCandidateIds = new Set<string>();
+    const unmatchedDetections: Array<(typeof rawDetections)[0]> = [];
 
-    // Step 1: Greedy IoU matching against existing tracks
+    // -------------------------------------------------------------
+    // STEP 1: Associate detections with confirmed ACTIVE & LOST tracks
+    // -------------------------------------------------------------
     for (const det of rawDetections) {
       let bestMatchId: string | null = null;
-      let highestIoU = this.iou_threshold;
+      let highestScore = 0;
 
       for (const [trackId, track] of this.active_tracks.entries()) {
-        if (matchedTrackIds.has(trackId)) continue;
-        const iou = this.computeIoU(track.bbox, det.bbox);
-        if (iou > highestIoU) {
-          highestIoU = iou;
-          bestMatchId = trackId;
+        if (matchedConfirmedIds.has(trackId)) continue;
+
+        const dtSec = (now - track.last_update_time) / 1000;
+        const predictedBox = this.predictBoundingBox(track, dtSec);
+
+        const iou = this.computeIoU(predictedBox, det.bbox);
+        const dist = this.computeCenterDistance(predictedBox, det.bbox);
+        const maxDist = this.maxAssociationDistance(predictedBox);
+
+        // Association criteria: High IoU OR close proximity within bounding box diagonal
+        if (iou >= this.iou_threshold || dist <= maxDist) {
+          // Combined affinity score (IoU weighted + inverted normalized distance)
+          const affinity = iou * 0.6 + Math.max(0, 1 - dist / maxDist) * 0.4;
+          if (affinity > highestScore) {
+            highestScore = affinity;
+            bestMatchId = trackId;
+          }
         }
       }
 
       if (bestMatchId) {
-        matchedTrackIds.add(bestMatchId);
+        matchedConfirmedIds.add(bestMatchId);
         const track = this.active_tracks.get(bestMatchId)!;
 
-        // Exponential moving average for bounding box smoothing
-        const alpha = 0.35;
-        const smoothedBbox: BoundingBox = {
-          x: track.bbox.x * (1 - alpha) + det.bbox.x * alpha,
-          y: track.bbox.y * (1 - alpha) + det.bbox.y * alpha,
-          width: track.bbox.width * (1 - alpha) + det.bbox.width * alpha,
-          height: track.bbox.height * (1 - alpha) + det.bbox.height * alpha
+        // Kinematics & Velocity Update (Smoothed EMA)
+        const dtSec = Math.max(0.01, (now - track.last_update_time) / 1000);
+        const dx = det.bbox.x - track.bbox.x;
+        const dy = det.bbox.y - track.bbox.y;
+        const instVx = dx / dtSec;
+        const instVy = dy / dtSec;
+
+        const velAlpha = 0.25;
+        track.velocity_x = track.velocity_x * (1 - velAlpha) + instVx * velAlpha;
+        track.velocity_y = track.velocity_y * (1 - velAlpha) + instVy * velAlpha;
+
+        // Bounding Box Smoothing
+        const posAlpha = 0.35;
+        track.bbox = {
+          x: track.bbox.x * (1 - posAlpha) + det.bbox.x * posAlpha,
+          y: track.bbox.y * (1 - posAlpha) + det.bbox.y * posAlpha,
+          width: track.bbox.width * (1 - posAlpha) + det.bbox.width * posAlpha,
+          height: track.bbox.height * (1 - posAlpha) + det.bbox.height * posAlpha
         };
 
-        // Movement velocity delta
-        const dx = smoothedBbox.x - track.bbox.x;
-        const dy = smoothedBbox.y - track.bbox.y;
-        const displacement = Math.sqrt(dx * dx + dy * dy);
-        const movement_magnitude = Math.min(100, Math.round(displacement * 600));
-        const is_moving = movement_magnitude > 4;
+        // Displacement & Movement Magnitude (0 when stationary)
+        const displacement = Math.hypot(dx, dy);
+        const movement_magnitude = Math.min(100, Math.round(displacement * 500));
+        const is_moving = movement_magnitude > 6;
 
-        // Update track state
-        track.bbox = smoothedBbox;
         track.target_bbox = det.bbox;
         track.confidence = det.confidence;
         track.head_pose = det.head_pose || track.head_pose;
@@ -145,26 +214,89 @@ export class CameraTracker {
         track.is_moving = is_moving;
         if (det.seat_id) track.seat_id = det.seat_id;
         if (det.associated_student_id) track.associated_student_id = det.associated_student_id;
-        track.last_seen_timestamp = now;
+        
+        // Status & Lifecycle
+        track.status = 'active';
+        track.hits++;
         track.missed_frames = 0;
+        track.last_seen_timestamp = now;
+        track.last_update_time = now;
 
-        // Trajectory record
-        track.history.push({ x: smoothedBbox.x + smoothedBbox.width / 2, y: smoothedBbox.y + smoothedBbox.height / 2, t: now });
-        if (track.history.length > 20) track.history.shift();
+        // Trajectory History
+        track.history.push({
+          x: track.bbox.x + track.bbox.width / 2,
+          y: track.bbox.y + track.bbox.height / 2,
+          t: now
+        });
+        if (track.history.length > 25) track.history.shift();
       } else {
         unmatchedDetections.push(det);
       }
     }
 
-    // Step 2: Initialize new tracks for unmatched detections
+    // -------------------------------------------------------------
+    // STEP 2: Match remaining detections against CANDIDATE tracks
+    // -------------------------------------------------------------
+    const stillUnmatched: Array<(typeof rawDetections)[0]> = [];
+
     for (const det of unmatchedDetections) {
-      const newTrackId = this.generateTrackId();
-      const newTrack: InternalTrackState = {
-        track_id: newTrackId,
+      let bestCandidateId: string | null = null;
+      let highestCandScore = 0;
+
+      for (const [candId, cand] of this.candidate_tracks.entries()) {
+        if (matchedCandidateIds.has(candId)) continue;
+        const iou = this.computeIoU(cand.bbox, det.bbox);
+        const dist = this.computeCenterDistance(cand.bbox, det.bbox);
+        const maxDist = this.maxAssociationDistance(cand.bbox);
+
+        if (iou >= this.iou_threshold || dist <= maxDist) {
+          const score = iou * 0.5 + Math.max(0, 1 - dist / maxDist) * 0.5;
+          if (score > highestCandScore) {
+            highestCandScore = score;
+            bestCandidateId = candId;
+          }
+        }
+      }
+
+      if (bestCandidateId) {
+        matchedCandidateIds.add(bestCandidateId);
+        const cand = this.candidate_tracks.get(bestCandidateId)!;
+        cand.hits++;
+        cand.missed_frames = 0;
+        cand.last_seen_timestamp = now;
+        cand.last_update_time = now;
+        cand.bbox = { ...det.bbox };
+
+        // Check if candidate reached confirmation threshold
+        if (cand.hits >= this.confirmation_hits_required) {
+          this.candidate_tracks.delete(bestCandidateId);
+          const permanentTrackId = this.generateTrackId();
+          cand.track_id = permanentTrackId;
+          cand.status = 'active';
+          this.active_tracks.set(permanentTrackId, cand);
+        }
+      } else {
+        stillUnmatched.push(det);
+      }
+    }
+
+    // -------------------------------------------------------------
+    // STEP 3: Spawn new candidate tracks for unassigned detections
+    // -------------------------------------------------------------
+    for (const det of stillUnmatched) {
+      const candId = `cand-${this.next_candidate_number++}`;
+      const newCand: InternalTrackState = {
+        track_id: candId,
         camera_id: this.camera_id,
+        status: 'candidate',
         bbox: { ...det.bbox },
         target_bbox: { ...det.bbox },
         confidence: det.confidence,
+        velocity_x: 0,
+        velocity_y: 0,
+        last_update_time: now,
+        hits: 1,
+        missed_frames: 0,
         head_pose: det.head_pose || { yaw: 0, pitch: 0, direction: 'center', confidence: 0.9 },
         face_visible: det.face_visible !== undefined ? det.face_visible : true,
         face_confidence: det.face_confidence ?? 0.88,
@@ -177,50 +309,76 @@ export class CameraTracker {
         suspicion_score: 5,
         last_seen_timestamp: now,
         created_timestamp: now,
-        missed_frames: 0,
         history: [{ x: det.bbox.x + det.bbox.width / 2, y: det.bbox.y + det.bbox.height / 2, t: now }]
       };
-      this.active_tracks.set(newTrackId, newTrack);
+      this.candidate_tracks.set(candId, newCand);
     }
 
-    // Step 3: Handle lost tracks & prune stale ones
+    // -------------------------------------------------------------
+    // STEP 4: Handle missed frames & prune candidate / active tracks
+    // -------------------------------------------------------------
+    // Prune unmatched candidates immediately (prevents 1-frame false-positives)
+    for (const [candId, cand] of this.candidate_tracks.entries()) {
+      if (!matchedCandidateIds.has(candId)) {
+        cand.missed_frames++;
+        if (cand.missed_frames > 2) {
+          this.candidate_tracks.delete(candId);
+        }
+      }
+    }
+
+    // Advance lost active tracks with predicted position or terminate
     for (const [trackId, track] of this.active_tracks.entries()) {
-      if (!matchedTrackIds.has(trackId)) {
+      if (!matchedConfirmedIds.has(trackId)) {
         track.missed_frames++;
+        track.status = 'lost';
+        track.movement_magnitude = 0;
+        track.is_moving = false;
+
+        // Apply linear kinematic prediction during temporary occlusion
+        const dtSec = Math.max(0.01, (now - track.last_update_time) / 1000);
+        track.bbox = this.predictBoundingBox(track, dtSec);
+        track.last_update_time = now;
+
         if (track.missed_frames > this.max_missed_frames) {
+          track.status = 'terminated';
           this.active_tracks.delete(trackId);
         }
       }
     }
 
-    // Convert internal states to public CameraTrack interface
-    return Array.from(this.active_tracks.values()).map(t => ({
-      track_id: t.track_id,
-      camera_id: t.camera_id,
-      bbox: { ...t.bbox },
-      confidence: t.confidence,
-      head_pose: { ...t.head_pose },
-      face_visible: t.face_visible,
-      face_confidence: t.face_confidence,
-      phone_detected: t.phone_detected,
-      phone_confidence: t.phone_confidence,
-      movement_magnitude: t.movement_magnitude,
-      is_moving: t.is_moving,
-      seat_id: t.seat_id,
-      associated_student_id: t.associated_student_id,
-      suspicion_score: t.suspicion_score,
-      last_seen_timestamp: t.last_seen_timestamp,
-      created_timestamp: t.created_timestamp,
-      history_trajectory: [...t.history]
-    }));
+    // Return confirmed active tracks (including recently lost tracks under prediction window)
+    return Array.from(this.active_tracks.values())
+      .filter(t => t.status === 'active' || (t.status === 'lost' && t.missed_frames <= 6))
+      .map(t => ({
+        track_id: t.track_id,
+        camera_id: t.camera_id,
+        bbox: { ...t.bbox },
+        confidence: t.confidence,
+        head_pose: { ...t.head_pose },
+        face_visible: t.face_visible,
+        face_confidence: t.face_confidence,
+        phone_detected: t.phone_detected,
+        phone_confidence: t.phone_confidence,
+        movement_magnitude: t.movement_magnitude,
+        is_moving: t.is_moving,
+        seat_id: t.seat_id,
+        associated_student_id: t.associated_student_id,
+        suspicion_score: t.suspicion_score,
+        last_seen_timestamp: t.last_seen_timestamp,
+        created_timestamp: t.created_timestamp,
+        history_trajectory: [...t.history]
+      }));
   }
 
   /**
-   * Reset tracker context (e.g., when camera disconnects or restarts).
+   * Reset tracker context (e.g. camera stream change or reset).
    */
   public reset(): void {
     this.active_tracks.clear();
+    this.candidate_tracks.clear();
     this.next_track_number = 1;
+    this.next_candidate_number = 1;
   }
 
   /**

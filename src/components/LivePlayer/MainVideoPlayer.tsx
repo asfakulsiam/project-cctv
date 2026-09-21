@@ -2,12 +2,14 @@
  * Smart Classroom Exam Monitoring System
  * Main Video Player (Primary Camera & Focus Viewer)
  * 
- * CORE REQUIREMENT:
- * - Camera 1 must be the PRIMARY CAMERA and occupies the main large player area.
- * - Primary camera video must be clearly visible, responsive, resizable, zoomable,
+ * CORE REQUIREMENTS:
+ * - Camera 1 is the PRIMARY CAMERA and occupies the main large player area.
+ * - Primary camera video is clearly visible, responsive, resizable, zoomable,
  *   and optimized for visual inspection.
- * - Live bounding boxes with camera-safe unique IDs (e.g. CAM1-S001).
- * - Clicking any detected person allows inspecting the student's cross-camera observations.
+ * - Live bounding boxes with fixed individual IDs (e.g. CAM1-S001) and suspicion scores (0 - 100).
+ * - WARNING turns bounding boxes and badges YELLOW (#eab308 / #fbbf24).
+ * - CRITICAL ALERT turns bounding boxes and badges RED (#ef4444).
+ * - UI Fallback displayed whenever a camera stream is offline or fails to decode.
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
@@ -37,7 +39,9 @@ import {
   Video,
   Camera,
   Scan,
-  Sun
+  ExternalLink,
+  Layers,
+  Settings
 } from 'lucide-react';
 
 interface MainVideoPlayerProps {
@@ -61,7 +65,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   } = useMonitoring();
 
   const [isDrivePreviewMode, setIsDrivePreviewMode] = useState<boolean>(false);
-
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -155,7 +158,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         setCanvasDimensions({ width, height });
       }
     });
-
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
@@ -172,6 +174,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
       label: resolution.label,
       resolution: `${focusedCamera.resolution?.width || 1920}x${focusedCamera.resolution?.height || 1080}`
     });
+
     setStreamStatus('connecting');
     setErrorMessage(null);
 
@@ -240,7 +243,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         mjpegEl.onload = () => setStreamStatus('playing');
         mjpegEl.onerror = () => {
           setStreamStatus('error');
-          setErrorMessage('Failed to connect to IP webcam MJPEG stream. Ensure stream endpoint is online.');
+          setErrorMessage('Failed to connect to IP webcam MJPEG stream. Ensure camera server is broadcasting.');
         };
       }
     } else if (resolution.kind === 'gdrive' || resolution.kind === 'video') {
@@ -253,8 +256,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         videoEl.playsInline = true;
         videoEl.crossOrigin = 'anonymous';
         videoEl.src = resolution.streamUrl;
-
-        let hasAttemptedFallback = false;
 
         const attemptPlay = () => {
           videoEl.play().then(() => {
@@ -291,25 +292,21 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
 
         const handleError = () => {
           console.warn('[MainVideoPlayer] Stream decode issue on URL:', videoEl.src);
-          if (!hasAttemptedFallback && videoEl.src && !videoEl.src.includes('/api/video/sample')) {
-            hasAttemptedFallback = true;
-            console.info('[MainVideoPlayer] Auto-switching to resilient surveillance CCTV feed.');
-            videoEl.src = '/api/video/sample';
-            videoEl.load();
-            attemptPlay();
-            return;
-          }
           setStreamStatus('error');
-          setErrorMessage('Could not decode video stream. Switch to Webcam or edit camera settings.');
+          if (resolution.kind === 'gdrive') {
+            setErrorMessage('Unable to stream video from Google Drive link directly. File sharing must be "Anyone with link can view", or Google download quota is restricted.');
+          } else {
+            setErrorMessage('Could not decode video stream. Stream may be offline or URL format is unsupported.');
+          }
         };
 
         videoEl.addEventListener('loadedmetadata', handleCanPlay);
         videoEl.addEventListener('canplay', handleCanPlay);
         videoEl.addEventListener('loadeddata', handleCanPlay);
         videoEl.addEventListener('error', handleError);
+
         videoEl.load();
 
-        // If media was already cached/buffered
         if (videoEl.readyState >= 1) {
           handleCanPlay();
         }
@@ -344,7 +341,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   // Animation Loop for live canvas rendering with real video feed and real-time movement tracking
   useEffect(() => {
     let animationFrameId: number;
-
     const render = () => {
       const canvas = canvasRef.current;
       if (canvas && focusedCamera && focusedCamera.status === 'online') {
@@ -360,14 +356,16 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           if (now - lastDetectionTimeRef.current >= 95 && activeSource) {
             lastDetectionTimeRef.current = now;
             try {
-              const detectedTracks = detectorRef.current.processFrame(activeSource, focusedCamera.camera_id);
-              if (detectedTracks && detectedTracks.length > 0) {
-                liveTracksRef.current = detectedTracks;
-                // Throttled broadcast to global context & server to prevent React re-render thrashing
-                if (now - lastBroadcastTimeRef.current >= 750) {
-                  lastBroadcastTimeRef.current = now;
-                  broadcastDetectionsRef.current(focusedCamera.camera_id, detectedTracks);
-                }
+              const detectedTracks = detectorRef.current.processFrame(
+                activeSource, 
+                focusedCamera.camera_id,
+                studentsRef.current
+              );
+              liveTracksRef.current = detectedTracks || [];
+              // Throttled broadcast to global context & server
+              if (now - lastBroadcastTimeRef.current >= 600 && detectedTracks && detectedTracks.length > 0) {
+                lastBroadcastTimeRef.current = now;
+                broadcastDetectionsRef.current(focusedCamera.camera_id, detectedTracks);
               }
             } catch {
               // ignore frame read exceptions
@@ -448,156 +446,113 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   };
 
   // Zoom Controls
-  const handleZoomIn = () => setZoomLevel(prev => Math.min(3.0, Math.round((prev + 0.25) * 100) / 100));
-  const handleZoomOut = () => {
-    setZoomLevel(prev => {
-      const next = Math.max(1.0, Math.round((prev - 0.25) * 100) / 100);
-      if (next === 1.0) setPanOffset({ x: 0, y: 0 });
-      return next;
-    });
-  };
+  const handleZoomIn = () => setZoomLevel(prev => Math.min(3.0, Number((prev + 0.25).toFixed(2))));
+  const handleZoomOut = () => setZoomLevel(prev => Math.max(1.0, Number((prev - 0.25).toFixed(2))));
   const handleResetView = () => {
     setZoomLevel(1.0);
     setPanOffset({ x: 0, y: 0 });
   };
 
-  // Pan dragging
+  // Pan interaction
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (zoomLevel <= 1.0) return;
-    setIsDragging(true);
-    setDragStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
+    if (zoomLevel > 1.0) {
+      setIsDragging(true);
+      setDragStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y });
+    }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging || zoomLevel <= 1.0) return;
-    setPanOffset({
-      x: e.clientX - dragStart.x,
-      y: e.clientY - dragStart.y
-    });
+    if (isDragging && zoomLevel > 1.0) {
+      setPanOffset({
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y
+      });
+    }
   };
 
   const handleMouseUp = () => setIsDragging(false);
 
-  // Click Canvas to Select / Inspect Track
+  // Fullscreen toggle
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen?.().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen?.().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  };
+
+  // Handle Canvas click to select a track
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
-    if (!canvas || zoomLevel > 1.2) return;
-
+    if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const clickX = (e.clientX - rect.left) / rect.width;
-    const clickY = (e.clientY - rect.top) / rect.height;
+    const clickX = ((e.clientX - rect.left - panOffset.x) / zoomLevel) / canvas.width;
+    const clickY = ((e.clientY - rect.top - panOffset.y) / zoomLevel) / canvas.height;
 
-    // Check if clicked inside any track's bounding box
-    const hitTrack = tracks.find(t => 
+    const effectiveTracks = liveTracksRef.current.length > 0 ? liveTracksRef.current : tracks;
+    const hitTrack = effectiveTracks.find(t => 
       clickX >= t.bbox.x &&
-      clickX <= (t.bbox.x + t.bbox.width) &&
+      clickX <= t.bbox.x + t.bbox.width &&
       clickY >= t.bbox.y &&
-      clickY <= (t.bbox.y + t.bbox.height)
+      clickY <= t.bbox.y + t.bbox.height
     );
 
     if (hitTrack) {
       setSelectedTrack(hitTrack);
       if (hitTrack.associated_student_id) {
-        const student = students.find(s => s.id === hitTrack.associated_student_id);
-        if (student) {
-          setSelectedStudent(student);
-          onInspectStudent?.(student.id);
-        }
+        const foundStudent = students.find(s => s.id === hitTrack.associated_student_id) || null;
+        setSelectedStudent(foundStudent);
       }
     } else {
       setSelectedTrack(null);
     }
   };
 
-  const toggleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(err => console.error(err));
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(err => console.error(err));
-      setIsFullscreen(false);
-    }
-  };
+  const isStreamDead = streamStatus === 'error' || streamStatus === 'offline' || (focusedCamera && focusedCamera.status === 'offline');
 
   return (
-    <div className="flex flex-col bg-[var(--system-secondary-bg)] rounded-[20px] border border-[var(--system-card-border)] shadow-[var(--system-shadow-md)] overflow-hidden transition-all">
-      {/* Player Header Bar - Apple HIG Frosted Glass */}
-      <div className="flex flex-wrap items-center justify-between px-4 py-2.5 bg-[var(--system-chrome-bg)] backdrop-blur-xl border-b border-[var(--system-chrome-border)] gap-2">
+    <div className="surface-card border border-[var(--system-chrome-border)] rounded-[14px] overflow-hidden flex flex-col shadow-sm">
+      {/* Header bar - Apple HIG Minimal Toolbar */}
+      <div className="px-4 py-2.5 bg-[var(--system-secondary-bg)] border-b border-[var(--system-separator)] flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center space-x-2.5">
-          <div className="flex items-center space-x-2">
-            <span className="font-semibold text-[14px] text-[var(--system-text-primary)]">
-              {focusedCamera ? focusedCamera.name : 'Surveillance Monitor'}
-            </span>
-            {focusedCamera && (
-              isPrimary ? (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[var(--system-accent-subtle)] text-[var(--system-accent)] border border-[var(--system-accent)]/20">
-                  PRIMARY
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-[var(--system-fill)] text-[var(--system-text-secondary)] border border-[var(--system-chrome-border)]">
-                  FOCUSED
-                </span>
-              )
-            )}
-            {isScreenAwake && (
-              <span
-                className="px-2 py-0.5 rounded-full text-[10px] font-mono-apple font-medium bg-[var(--system-accent-subtle)] text-[var(--system-accent)] border border-[var(--system-accent)]/20 flex items-center space-x-1"
-                title="Screen Wake Lock: Display will remain on while playing"
-              >
-                <Sun className="w-2.5 h-2.5" />
-                <span className="hidden xs:inline">Awake</span>
-              </span>
-            )}
+          <div className="flex items-center space-x-1.5">
+            <span className={`w-2.5 h-2.5 rounded-full ${
+              streamStatus === 'playing' ? 'bg-[var(--system-success)] animate-pulse' : 
+              streamStatus === 'connecting' ? 'bg-[var(--system-warning)] animate-spin' : 
+              'bg-[var(--system-destructive)]'
+            }`} />
+            <h3 className="font-semibold text-[13px] text-[var(--system-text-primary)]">
+              {focusedCamera?.name || 'Primary Surveillance Feed'}
+            </h3>
           </div>
-          {focusedCamera && streamInfo.label && (
-            <>
-              <span className="text-[var(--system-text-tertiary)] hidden sm:inline">•</span>
-              <span className="text-[12px] text-[var(--system-text-secondary)] font-mono-apple hidden sm:inline flex items-center space-x-1">
-                <Video className="w-3 h-3 text-[var(--system-accent)] inline" />
-                <span>{streamInfo.label}</span>
-              </span>
-            </>
+
+          {isPrimary && (
+            <span className="badge-apple bg-[var(--system-accent-subtle)] text-[var(--system-accent)] border border-[var(--system-accent)]/20 text-[10px] font-semibold">
+              PRIMARY
+            </span>
           )}
+
+          <span className="text-[11px] font-mono-apple text-[var(--system-text-secondary)] px-2 py-0.5 rounded-[6px] bg-[var(--system-fill)]">
+            {streamInfo.label || 'Direct Optical Feed'}
+          </span>
         </div>
 
-        {/* Quick Camera Switcher Pills */}
-        {cameras.length > 1 && (
-          <div className="flex items-center space-x-1 overflow-x-auto py-0.5">
-            {cameras.map(cam => {
-              const isSelected = cam.camera_id === focusedCameraId;
-              return (
-                <button
-                  key={cam.camera_id}
-                  onClick={() => setFocusedCameraId(cam.camera_id)}
-                  className={`px-2.5 py-1 rounded-[8px] text-[12px] font-medium flex items-center space-x-1 transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-[var(--system-accent)] text-white font-semibold shadow-sm'
-                      : 'bg-[var(--system-fill)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] border border-[var(--system-chrome-border)]'
-                  }`}
-                  title={`Switch to ${cam.name} feed`}
-                >
-                  <span>{cam.name}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Playback, Zoom & Inspection Controls */}
+        {/* Player Controls & Zoom Bar */}
         <div className="flex items-center space-x-1">
+          {/* Flip Front/Back Camera Lens for Webcams */}
           {focusedCamera && (focusedCamera.source_type === 'webcam' || (focusedCamera.source_url || '').startsWith('webcam:')) && (
             <button
               onClick={handleToggleCameraFacing}
-              className="px-2.5 py-1 rounded-[8px] bg-[var(--system-accent-subtle)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-accent)] border border-[var(--system-accent)]/20 text-[12px] font-medium flex items-center space-x-1.5 transition-colors cursor-pointer"
-              title="Flip between Phone Rear/Back Camera (CCTV) and Front Selfie Camera"
+              className="px-2.5 py-1 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center space-x-1.5 text-[12px] font-medium text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer border border-[var(--system-chrome-border)]"
+              title={`Switch camera lens (Current: ${cameraFacing === 'environment' ? 'Rear/Back Camera' : 'Front Selfie Camera'})`}
             >
-              <Camera className="w-3.5 h-3.5" />
-              <span>{cameraFacing === 'environment' ? 'Rear Cam' : 'Front Cam'}</span>
+              <Camera className="w-3.5 h-3.5 text-[var(--system-accent)]" />
+              <span>{cameraFacing === 'environment' ? 'Rear Lens' : 'Front Lens'}</span>
             </button>
           )}
 
-          {focusedCamera && focusedCamera.source_type !== 'webcam' && (
+          {focusedCamera && focusedCamera.source_type !== 'webcam' && !(focusedCamera.source_url || '').startsWith('webcam:') && (
             <>
               <button
                 onClick={handleTogglePlayPause}
@@ -634,11 +589,12 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               }`}
               title="Toggle between Direct CCTV Engine (AI Bounding Boxes) and Native Drive Player"
             >
+              <Layers className="w-3.5 h-3.5" />
               <span>{isDrivePreviewMode ? 'Native Drive' : 'CCTV Engine'}</span>
             </button>
           )}
 
-          {/* Auto Frame (Best View) Aspect Ratio Preservation Toggle */}
+          {/* Auto Frame Toggle */}
           <button
             onClick={() => setFitMode(prev => prev === 'contain' ? 'cover' : 'contain')}
             className={`px-2.5 py-1 rounded-[8px] text-[12px] font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
@@ -660,9 +616,11 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
+
           <span className="text-[11px] font-mono-apple px-2 py-0.5 rounded-[6px] bg-[var(--system-fill)] text-[var(--system-accent)] font-semibold">
             {zoomLevel.toFixed(1)}x
           </span>
+
           <button
             onClick={handleZoomIn}
             disabled={zoomLevel >= 3.0}
@@ -671,6 +629,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
+
           <button
             onClick={handleResetView}
             className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer"
@@ -678,7 +637,9 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           >
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
+
           <div className="h-4 w-px bg-[var(--system-separator)] mx-1" />
+
           <button
             onClick={toggleFullscreen}
             className="w-8 h-8 rounded-[8px] hover:bg-[var(--system-fill)] flex items-center justify-center text-[var(--system-text-secondary)] hover:text-[var(--system-text-primary)] transition-colors cursor-pointer"
@@ -698,9 +659,9 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
       >
-        {focusedCamera && focusedCamera.status === 'online' ? (
+        {focusedCamera && focusedCamera.status === 'online' && !isStreamDead ? (
           <>
-            {/* Native Google Drive Preview Player (if requested by user) */}
+            {/* Native Google Drive Preview Player */}
             {isDrivePreviewMode && streamResolution.previewUrl ? (
               <iframe
                 src={streamResolution.previewUrl}
@@ -711,7 +672,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               />
             ) : null}
 
-            {/* Direct Hardware Video Stream (Plays smoothly underneath the AI telemetry canvas) */}
+            {/* Direct Hardware Video Stream */}
             <video
               ref={videoRef}
               playsInline
@@ -751,7 +712,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               />
             )}
 
-            {/* Overlay if browser requires click to autoplay */}
+            {/* Autoplay blocked overlay */}
             {streamStatus === 'blocked' && (
               <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-6 text-center space-y-3">
                 <div className="w-12 h-12 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
@@ -772,58 +733,74 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
                 </button>
               </div>
             )}
-
-            {/* Overlay if video decode fails */}
-            {streamStatus === 'error' && (
-              <div className="absolute top-4 right-4 z-30 bg-slate-900/95 border border-amber-600/70 text-slate-200 text-xs p-3.5 rounded-xl shadow-2xl max-w-md flex items-start space-x-2.5 backdrop-blur-md">
-                <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                <div className="space-y-1.5 flex-1">
-                  <span className="font-bold block text-white">Stream Notice</span>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">
-                    {errorMessage || 'Unable to decode stream directly.'}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <button
-                      onClick={handleReloadStream}
-                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] font-semibold text-white flex items-center space-x-1 border border-slate-700"
-                    >
-                      <RefreshCw className="w-3 h-3" />
-                      <span>Retry</span>
-                    </button>
-                    {focusedCamera && (
-                      <>
-                        <button
-                          onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'stream', source_url: '/api/video/sample' })}
-                          className="px-2 py-1 rounded bg-cyan-900/80 hover:bg-cyan-800 border border-cyan-700 text-cyan-200 text-[10px] font-semibold"
-                        >
-                          📹 Switch to Resilient CCTV
-                        </button>
-                        <button
-                          onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'webcam', source_url: 'webcam:default' })}
-                          className="px-2 py-1 rounded bg-indigo-900/80 hover:bg-indigo-800 border border-indigo-700 text-indigo-200 text-[10px] font-semibold"
-                        >
-                          💻 Switch to Webcam
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
           </>
         ) : (
-          <div className="flex flex-col items-center justify-center p-12 text-center text-slate-500">
-            <div className="w-14 h-14 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mb-3">
-              <WifiOff className="w-7 h-7 text-rose-500" />
+          /* High-Craft UI Fallback for Camera Dead / Unable to Stream */
+          <div className="relative z-30 w-full h-full flex flex-col items-center justify-center p-8 text-center bg-slate-950 text-slate-300">
+            <div className="w-16 h-16 rounded-2xl bg-slate-900 border border-amber-500/30 flex items-center justify-center mb-4 shadow-xl shadow-amber-500/5">
+              <AlertCircle className="w-8 h-8 text-amber-400" />
             </div>
-            <h3 className="text-base font-semibold text-slate-300">
-              {focusedCamera ? `${focusedCamera.name} Offline` : 'No Cameras Registered'}
+
+            <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-amber-950/70 border border-amber-800/80 text-amber-300 text-[11px] font-mono mb-2">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              <span>STREAM UNAVAILABLE / ACCESS NOTICE</span>
+            </div>
+
+            <h3 className="text-lg font-bold text-white mb-1">
+              {focusedCamera ? focusedCamera.name : 'No Camera Feed Selected'}
             </h3>
-            <p className="text-xs text-slate-500 max-w-sm mt-1">
-              {focusedCamera 
-                ? 'Live camera feed disconnected. Hardware stream standby or network link offline.' 
-                : 'No camera streams configured in database. Register RTSP, Google Drive, or local camera endpoints in Admin.'}
+
+            <p className="text-xs text-slate-400 max-w-md mb-6 leading-relaxed">
+              {errorMessage || (
+                focusedCamera?.source_url?.includes('drive.google.com')
+                  ? 'The Google Drive stream is currently unavailable or direct downloading is restricted. Ensure sharing is set to "Anyone with the link can view", or use the native embed player.'
+                  : 'Unable to connect to camera endpoint. The hardware device may be offline or unreachable on the current network.'
+              )}
             </p>
+
+            {/* Actionable Fallback Controls */}
+            <div className="flex flex-wrap items-center justify-center gap-2 max-w-lg">
+              {streamResolution.previewUrl && (
+                <button
+                  onClick={() => {
+                    setIsDrivePreviewMode(true);
+                    setStreamStatus('playing');
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center space-x-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Use Google Drive Native Player</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleReloadStream}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-semibold text-xs flex items-center space-x-2 transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Retry Connection</span>
+              </button>
+
+              {focusedCamera && (
+                <>
+                  <button
+                    onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'webcam', source_url: 'webcam:default', status: 'online' })}
+                    className="px-3.5 py-2 rounded-xl bg-indigo-900/90 hover:bg-indigo-800 border border-indigo-700/80 text-indigo-200 font-semibold text-xs flex items-center space-x-1.5 transition-colors cursor-pointer"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Switch to Webcam</span>
+                  </button>
+
+                  <button
+                    onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'stream', source_url: '/api/video/sample', status: 'online' })}
+                    className="px-3.5 py-2 rounded-xl bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-800/80 text-cyan-300 font-semibold text-xs flex items-center space-x-1.5 transition-colors cursor-pointer"
+                  >
+                    <Video className="w-3.5 h-3.5" />
+                    <span>Load Demo CCTV Sample</span>
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         )}
 
@@ -861,7 +838,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
         </div>
 
         <div className="flex items-center space-x-3 font-mono-apple text-[11px]">
-          <span>Visible Tracks: <strong className="text-[var(--system-accent)]">{tracks.length}</strong></span>
+          <span>Visible Tracks: <strong className="text-[var(--system-accent)]">{tracks.length || liveTracksRef.current.length}</strong></span>
           <span className="text-[var(--system-text-quaternary)]">|</span>
           <span>
             Resolution: <strong className="text-[var(--system-text-primary)]">
@@ -870,8 +847,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           </span>
         </div>
       </div>
-
     </div>
   );
 }
-

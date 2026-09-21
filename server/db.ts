@@ -50,7 +50,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   app_logo_text: process.env.APP_LOGO_TEXT || 'AI Proctor',
   app_description: 'Academic Computer Vision & Multi-Camera Behavior Analysis Monitoring Platform',
   classroom_display_title: process.env.CLASSROOM_DISPLAY_TITLE || 'Exam Hall Live Monitoring',
-  default_primary_camera: '',
+  default_primary_camera: 'cam-1',
   suspicion_weights: {
     face_hidden: 20,
     phone_detected: 40,
@@ -71,6 +71,111 @@ const DEFAULT_SETTINGS: AppSettings = {
   processing_fps: 15,
   allow_public_classroom_display: true
 };
+
+const DEFAULT_CLASSROOMS: ClassroomRecord[] = [
+  {
+    id: 'hall-a',
+    name: 'Exam Hall Alpha (Room 301)',
+    code: 'ROOM-301',
+    building: 'Engineering Block 3',
+    capacity: 24,
+    camera_ids: ['cam-1', 'cam-2']
+  }
+];
+
+const DEFAULT_STUDENTS: StudentRecord[] = [
+  {
+    id: 'stu-1',
+    student_id_number: 'STU-2026-001',
+    name: 'Alex Johnson',
+    classroom_id: 'hall-a',
+    seat_id: 'seat-1',
+    status: 'present',
+    unified_suspicion_score: 12,
+    active_observations: []
+  },
+  {
+    id: 'stu-2',
+    student_id_number: 'STU-2026-002',
+    name: 'Sarah Chen',
+    classroom_id: 'hall-a',
+    seat_id: 'seat-2',
+    status: 'present',
+    unified_suspicion_score: 18,
+    active_observations: []
+  },
+  {
+    id: 'stu-3',
+    student_id_number: 'STU-2026-003',
+    name: 'Marcus Vance',
+    classroom_id: 'hall-a',
+    seat_id: 'seat-3',
+    status: 'present',
+    unified_suspicion_score: 15,
+    active_observations: []
+  },
+  {
+    id: 'stu-4',
+    student_id_number: 'STU-2026-004',
+    name: 'Priya Sharma',
+    classroom_id: 'hall-a',
+    seat_id: 'seat-4',
+    status: 'present',
+    unified_suspicion_score: 10,
+    active_observations: []
+  }
+];
+
+const DEFAULT_SEATS: SeatRecord[] = [
+  {
+    id: 'seat-1',
+    seat_label: 'A-01',
+    seat_number: 'A-01',
+    grid_row: 1,
+    grid_col: 1,
+    classroom_id: 'hall-a',
+    assigned_student_id: 'stu-1',
+    camera_regions: {
+      'cam-1': { x: 0.05, y: 0.15, width: 0.42, height: 0.75 }
+    }
+  },
+  {
+    id: 'seat-2',
+    seat_label: 'A-02',
+    seat_number: 'A-02',
+    grid_row: 1,
+    grid_col: 2,
+    classroom_id: 'hall-a',
+    assigned_student_id: 'stu-2',
+    camera_regions: {
+      'cam-1': { x: 0.50, y: 0.15, width: 0.42, height: 0.75 }
+    }
+  },
+  {
+    id: 'seat-3',
+    seat_label: 'B-01',
+    seat_number: 'B-01',
+    grid_row: 2,
+    grid_col: 1,
+    classroom_id: 'hall-a',
+    assigned_student_id: 'stu-3',
+    camera_regions: {
+      'cam-1': { x: 0.05, y: 0.55, width: 0.42, height: 0.40 }
+    }
+  },
+  {
+    id: 'seat-4',
+    seat_label: 'B-02',
+    seat_number: 'B-02',
+    grid_row: 2,
+    grid_col: 2,
+    classroom_id: 'hall-a',
+    assigned_student_id: 'stu-4',
+    camera_regions: {
+      'cam-1': { x: 0.50, y: 0.55, width: 0.42, height: 0.40 }
+    }
+  }
+];
 
 /**
  * Connect to MongoDB or activate fallback in-memory store
@@ -108,7 +213,7 @@ function seedMemoryStore(): void {
     memoryStore.settings[0].default_primary_camera = 'cam-1';
   }
 
-  // Pre-seed primary CCTV camera with the user's Google Drive video link
+  // Pre-seed primary CCTV camera with the Google Drive video link
   if (memoryStore.cameras.length === 0) {
     memoryStore.cameras.push({
       camera_id: 'cam-1',
@@ -127,15 +232,28 @@ function seedMemoryStore(): void {
       monitored_seats: []
     });
   }
-  console.log(`[Database] In-memory store ready with ${memoryStore.cameras.length} camera records.`);
+
+  if (memoryStore.classrooms.length === 0) {
+    memoryStore.classrooms = [...DEFAULT_CLASSROOMS];
+  }
+  if (memoryStore.students.length === 0) {
+    memoryStore.students = [...DEFAULT_STUDENTS];
+  }
+  if (memoryStore.seats.length === 0) {
+    memoryStore.seats = [...DEFAULT_SEATS];
+  }
+
+  console.log(`[Database] In-memory store ready with ${memoryStore.cameras.length} cameras, ${memoryStore.students.length} students.`);
 }
 
 async function seedDatabaseIfEmpty(): Promise<void> {
   if (!mongoDb) return;
+
   const count = await mongoDb.collection('settings').countDocuments();
   if (count === 0) {
     await mongoDb.collection('settings').insertOne({ ...DEFAULT_SETTINGS, default_primary_camera: 'cam-1' });
   }
+
   const camCount = await mongoDb.collection('cameras').countDocuments();
   if (camCount === 0) {
     await mongoDb.collection('cameras').insertOne({
@@ -155,11 +273,26 @@ async function seedDatabaseIfEmpty(): Promise<void> {
       monitored_seats: []
     });
   }
-  console.log('[Database] Real MongoDB initialized with primary CCTV feed.');
+
+  const stuCount = await mongoDb.collection('students').countDocuments();
+  if (stuCount === 0) {
+    await mongoDb.collection('students').insertMany(DEFAULT_STUDENTS);
+  }
+
+  const seatCount = await mongoDb.collection('seats').countDocuments();
+  if (seatCount === 0) {
+    await mongoDb.collection('seats').insertMany(DEFAULT_SEATS);
+  }
+
+  const classCount = await mongoDb.collection('classrooms').countDocuments();
+  if (classCount === 0) {
+    await mongoDb.collection('classrooms').insertMany(DEFAULT_CLASSROOMS);
+  }
+
+  console.log('[Database] Real MongoDB initialized with primary CCTV feed and student database.');
 }
 
 // Database Abstraction API
-
 export const db = {
   isFallback: () => isUsingFallback,
 
@@ -330,7 +463,6 @@ export const db = {
       return event;
     }
     memoryStore.events.unshift(event);
-    // Keep reasonable history size in memory
     if (memoryStore.events.length > 500) {
       memoryStore.events.pop();
     }

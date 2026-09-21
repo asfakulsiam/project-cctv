@@ -385,24 +385,26 @@ async function startServer() {
     }
 
     return new Promise((resolve) => {
-      const initialUrl = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`;
+      // 1. First attempt the direct usercontent download endpoint which directly serves binary media streams
+      const directDownloadUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
+      const initialUrl = `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}&confirm=t`;
       let accumulatedCookies = '';
 
       const timer = setTimeout(() => {
-        const timeoutEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 600000 };
+        const timeoutEntry: GDriveCacheEntry = { isQuotaExceeded: false, finalUrl: directDownloadUrl, expireAt: Date.now() + 120000 };
         gdriveResolutionCache.set(fileId, timeoutEntry);
         resolve(timeoutEntry);
-      }, 3500);
+      }, 4000);
 
-      const req1 = https.get(initialUrl, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 3000 }, (res1) => {
+      const req1 = https.get(initialUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36' }, timeout: 3500 }, (res1) => {
         const rawCookies1 = (res1.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
         if (rawCookies1) accumulatedCookies = rawCookies1;
 
         const location1 = res1.headers['location'];
         if (location1) {
           const req2 = https.get(location1, {
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Cookie': accumulatedCookies },
-            timeout: 3000
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36', 'Cookie': accumulatedCookies },
+            timeout: 3500
           }, (res2) => {
             clearTimeout(timer);
             const rawCookies2 = (res2.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
@@ -410,7 +412,6 @@ async function startServer() {
               accumulatedCookies = accumulatedCookies ? `${accumulatedCookies}; ${rawCookies2}` : rawCookies2;
             }
 
-            // If it's already a direct video or binary stream
             const contentType2 = res2.headers['content-type'] || '';
             if (!contentType2.includes('text/html')) {
               const result: GDriveCacheEntry = { finalUrl: location1, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
@@ -419,15 +420,15 @@ async function startServer() {
               return resolve(result);
             }
 
-            // Otherwise, read body to check for Quota Exceeded or virus scan UUID
+            // Read HTML body to check for confirmation UUID or Quota restriction
             let htmlBody = '';
             res2.on('data', chunk => {
               if (htmlBody.length < 50000) htmlBody += chunk.toString('utf8');
             });
             res2.on('end', () => {
               if (htmlBody.includes('Quota exceeded') || htmlBody.includes('quota exceeded') || htmlBody.includes('Access Denied')) {
-                console.warn(`[Proxy] Google Drive file ${fileId} quota exceeded. Caching resilient fallback.`);
-                const quotaResult: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 3600000 };
+                console.warn(`[Proxy] Google Drive file ${fileId} quota exceeded or requires permission.`);
+                const quotaResult: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 180000 };
                 gdriveResolutionCache.set(fileId, quotaResult);
                 return resolve(quotaResult);
               }
@@ -444,30 +445,23 @@ async function startServer() {
               }
 
               // Fallback to direct confirm URL
-              const fallbackUrl = `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`;
-              resolve({ finalUrl: fallbackUrl, cookies: accumulatedCookies, expireAt: Date.now() + 60000 });
+              resolve({ finalUrl: directDownloadUrl, cookies: accumulatedCookies, expireAt: Date.now() + 120000 });
             });
           });
 
           req2.on('error', () => {
             clearTimeout(timer);
-            const fallbackEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 300000 };
-            gdriveResolutionCache.set(fileId, fallbackEntry);
-            resolve(fallbackEntry);
+            resolve({ finalUrl: directDownloadUrl, expireAt: Date.now() + 60000 });
           });
         } else {
           clearTimeout(timer);
-          const fallbackEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 300000 };
-          gdriveResolutionCache.set(fileId, fallbackEntry);
-          resolve(fallbackEntry);
+          resolve({ finalUrl: directDownloadUrl, cookies: accumulatedCookies, expireAt: Date.now() + 60000 });
         }
       });
 
       req1.on('error', () => {
         clearTimeout(timer);
-        const fallbackEntry: GDriveCacheEntry = { isQuotaExceeded: true, expireAt: Date.now() + 300000 };
-        gdriveResolutionCache.set(fileId, fallbackEntry);
-        resolve(fallbackEntry);
+        resolve({ finalUrl: directDownloadUrl, expireAt: Date.now() + 60000 });
       });
     });
   };
@@ -527,8 +521,14 @@ async function startServer() {
               return handleStreamProxy(nextUrl, res, req, redirectCount + 1, mergedCookies);
             }
 
-            console.warn('[Proxy] Remote stream returned HTML (Google Drive Quota Exceeded). Seamlessly streaming resilient CCTV video feed.');
-            streamSampleVideo(res, req, 'Google Drive download quota exceeded by Google. Seamlessly serving resilient CCTV surveillance feed.');
+            console.warn('[Proxy] Remote stream returned HTML (Google Drive direct download restricted). Returning informative 502 stream error.');
+            if (!res.headersSent) {
+              res.status(502).json({
+                error: 'STREAM_FAILED',
+                code: 'GDRIVE_STREAM_ERROR',
+                message: 'Google Drive direct streaming unavailable. Ensure the file permissions are set to "Anyone with the link can view". Use Native Drive Player if Google restricts direct downloads.'
+              });
+            }
           });
           return;
         }
@@ -559,14 +559,14 @@ async function startServer() {
       proxyReq.on('timeout', () => {
         proxyReq.destroy();
         if (!res.headersSent) {
-          streamSampleVideo(res, req, 'Camera stream connection timed out. Showing resilient surveillance feed.');
+          res.status(504).json({ error: 'STREAM_TIMEOUT', message: 'Camera stream connection timed out.' });
         }
       });
 
       proxyReq.on('error', (err) => {
         if (!res.headersSent) {
-          console.warn(`[Proxy] Camera stream connection error (${err.message}). Streaming resilient fallback video.`);
-          streamSampleVideo(res, req, `Cannot connect to remote stream (${err.message}). Showing resilient surveillance feed.`);
+          console.warn(`[Proxy] Camera stream connection error (${err.message})`);
+          res.status(502).json({ error: 'STREAM_FAILED', message: `Cannot connect to remote stream: ${err.message}` });
         }
       });
 
@@ -575,7 +575,7 @@ async function startServer() {
       });
     } catch (err: any) {
       if (!res.headersSent) {
-        streamSampleVideo(res, req, `Invalid stream URL (${err.message}). Showing resilient surveillance feed.`);
+        res.status(500).json({ error: 'INVALID_STREAM_URL', message: `Invalid stream URL: ${err.message}` });
       }
     }
   };
@@ -593,15 +593,25 @@ async function startServer() {
     try {
       const resolved = await resolveGoogleDriveStreamUrl(fileId);
       if (resolved && resolved.isQuotaExceeded) {
-        return streamSampleVideo(res, req, 'Google Drive download quota exceeded. Streaming resilient CCTV surveillance feed.');
+        return res.status(502).json({
+          error: 'STREAM_FAILED',
+          code: 'GDRIVE_STREAM_ERROR',
+          message: 'Google Drive direct streaming unavailable. Ensure the file sharing is set to "Anyone with the link can view". If Google has applied download quota throttling, switch to Native Drive Embed player.',
+          file_id: fileId,
+          preview_url: `https://drive.google.com/file/d/${fileId}/preview`
+        });
       }
       if (resolved && resolved.finalUrl) {
         handleStreamProxy(resolved.finalUrl, res, req, 0, resolved.cookies);
       } else {
-        streamSampleVideo(res, req, 'Resolving Google Drive stream. Streaming resilient surveillance feed.');
+        res.status(502).json({
+          error: 'STREAM_FAILED',
+          code: 'GDRIVE_UNRESOLVED',
+          message: 'Could not resolve direct Google Drive stream URL.'
+        });
       }
     } catch (err: any) {
-      streamSampleVideo(res, req, 'Google Drive link error. Showing resilient surveillance feed.');
+      res.status(500).json({ error: 'PROXY_ERROR', message: err.message });
     }
   });
 
@@ -666,6 +676,7 @@ async function startServer() {
   // Camera Management
   app.post('/api/cameras', requireAdminAuth, async (req, res) => {
     try {
+      gdriveResolutionCache.clear();
       const generatedId = req.body.camera_id || `cam-${Date.now().toString().slice(-4)}`;
       const sourceType = req.body.source_type || 'rtsp';
       const cleanUrl = normalizeCameraSourceUrl(req.body.source_url, sourceType);
@@ -721,6 +732,7 @@ async function startServer() {
 
   app.delete('/api/cameras/:id', requireAdminAuth, async (req, res) => {
     try {
+      gdriveResolutionCache.clear();
       const deleted = await db.deleteCamera(req.params.id);
       if (cvEngine) await cvEngine.reloadConfiguration();
       res.json({ success: deleted });
@@ -733,8 +745,10 @@ async function startServer() {
     try {
       const cam = await db.getCameraById(req.params.id);
       if (!cam) return res.status(404).json({ error: 'Camera not found' });
+
       const latencyMs = Math.floor(16 + Math.random() * 22);
       const isOnline = cam.status === 'online' && cam.enabled !== false;
+
       res.json({
         success: isOnline,
         camera_id: cam.camera_id,
@@ -757,6 +771,7 @@ async function startServer() {
     try {
       const svg = cvEngine?.getCameraSvgFrame(req.params.id);
       if (!svg) return res.status(404).send('Camera not found');
+
       res.setHeader('Content-Type', 'image/svg+xml');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.send(svg);
@@ -767,6 +782,7 @@ async function startServer() {
 
   app.put('/api/cameras/:id', requireAdminAuth, async (req, res) => {
     try {
+      gdriveResolutionCache.clear();
       const updates = { ...req.body };
       if (updates.source_url) {
         updates.source_url = normalizeCameraSourceUrl(updates.source_url, updates.source_type);
