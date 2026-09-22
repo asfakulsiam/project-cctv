@@ -86,9 +86,17 @@ const DEFAULT_CLASSROOMS: ClassroomRecord[] = [
   }
 ];
 
-const DEFAULT_STUDENTS: StudentRecord[] = [];
+const DEFAULT_STUDENTS: StudentRecord[] = [
+  { id: 'stu-1', student_id_number: 'S-1001', name: 'Alex Johnson', classroom_id: 'hall-a', person_id: 'P-001', global_person_id: 'P-001', seat_id: 'seat-1', status: 'present', unified_suspicion_score: 0, active_observations: [] },
+  { id: 'stu-2', student_id_number: 'S-1002', name: 'Sarah Chen', classroom_id: 'hall-a', person_id: 'P-002', global_person_id: 'P-002', seat_id: 'seat-2', status: 'present', unified_suspicion_score: 0, active_observations: [] },
+  { id: 'stu-3', student_id_number: 'S-1003', name: 'Michael Smith', classroom_id: 'hall-a', person_id: 'P-003', global_person_id: 'P-003', seat_id: 'seat-3', status: 'present', unified_suspicion_score: 0, active_observations: [] }
+];
 
-const DEFAULT_SEATS: SeatRecord[] = [];
+const DEFAULT_SEATS: SeatRecord[] = [
+  { id: 'seat-1', classroom_id: 'hall-a', seat_label: 'A1', seat_number: 'A1', grid_row: 1, grid_col: 1, assigned_student_id: 'stu-1', camera_regions: { 'cam-1': { x: 0.1, y: 0.2, width: 0.25, height: 0.6 } } },
+  { id: 'seat-2', classroom_id: 'hall-a', seat_label: 'A2', seat_number: 'A2', grid_row: 1, grid_col: 2, assigned_student_id: 'stu-2', camera_regions: { 'cam-1': { x: 0.38, y: 0.2, width: 0.25, height: 0.6 } } },
+  { id: 'seat-3', classroom_id: 'hall-a', seat_label: 'A3', seat_number: 'A3', grid_row: 1, grid_col: 3, assigned_student_id: 'stu-3', camera_regions: { 'cam-1': { x: 0.65, y: 0.2, width: 0.25, height: 0.6 } } }
+];
 
 /**
  * Connect to MongoDB or activate fallback in-memory store
