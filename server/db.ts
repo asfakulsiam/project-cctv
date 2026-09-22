@@ -157,11 +157,15 @@ function seedMemoryStore(): void {
   if (memoryStore.classrooms.length === 0) {
     memoryStore.classrooms = [...DEFAULT_CLASSROOMS];
   }
-  if (memoryStore.students.length === 0) {
-    memoryStore.students = [...DEFAULT_STUDENTS];
-  }
-  if (memoryStore.seats.length === 0) {
-    memoryStore.seats = [...DEFAULT_SEATS];
+  
+  // Seed sample students & seats ONLY if explicitly in DEMO_MODE
+  if (process.env.DEMO_MODE === 'true') {
+    if (memoryStore.students.length === 0) {
+      memoryStore.students = [...DEFAULT_STUDENTS];
+    }
+    if (memoryStore.seats.length === 0) {
+      memoryStore.seats = [...DEFAULT_SEATS];
+    }
   }
 
   console.log(`[Database] In-memory store ready with ${memoryStore.cameras.length} cameras, ${memoryStore.students.length} students.`);
@@ -195,14 +199,16 @@ async function seedDatabaseIfEmpty(): Promise<void> {
     });
   }
 
-  const stuCount = await mongoDb.collection('students').countDocuments();
-  if (stuCount === 0) {
-    await mongoDb.collection('students').insertMany(DEFAULT_STUDENTS);
-  }
+  if (process.env.DEMO_MODE === 'true') {
+    const stuCount = await mongoDb.collection('students').countDocuments();
+    if (stuCount === 0) {
+      await mongoDb.collection('students').insertMany(DEFAULT_STUDENTS);
+    }
 
-  const seatCount = await mongoDb.collection('seats').countDocuments();
-  if (seatCount === 0) {
-    await mongoDb.collection('seats').insertMany(DEFAULT_SEATS);
+    const seatCount = await mongoDb.collection('seats').countDocuments();
+    if (seatCount === 0) {
+      await mongoDb.collection('seats').insertMany(DEFAULT_SEATS);
+    }
   }
 
   const classCount = await mongoDb.collection('classrooms').countDocuments();
@@ -210,7 +216,7 @@ async function seedDatabaseIfEmpty(): Promise<void> {
     await mongoDb.collection('classrooms').insertMany(DEFAULT_CLASSROOMS);
   }
 
-  console.log('[Database] Real MongoDB initialized with primary CCTV feed and student database.');
+  console.log('[Database] Real MongoDB initialized with primary CCTV feed.');
 }
 
 // Database Abstraction API
@@ -493,5 +499,50 @@ export const db = {
       return;
     }
     memoryStore.global_persons = [];
+  },
+
+  async clearExamData(scopes: string[] = ['students', 'global_persons', 'events']): Promise<{ students: number; global_persons: number; events: number; seats: number }> {
+    const result = { students: 0, global_persons: 0, events: 0, seats: 0 };
+    const shouldClearStudents = scopes.includes('students');
+    const shouldClearGlobalPersons = scopes.includes('global_persons');
+    const shouldClearEvents = scopes.includes('events');
+    const shouldClearSeats = scopes.includes('seats');
+
+    if (isUsingFallback || !mongoDb) {
+      if (shouldClearStudents) {
+        result.students = memoryStore.students.length;
+        memoryStore.students = [];
+      }
+      if (shouldClearGlobalPersons) {
+        result.global_persons = memoryStore.global_persons.length;
+        memoryStore.global_persons = [];
+      }
+      if (shouldClearEvents) {
+        result.events = memoryStore.events.length;
+        memoryStore.events = [];
+      }
+      if (shouldClearSeats) {
+        result.seats = memoryStore.seats.length;
+        memoryStore.seats = [];
+      }
+    } else {
+      if (shouldClearStudents) {
+        const res = await mongoDb.collection('students').deleteMany({});
+        result.students = res.deletedCount || 0;
+      }
+      if (shouldClearGlobalPersons) {
+        const res = await mongoDb.collection('global_persons').deleteMany({});
+        result.global_persons = res.deletedCount || 0;
+      }
+      if (shouldClearEvents) {
+        const res = await mongoDb.collection('events').deleteMany({});
+        result.events = res.deletedCount || 0;
+      }
+      if (shouldClearSeats) {
+        const res = await mongoDb.collection('seats').deleteMany({});
+        result.seats = res.deletedCount || 0;
+      }
+    }
+    return result;
   }
 };

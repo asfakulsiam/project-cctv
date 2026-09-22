@@ -358,6 +358,29 @@ async function startServer() {
     }
   });
 
+  // Admin Data Cleanup / Reset Endpoint
+  app.post('/api/admin/data/clear', requireAdminAuth, async (req, res) => {
+    try {
+      const requestedScopes = Array.isArray(req.body?.scopes) && req.body.scopes.length > 0 
+        ? req.body.scopes 
+        : ['students', 'global_persons', 'events'];
+
+      const clearedCounts = await db.clearExamData(requestedScopes);
+
+      if (cvEngine) {
+        await cvEngine.reloadConfiguration();
+      }
+
+      res.json({
+        success: true,
+        cleared: clearedCounts,
+        message: `Cleared runtime data for scopes: ${requestedScopes.join(', ')}.`
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Edit / Add Student
   app.put('/api/students/:id', requireAdminAuth, async (req, res) => {
     try {

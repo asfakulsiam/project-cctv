@@ -116,7 +116,6 @@ export interface DrawCameraFeedOptions {
   cameraId: string;
   isPrimary: boolean;
   tracks: CameraTrack[];
-  seats?: SeatRecord[];
   students: StudentRecord[];
   globalPersons?: GlobalPerson[];
   zoomLevel: number;
@@ -138,7 +137,6 @@ export function drawCameraFeed(
     height,
     cameraId,
     tracks,
-    seats = [],
     students,
     globalPersons = [],
     zoomLevel = 1.0,
@@ -163,35 +161,7 @@ export function drawCameraFeed(
   ctx.translate(-width / 2, -height / 2);
 
   // -------------------------------------------------------------
-  // 1. Render Configured Seat Grid & Zones
-  // -------------------------------------------------------------
-  for (const seat of seats) {
-    const region = seat.camera_regions?.[cameraId];
-    if (!region) continue;
-
-    const sx = rect.offsetX + region.x * rect.displayedWidth;
-    const sy = rect.offsetY + region.y * rect.displayedHeight;
-    const sw = region.width * rect.displayedWidth;
-    const sh = region.height * rect.displayedHeight;
-
-    // Subtle seat bounding perimeter
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.strokeRect(sx, sy, sw, sh);
-    ctx.setLineDash([]);
-
-    // Seat label pill
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.65)';
-    ctx.fillRect(sx + 2, sy + 2, 60, 14);
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = 'bold 9px "JetBrains Mono", monospace';
-    const label = seat.seat_number || seat.seat_label || `S-${seat.id}`;
-    ctx.fillText(`SEAT ${label}`, sx + 6, sy + 12);
-  }
-
-  // -------------------------------------------------------------
-  // 2. Render Real-Time Person Tracks, Fixed P-IDs & Suspicion Scores
+  // 1. Render Real-Time Person Tracks, Fixed P-IDs & Activity Scores
   // -------------------------------------------------------------
   for (const track of tracks) {
     // Convert normalized bounding box to canvas pixels relative to displayed video frame
@@ -349,22 +319,16 @@ export function drawCameraFeed(
     ctx.stroke();
 
     // -------------------------------------------------------------
-    // E. Prominent, Clamped P-ID & Score Header Label
-    // Format: "P-001 • SCORE 24", "P-001 • SCORE 72 • WARNING", "P-001 • SCORE 91 • CRITICAL"
+    // E. Compact Attached P-ID & Activity Score Label (e.g. "P-001 • 24")
     // -------------------------------------------------------------
-    const personId = resolveCanonicalPersonId(track, globalPersons);
-    let tagText = personId ? `${personId} • SCORE ${liveScore}` : `SCORE ${liveScore}`;
-    if (isCritical) {
-      tagText = personId ? `${personId} • SCORE ${liveScore} • CRITICAL` : `SCORE ${liveScore} • CRITICAL`;
-    } else if (isWarning) {
-      tagText = personId ? `${personId} • SCORE ${liveScore} • WARNING` : `SCORE ${liveScore} • WARNING`;
-    }
+    const personId = resolveCanonicalPersonId(track, globalPersons) || 'P-000';
+    const tagText = `${personId} • ${liveScore}`;
     
-    // Crisp typography for maximum readability
-    ctx.font = 'bold 9.5px "JetBrains Mono", "SF Mono", monospace';
-    const tagPaddingH = 5;
+    // Crisp typography for maximum readability and minimal visual obstruction
+    ctx.font = 'bold 9px "JetBrains Mono", "SF Mono", monospace';
+    const tagPaddingH = 4;
     const tagWidth = ctx.measureText(tagText).width + tagPaddingH * 2;
-    const tagHeight = 15;
+    const tagHeight = 13;
 
     // Preferred placement: directly above the bounding box
     let headerY = py - tagHeight - 2;
@@ -394,7 +358,7 @@ export function drawCameraFeed(
 
     // Header badge text
     ctx.fillStyle = badgeTextColor;
-    ctx.fillText(tagText, headerX + tagPaddingH, headerY + 11);
+    ctx.fillText(tagText, headerX + tagPaddingH, headerY + 9.5);
 
     // -------------------------------------------------------------
     // G. Bottom Telemetry Alerts (Gaze direction / Phone detection)
@@ -465,7 +429,7 @@ export function renderTelemetryCanvas(
   canvas: HTMLCanvasElement,
   options: {
     tracks: CameraTrack[];
-    seats: SeatRecord[];
+    seats?: SeatRecord[];
     students: StudentRecord[];
     globalPersons?: GlobalPerson[];
     cameraId: string;
@@ -487,7 +451,6 @@ export function renderTelemetryCanvas(
     cameraId: options.cameraId,
     isPrimary: true,
     tracks: options.tracks,
-    seats: options.seats,
     students: options.students,
     globalPersons: options.globalPersons,
     zoomLevel: options.zoomLevel || 1.0,

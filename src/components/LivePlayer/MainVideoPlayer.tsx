@@ -382,7 +382,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               cameraId: focusedCamera.camera_id,
               isPrimary: isPrimaryRef.current,
               tracks: effectiveTracks,
-              seats: seatsRef.current,
               students: studentsRef.current,
               globalPersons: globalPersonsRef.current,
               zoomLevel: zoomLevelRef.current,
