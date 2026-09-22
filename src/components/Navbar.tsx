@@ -101,11 +101,8 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
             {/* Live Gateway Pill */}
             <div className="flex items-center space-x-2 px-3 py-1 rounded-full bg-[var(--system-fill)] border border-[var(--system-chrome-border)]">
               <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[var(--system-success)] animate-pulse' : 'bg-[var(--system-destructive)]'}`} />
-              <span className="text-[11px] font-mono-apple font-medium text-[var(--system-text-secondary)] hidden sm:inline">
+              <span className="text-[11px] font-mono-apple font-medium text-[var(--system-text-secondary)]">
                 {isConnected ? 'GATEWAY LIVE' : 'CONNECTING'}
-              </span>
-              <span className="text-[11px] font-mono-apple text-[var(--system-accent)] font-semibold">
-                {stats.processing_fps} FPS
               </span>
             </div>
 

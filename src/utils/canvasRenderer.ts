@@ -125,6 +125,7 @@ export interface DrawCameraFeedOptions {
   highSuspicionThreshold?: number;
   videoSource?: HTMLVideoElement | HTMLImageElement | null;
   fitMode?: 'contain' | 'cover';
+  showBoundingBoxOutline?: boolean;
 }
 
 export function drawCameraFeed(
@@ -145,7 +146,8 @@ export function drawCameraFeed(
     warningSuspicionThreshold = 35,
     highSuspicionThreshold = 65,
     videoSource = null,
-    fitMode = 'contain'
+    fitMode = 'contain',
+    showBoundingBoxOutline = true
   } = options;
 
   // Clear canvas buffer completely
@@ -268,55 +270,45 @@ export function drawCameraFeed(
     }
 
     // -------------------------------------------------------------
-    // D. Dynamic Person Bounding Box (Snug, Frame-by-Frame Motion Tracking)
+    // D. Dynamic Person Bounding Box (Optional box outline, clean outer framing)
     // -------------------------------------------------------------
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = isSelected ? 2.2 : (isWarning || isCritical ? 1.8 : 1.3);
-    ctx.strokeRect(px, py, pw, ph);
+    if (showBoundingBoxOutline) {
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = isSelected ? 2.2 : (isWarning || isCritical ? 1.8 : 1.3);
+      ctx.strokeRect(px, py, pw, ph);
 
-    // Subtle box inner tint on warning / critical
-    if (isWarning) {
-      ctx.fillStyle = 'rgba(234, 179, 8, 0.08)';
-      ctx.fillRect(px, py, pw, ph);
-    } else if (isCritical) {
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.12)';
-      ctx.fillRect(px, py, pw, ph);
+      // Subtle box inner tint on warning / critical
+      if (isWarning) {
+        ctx.fillStyle = 'rgba(234, 179, 8, 0.08)';
+        ctx.fillRect(px, py, pw, ph);
+      } else if (isCritical) {
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.12)';
+        ctx.fillRect(px, py, pw, ph);
+      }
+
+      // Corner accent brackets (clean outer framing without internal crosshair lines)
+      const cornerLen = Math.min(8, pw * 0.18);
+      ctx.strokeStyle = cornerColor;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      // Top-Left
+      ctx.moveTo(px, py + cornerLen);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px + cornerLen, py);
+      // Top-Right
+      ctx.moveTo(px + pw - cornerLen, py);
+      ctx.lineTo(px + pw, py);
+      ctx.lineTo(px + pw, py + cornerLen);
+      // Bottom-Left
+      ctx.moveTo(px, py + ph - cornerLen);
+      ctx.lineTo(px, py + ph);
+      ctx.lineTo(px + cornerLen, py + ph);
+      // Bottom-Right
+      ctx.moveTo(px + pw - cornerLen, py + ph);
+      ctx.lineTo(px + pw, py + ph);
+      ctx.lineTo(px + pw, py + ph - cornerLen);
+      ctx.stroke();
     }
-
-    // Slim, compact corner accent brackets
-    const cornerLen = Math.min(8, pw * 0.18);
-    ctx.strokeStyle = cornerColor;
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    // Top-Left
-    ctx.moveTo(px, py + cornerLen);
-    ctx.lineTo(px, py);
-    ctx.lineTo(px + cornerLen, py);
-    // Top-Right
-    ctx.moveTo(px + pw - cornerLen, py);
-    ctx.lineTo(px + pw, py);
-    ctx.lineTo(px + pw, py + cornerLen);
-    // Bottom-Left
-    ctx.moveTo(px, py + ph - cornerLen);
-    ctx.lineTo(px, py + ph);
-    ctx.lineTo(px + cornerLen, py + ph);
-    // Bottom-Right
-    ctx.moveTo(px + pw - cornerLen, py + ph);
-    ctx.lineTo(px + pw, py + ph);
-    ctx.lineTo(px + pw, py + ph - cornerLen);
-    ctx.stroke();
-
-    // Center targeting micro-crosshair
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-    ctx.lineWidth = 1;
-    const cx = px + pw / 2;
-    const cy = py + ph / 2;
-    ctx.beginPath();
-    ctx.moveTo(cx - 3, cy);
-    ctx.lineTo(cx + 3, cy);
-    ctx.moveTo(cx, cy - 3);
-    ctx.lineTo(cx, cy + 3);
-    ctx.stroke();
 
     // -------------------------------------------------------------
     // E. Compact Attached P-ID & Activity Score Label (e.g. "P-001 • 24")

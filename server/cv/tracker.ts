@@ -159,14 +159,11 @@ export class CameraTracker {
    * Predict bounding box location using linear velocity.
    * If velocity is near zero (stationary student), predictions lock firmly in place.
    */
-  private predictBoundingBox(track: InternalTrackState, dtSec: number): BoundingBox {
-    const clampedDt = Math.min(0.5, Math.max(0, dtSec));
-    const predX = track.bbox.x + track.velocity_x * clampedDt;
-    const predY = track.bbox.y + track.velocity_y * clampedDt;
-
+  private predictBoundingBox(track: InternalTrackState, _dtSec: number): BoundingBox {
+    // Lock prediction directly to last confirmed observed bbox position to prevent auto-drift
     return {
-      x: Math.max(0, Math.min(0.95, predX)),
-      y: Math.max(0, Math.min(0.95, predY)),
+      x: track.bbox.x,
+      y: track.bbox.y,
       width: track.bbox.width,
       height: track.bbox.height
     };

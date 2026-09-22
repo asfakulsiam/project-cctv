@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "NODE_OPTIONS='--max-old-space-size=4096' tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "start": "NODE_OPTIONS='--max-old-space-size=4096' node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "seed:dev": "tsx scripts/seed_dev_data.ts",

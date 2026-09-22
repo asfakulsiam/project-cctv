@@ -81,6 +81,8 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
   private lastInferenceLatencyMs = 0;
   private totalCalls = 0;
   private lastError: string | null = null;
+  private pendingInferenceByCamera: Map<string, boolean> = new Map();
+  private lastInferenceTimeByCamera: Map<string, number> = new Map();
 
   constructor(inferenceUrl?: string) {
     if (inferenceUrl) {
@@ -110,11 +112,23 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
   public async detect(input: PersonDetectorInput): Promise<DetectorOutput> {
     this.totalCalls++;
     const startTime = Date.now();
+    const cameraId = input.camera_id || 'default';
+
+    // Throttle & prevent queuing duplicate requests per camera if worker request is already in-flight
+    if (this.pendingInferenceByCamera.get(cameraId)) {
+      return this.fallbackOutput(input);
+    }
+
+    const lastTime = this.lastInferenceTimeByCamera.get(cameraId) || 0;
+    if (startTime - lastTime < 90) { // Max 11 FPS per camera to preserve memory
+      return this.fallbackOutput(input);
+    }
 
     if (this.inferenceUrl && input.frame) {
+      this.pendingInferenceByCamera.set(cameraId, true);
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 2000);
+        const timeout = setTimeout(() => controller.abort(), 1800);
 
         const framePayload: any = input.frame;
         let formattedFrame: string | undefined = undefined;
@@ -145,6 +159,7 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
           signal: controller.signal
         });
         clearTimeout(timeout);
+        formattedFrame = undefined; // Help V8 garbage collection
 
         this.lastInferenceLatencyMs = Date.now() - startTime;
 
@@ -190,11 +205,16 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
       } catch (err: any) {
         this.workerOnline = false;
         this.lastError = err.message || 'Python inference worker connection failed';
+      } finally {
+        this.pendingInferenceByCamera.delete(cameraId);
+        this.lastInferenceTimeByCamera.set(cameraId, Date.now());
       }
     }
 
-    // STRICT ARCHITECTURAL RULE: No synthetic fallback when Python worker is offline.
-    // Return empty detections list to preserve authentic system telemetry.
+    return this.fallbackOutput(input);
+  }
+
+  private fallbackOutput(input: PersonDetectorInput): DetectorOutput {
     const rawDetections = input.detections || [];
     const rawPhones = input.phones || [];
 
@@ -467,6 +487,58 @@ export class RealPersonDetector {
     return Math.max(0.0, Math.min(1.0, dot / mag));
   }
 
+  /**
+   * Spatial Non-Maximum Suppression (NMS)
+   * Deduplicates multiple candidate detection boxes covering the same human subject.
+   */
+  public static applySpatialNMS(
+    candidates: RawDetectionPayload[], 
+    iouThreshold = 0.45,
+    centerDistThreshold = 0.045
+  ): RawDetectionPayload[] {
+    if (candidates.length <= 1) return candidates;
+
+    const sorted = [...candidates].sort((a, b) => b.confidence - a.confidence);
+    const selected: RawDetectionPayload[] = [];
+
+    for (const cand of sorted) {
+      let keep = true;
+      const b1 = cand.bbox;
+      const c1x = b1.x + b1.width / 2;
+      const c1y = b1.y + b1.height / 2;
+
+      for (const existing of selected) {
+        const b2 = existing.bbox;
+        const c2x = b2.x + b2.width / 2;
+        const c2y = b2.y + b2.height / 2;
+
+        const x1 = Math.max(b1.x, b2.x);
+        const y1 = Math.max(b1.y, b2.y);
+        const x2 = Math.min(b1.x + b1.width, b2.x + b2.width);
+        const y2 = Math.min(b1.y + b1.height, b2.y + b2.height);
+
+        const interArea = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+        const area1 = b1.width * b1.height;
+        const area2 = b2.width * b2.height;
+        const unionArea = area1 + area2 - interArea;
+        const iou = unionArea > 0 ? interArea / unionArea : 0;
+
+        const centerDist = Math.hypot(c1x - c2x, c1y - c2y);
+
+        if (iou > iouThreshold || centerDist < centerDistThreshold) {
+          keep = false;
+          break;
+        }
+      }
+
+      if (keep) {
+        selected.push(cand);
+      }
+    }
+
+    return selected;
+  }
+
   public generateDetectionId(): string {
     const num = String(this.detectionCounter++).padStart(6, '0');
     return `det-${num}`;
@@ -562,24 +634,28 @@ export class RealPersonDetector {
     }
 
     // 2. Anatomical Gatekeeper: filter non-human classes, low confidence, and invalid proportions
-    const validCandidates: RawDetectionPayload[] = [];
+    const rawValid: RawDetectionPayload[] = [];
     for (const raw of detections) {
       if (!raw.class_name || raw.class_name.toLowerCase() !== 'person') continue;
-      if (typeof raw.confidence !== 'number' || raw.confidence < this.minConfidence) continue;
+      if (typeof raw.confidence !== 'number' || raw.confidence < 0.25) continue;
 
       const bbox = raw.bbox;
       if (!bbox || typeof bbox.x !== 'number' || typeof bbox.y !== 'number') continue;
-      if (bbox.width <= 0.02 || bbox.height <= 0.02) continue;
+      if (bbox.width <= 0.005 || bbox.height <= 0.005) continue;
 
       // Seated / standing human anatomical aspect ratio filter
       const aspect = bbox.height / bbox.width;
-      if (aspect < 0.40 || aspect > 5.0) continue;
+      if (aspect < 0.20 || aspect > 8.0) continue;
 
       // Filter out administratively suppressed identities
       if (this.isSuppressed(raw, timestamp)) continue;
 
-      validCandidates.push(raw);
+      rawValid.push(raw);
     }
+
+    // Apply Spatial Non-Maximum Suppression (NMS) to eliminate duplicate boxes on same student
+    // Tight centerDistThreshold (0.045) preserves adjacent students in classroom seating rows
+    const validCandidates = RealPersonDetector.applySpatialNMS(rawValid, 0.45, 0.045);
 
     // 3. Push valid candidates into the temporal frame ring buffer
     this.temporalBuffer.push(camId, {

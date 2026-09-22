@@ -108,13 +108,14 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     }
   };
 
-  // Zoom & Pan state
+  // Zoom & Pan & Overlay state
   const [zoomLevel, setZoomLevel] = useState<number>(1.0);
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [canvasDimensions, setCanvasDimensions] = useState<{ width: number; height: number }>({ width: 960, height: 540 });
+  const [showBoxOutlines, setShowBoxOutlines] = useState<boolean>(true);
 
   // Stream state
   const [streamStatus, setStreamStatus] = useState<'connecting' | 'playing' | 'paused' | 'error' | 'blocked' | 'offline'>('connecting');
@@ -163,6 +164,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   isPrimaryRef.current = isPrimary;
   const fitModeRef = useRef(fitMode);
   fitModeRef.current = fitMode;
+  const showBoxOutlinesRef = useRef(showBoxOutlines);
+  showBoxOutlinesRef.current = showBoxOutlines;
 
   // Responsive ResizeObserver for crisp Canvas sizing
   useEffect(() => {
@@ -391,7 +394,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               warningSuspicionThreshold: settingsRef.current?.thresholds?.warning_suspicion_threshold || 35,
               highSuspicionThreshold: settingsRef.current?.thresholds?.high_suspicion_threshold || 65,
               videoSource: activeSource,
-              fitMode: fitModeRef.current
+              fitMode: fitModeRef.current,
+              showBoundingBoxOutline: showBoxOutlinesRef.current
             },
             now
           );
@@ -623,6 +627,20 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           >
             <Scan className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">{fitMode === 'contain' ? 'Auto Frame' : 'Fill'}</span>
+          </button>
+
+          {/* Box Outline Toggle */}
+          <button
+            onClick={() => setShowBoxOutlines(prev => !prev)}
+            className={`px-2.5 py-1 rounded-[8px] text-[12px] font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
+              showBoxOutlines
+                ? 'bg-[var(--system-accent-subtle)] text-[var(--system-accent)] border border-[var(--system-accent)]/20 shadow-sm'
+                : 'bg-[var(--system-fill)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-text-secondary)] border border-[var(--system-chrome-border)]'
+            }`}
+            title={showBoxOutlines ? 'Bounding Boxes Visible (Click to hide box outlines)' : 'Box Outlines Hidden (Floating P-IDs & Warnings Active)'}
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{showBoxOutlines ? 'Box' : 'Badge'}</span>
           </button>
 
           <button

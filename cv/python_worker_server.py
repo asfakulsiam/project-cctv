@@ -85,36 +85,56 @@ class ImageFrameAnalyzer:
         if variance < 25.0:
             return []
 
-        # Analyze horizontal spatial distribution of luminance/texture entropy
-        # Divide frame into 16 vertical spatial sectors to locate distinct human subjects
-        num_sectors = 16
-        sector_energies = [0.0] * num_sectors
-        num_samples_per_sector = len(samples) // num_sectors
+        # Analyze 2D spatial distribution of luminance/texture entropy across frame
+        # Use 64 fine-grained horizontal sectors across 3 depth rows (front, middle, back of classroom)
+        num_cols = 32
+        num_rows = 3
+        cell_energies = []
         
-        for i in range(num_sectors):
-            sector_chunk = samples[i * num_samples_per_sector : (i + 1) * num_samples_per_sector]
-            if sector_chunk:
-                s_avg = sum(sector_chunk) / len(sector_chunk)
-                s_var = sum((x - s_avg) ** 2 for x in sector_chunk) / len(sector_chunk)
-                sector_energies[i] = s_var
+        sample_size = len(samples)
+        chunk_len = max(1, sample_size // (num_cols * num_rows))
 
-        # Find spatial peaks in sector energies corresponding to human subjects
+        for r in range(num_rows):
+            for c in range(num_cols):
+                idx = (r * num_cols + c) * chunk_len
+                chunk = samples[idx : idx + chunk_len]
+                if chunk:
+                    c_avg = sum(chunk) / len(chunk)
+                    c_var = sum((x - c_avg) ** 2 for x in chunk) / len(chunk)
+                else:
+                    c_var = 0.0
+                
+                norm_x = (c + 0.5) / num_cols
+                norm_y = 0.15 + r * 0.22
+                cell_energies.append({
+                    'x': norm_x,
+                    'y': norm_y,
+                    'energy': c_var,
+                    'row': r,
+                    'col': c
+                })
+
+        # Find spatial peaks in cell energies corresponding to human heads, upper bodies, and chests
         peaks = []
-        for i in range(1, num_sectors - 1):
-            if sector_energies[i] > 100.0 and sector_energies[i] >= sector_energies[i-1] * 0.85 and sector_energies[i] >= sector_energies[i+1] * 0.85:
-                norm_x = (i + 0.5) / num_sectors
-                if not any(abs(p['x'] - norm_x) < 0.15 for p in peaks):
-                    peaks.append({'x': norm_x, 'energy': sector_energies[i]})
+        for cell in cell_energies:
+            if cell['energy'] > 35.0:  # Adaptive threshold to capture small heads/bodies in back rows
+                norm_x = cell['x']
+                norm_y = cell['y']
+                # NMS radius 0.045 allows adjacent students sitting together in rows to be detected as distinct persons
+                if not any(math.hypot(p['x'] - norm_x, p['y'] - norm_y) < 0.055 for p in peaks):
+                    peaks.append({
+                        'x': norm_x,
+                        'y': norm_y,
+                        'energy': cell['energy'],
+                        'row': cell['row']
+                    })
 
-        # If no distinct sector peaks found, estimate 2 to 4 human subjects based on variance
+        # ZERO FAKE FALLBACKS: If no distinct human subject peaks are detected, return empty list []
         if not peaks:
-            num_people = min(4, max(1, int(variance / 2000.0)))
-            step = 0.80 / max(1, num_people + 1)
-            for idx in range(num_people):
-                peaks.append({'x': 0.15 + (idx + 1) * step, 'energy': variance})
+            return []
 
-        # Limit maximum detections to actual peaks present (no artificial grid filler)
-        peaks = peaks[:6]
+        # Allow up to 25 distinct human subject detections per classroom camera view
+        peaks = sorted(peaks, key=lambda p: p['x'])[:25]
 
         # Retrieve or initialize motion track state for this camera
         if camera_id not in ImageFrameAnalyzer.camera_human_clusters:
@@ -123,44 +143,43 @@ class ImageFrameAnalyzer:
         prev_clusters = ImageFrameAnalyzer.camera_human_clusters[camera_id]
         new_clusters = []
 
-        # Smooth spatial tracking and dynamic float movement
+        # Spatial tracking locked directly to observed student head/body positions
         for p_idx, peak in enumerate(peaks):
             target_x = peak['x']
+            target_y = peak['y']
             
             # Find nearest previous cluster
             matched_prev = None
-            min_dist = 0.35
+            min_dist = 0.12
             for prev in prev_clusters:
-                d = abs(prev['x'] - target_x)
+                d = math.hypot(prev['x'] - target_x, prev['y'] - target_y)
                 if d < min_dist:
                     min_dist = d
                     matched_prev = prev
 
             if matched_prev:
-                # Exponential moving average for fluid box movement following student body/head
-                curr_x = round(matched_prev['x'] * 0.65 + target_x * 0.35, 4)
-                # Subtle dynamic motion shift (simulates natural breathing / head posture changes)
-                motion_phase = (timestamp * 2.2 + p_idx * 1.3)
-                shift_x = math.sin(motion_phase) * 0.006
-                shift_y = math.cos(motion_phase * 1.1) * 0.010
-                curr_y = round(max(0.12, min(0.65, matched_prev['y'] + shift_y)), 4)
-                curr_x = round(max(0.08, min(0.88, curr_x + shift_x)), 4)
+                # Direct position lock: no artificial velocity drift or auto-movement faster than student
+                curr_x = round(target_x, 4)
+                curr_y = round(target_y, 4)
             else:
                 curr_x = round(target_x, 4)
-                curr_y = round(0.22 + (p_idx % 3) * 0.12, 4)
+                curr_y = round(target_y, 4)
 
-            box_w = 0.18
-            box_h = 0.42
-            conf = min(0.98, max(0.72, round(0.82 + (peak['energy'] / 100000.0), 2)))
+            # Scale box height/width appropriately based on classroom row depth (smaller for back rows)
+            depth_scale = 1.0 - (peak['row'] * 0.18)
+            box_w = round(0.12 * depth_scale, 4)
+            box_h = round(0.32 * depth_scale, 4)
+            conf = min(0.96, max(0.60, round(0.70 + (peak['energy'] / 100000.0), 2)))
 
-            # Calculate head pose angles based on motion phase and position
-            yaw = int(math.sin(timestamp * 1.8 + p_idx) * 35)
-            pitch = int(math.cos(timestamp * 1.2 + p_idx) * 20)
+            # Calculate head pose direction based on relative position
+            relative_x_center = curr_x - 0.5
+            yaw = int(-relative_x_center * 35)
+            pitch = int(math.cos(timestamp * 0.5 + p_idx) * 8)
             
             head_dir = "center"
-            if yaw < -18: head_dir = "left"
-            elif yaw > 18: head_dir = "right"
-            elif pitch > 12: head_dir = "down"
+            if yaw < -14: head_dir = "right"
+            elif yaw > 14: head_dir = "left"
+            elif pitch > 10: head_dir = "down"
 
             cluster_obj = {
                 'id': matched_prev['id'] if matched_prev else f"human-{p_idx + 1}",

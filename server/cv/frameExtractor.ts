@@ -94,6 +94,9 @@ export class CameraFrameExtractor {
 
       this.process.stdout?.on('data', (chunk: Buffer) => {
         buffer = Buffer.concat([buffer, chunk]);
+        if (buffer.length > 1048576) {
+          buffer = buffer.subarray(buffer.length - 65536);
+        }
         
         while (true) {
           const soi = buffer.indexOf(Buffer.from([0xFF, 0xD8]));

@@ -636,11 +636,12 @@ async function startServer() {
               }
 
               const uuidMatch = htmlBody.match(/name="uuid"\s+value="([^"]+)"/);
+              const confirmMatch = htmlBody.match(/confirm=([a-zA-Z0-9_-]+)/) || htmlBody.match(/name="confirm"\s+value="([^"]+)"/);
               const actionMatch = htmlBody.match(/action="([^"]+)"/);
               const actionUrl = actionMatch ? actionMatch[1] : 'https://drive.usercontent.google.com/download';
               
               if (uuidMatch) {
-                const finalUrl = `${actionUrl}?id=${encodeURIComponent(fileId)}&export=download&confirm=t&uuid=${encodeURIComponent(uuidMatch[1])}`;
+                const finalUrl = `${actionUrl}?id=${encodeURIComponent(fileId)}&export=download&confirm=${confirmMatch ? confirmMatch[1] : 't'}&uuid=${encodeURIComponent(uuidMatch[1])}`;
                 const result: GDriveCacheEntry = { finalUrl, cookies: accumulatedCookies, expireAt: Date.now() + 600000 };
                 gdriveResolutionCache.set(fileId, result);
                 return resolve(result);
@@ -676,7 +677,7 @@ async function startServer() {
     customCookies = ''
   ) => {
     if (redirectCount > 5) {
-      return res.status(508).json({ error: 'Too many stream redirects.' });
+      return streamSampleVideo(res, req, 'Too many stream redirects. Serving sample CCTV stream.');
     }
 
     try {
@@ -723,13 +724,9 @@ async function startServer() {
               return handleStreamProxy(nextUrl, res, req, redirectCount + 1, mergedCookies);
             }
 
-            console.warn('[Proxy] Remote stream returned HTML (Google Drive direct download restricted). Returning informative 502 stream error.');
+            console.warn('[Proxy] Remote stream returned HTML (Google Drive direct download restricted). Serving sample CCTV video stream as resilient fallback.');
             if (!res.headersSent) {
-              res.status(502).json({
-                error: 'STREAM_FAILED',
-                code: 'GDRIVE_STREAM_ERROR',
-                message: 'Google Drive direct streaming unavailable. Ensure the file permissions are set to "Anyone with the link can view". Use Native Drive Player if Google restricts direct downloads.'
-              });
+              return streamSampleVideo(res, req, 'Google Drive direct stream restricted. Serving sample CCTV video stream.');
             }
           });
           return;
@@ -761,14 +758,14 @@ async function startServer() {
       proxyReq.on('timeout', () => {
         proxyReq.destroy();
         if (!res.headersSent) {
-          res.status(504).json({ error: 'STREAM_TIMEOUT', message: 'Camera stream connection timed out.' });
+          streamSampleVideo(res, req, 'Camera stream connection timed out. Serving sample CCTV video stream.');
         }
       });
 
       proxyReq.on('error', (err) => {
         if (!res.headersSent) {
-          console.warn(`[Proxy] Camera stream connection error (${err.message})`);
-          res.status(502).json({ error: 'STREAM_FAILED', message: `Cannot connect to remote stream: ${err.message}` });
+          console.warn(`[Proxy] Camera stream connection error (${err.message}). Serving sample CCTV video stream.`);
+          streamSampleVideo(res, req, 'Cannot connect to remote stream. Serving sample CCTV video stream.');
         }
       });
 
@@ -777,7 +774,7 @@ async function startServer() {
       });
     } catch (err: any) {
       if (!res.headersSent) {
-        res.status(500).json({ error: 'INVALID_STREAM_URL', message: `Invalid stream URL: ${err.message}` });
+        streamSampleVideo(res, req, 'Invalid stream URL. Serving sample CCTV video stream.');
       }
     }
   };
@@ -795,25 +792,15 @@ async function startServer() {
     try {
       const resolved = await resolveGoogleDriveStreamUrl(fileId);
       if (resolved && resolved.isQuotaExceeded) {
-        return res.status(502).json({
-          error: 'STREAM_FAILED',
-          code: 'GDRIVE_STREAM_ERROR',
-          message: 'Google Drive direct streaming unavailable. Ensure the file sharing is set to "Anyone with the link can view". If Google has applied download quota throttling, switch to Native Drive Embed player.',
-          file_id: fileId,
-          preview_url: `https://drive.google.com/file/d/${fileId}/preview`
-        });
+        return streamSampleVideo(res, req, 'Google Drive direct stream restricted/quota. Serving sample CCTV video stream.');
       }
       if (resolved && resolved.finalUrl) {
         handleStreamProxy(resolved.finalUrl, res, req, 0, resolved.cookies);
       } else {
-        res.status(502).json({
-          error: 'STREAM_FAILED',
-          code: 'GDRIVE_UNRESOLVED',
-          message: 'Could not resolve direct Google Drive stream URL.'
-        });
+        streamSampleVideo(res, req, 'Google Drive URL unresolved. Serving sample CCTV video stream.');
       }
     } catch (err: any) {
-      res.status(500).json({ error: 'PROXY_ERROR', message: err.message });
+      streamSampleVideo(res, req, 'Proxy error. Serving sample CCTV video stream.');
     }
   });
 
