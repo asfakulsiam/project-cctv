@@ -160,7 +160,7 @@ export interface GlobalPerson {
   first_seen?: number;
   last_seen: number;
   notes?: string;
-  status?: 'in_seat' | 'left_seat' | 'unassigned';
+  status?: 'active' | 'in_seat' | 'left_seat' | 'unassigned';
 }
 
 export type PersonIdentity = GlobalPerson;

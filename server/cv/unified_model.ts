@@ -460,7 +460,7 @@ export class UnifiedStudentManager {
             max_score: track.max_score || track.current_score || 0,
             warning_latched: track.warning_latched || false,
             last_seen: now,
-            status: matchedSeatId ? 'in_seat' : 'unassigned'
+            status: 'active'
           };
           this.global_persons.set(globalPersonId, gp);
         } else {

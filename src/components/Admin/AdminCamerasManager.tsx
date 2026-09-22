@@ -43,7 +43,6 @@ export function AdminCamerasManager() {
     deleteCamera,
     updateCameraConfig,
     testCameraConnection,
-    seats,
     refreshData 
   } = useMonitoring();
 
@@ -73,7 +72,6 @@ export function AdminCamerasManager() {
     height: number;
     target_fps: number;
     view_angle_description: string;
-    monitored_seats: string[];
   }>({
     camera_id: '',
     name: '',
@@ -85,8 +83,7 @@ export function AdminCamerasManager() {
     width: 1920,
     height: 1080,
     target_fps: 15,
-    view_angle_description: '',
-    monitored_seats: []
+    view_angle_description: ''
   });
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -164,8 +161,7 @@ export function AdminCamerasManager() {
       width: 1280,
       height: 720,
       target_fps: 15,
-      view_angle_description: '',
-      monitored_seats: seats.map(s => s.id)
+      view_angle_description: ''
     });
     setIsModalOpen(true);
   };
@@ -183,8 +179,7 @@ export function AdminCamerasManager() {
       width: camera.resolution?.width || 1920,
       height: camera.resolution?.height || 1080,
       target_fps: camera.target_fps || 15,
-      view_angle_description: camera.view_angle_description || '',
-      monitored_seats: camera.monitored_seats || seats.map(s => s.id)
+      view_angle_description: camera.view_angle_description || ''
     });
     setIsModalOpen(true);
   };
@@ -257,8 +252,7 @@ export function AdminCamerasManager() {
         enabled: formData.enabled,
         resolution: { width: Number(formData.width), height: Number(formData.height) },
         target_fps: Number(formData.target_fps),
-        view_angle_description: formData.view_angle_description,
-        monitored_seats: formData.monitored_seats
+        view_angle_description: formData.view_angle_description
       });
       if (ok) {
         showFeedback('success', `Camera ${editingCameraId.toUpperCase()} updated.`);
@@ -278,8 +272,7 @@ export function AdminCamerasManager() {
         enabled: formData.enabled,
         resolution: { width: Number(formData.width), height: Number(formData.height) },
         target_fps: Number(formData.target_fps),
-        view_angle_description: formData.view_angle_description,
-        monitored_seats: formData.monitored_seats
+        view_angle_description: formData.view_angle_description
       });
       if (ok) {
         showFeedback('success', `New camera ${formData.name} added to fleet.`);
@@ -288,18 +281,6 @@ export function AdminCamerasManager() {
         showFeedback('error', 'Failed to register camera in MongoDB.');
       }
     }
-  };
-
-  const toggleSeatMonitoring = (seatId: string) => {
-    setFormData(prev => {
-      const exists = prev.monitored_seats.includes(seatId);
-      return {
-        ...prev,
-        monitored_seats: exists
-          ? prev.monitored_seats.filter(s => s !== seatId)
-          : [...prev.monitored_seats, seatId]
-      };
-    });
   };
 
   return (
@@ -400,7 +381,6 @@ export function AdminCamerasManager() {
         {cameras.map(camera => {
           const isPrimary = camera.camera_id === primaryCameraId;
           const isOnline = camera.status === 'online' && camera.enabled !== false;
-          const monitored = camera.monitored_seats || [];
 
           return (
             <div 
@@ -471,12 +451,6 @@ export function AdminCamerasManager() {
                 <div>
                   <span className="text-slate-500 text-[10px] block">OBSERVATION CLARITY</span>
                   <span className="text-cyan-400 font-bold">{camera.quality_score}%</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 text-[10px] block">MONITORED SEATS</span>
-                  <span className="text-slate-300 truncate block text-[11px]">
-                    {monitored.length > 0 ? monitored.map(s => s.replace('seat-', 'A')).join(', ') : 'All seats'}
-                  </span>
                 </div>
               </div>
 
@@ -898,32 +872,6 @@ export function AdminCamerasManager() {
                   placeholder="e.g. Left oblique perspective verifying student desk surface"
                   className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-white focus:outline-none focus:border-cyan-500"
                 />
-              </div>
-
-              {/* Monitored Seats checkboxes */}
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1.5">
-                  Monitored Classroom Seats (Physical Association)
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {seats.map(seat => {
-                    const isMonitored = formData.monitored_seats.includes(seat.id);
-                    return (
-                      <button
-                        type="button"
-                        key={seat.id}
-                        onClick={() => toggleSeatMonitoring(seat.id)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium border transition-colors ${
-                          isMonitored
-                            ? 'bg-cyan-950 border-cyan-500 text-cyan-300'
-                            : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
-                        }`}
-                      >
-                        {seat.seat_label || seat.id} ({seat.id})
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
 
               <div className="flex items-center space-x-6 pt-2">

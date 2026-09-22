@@ -16,7 +16,6 @@ import { Users, Edit3, Trash2, Plus, Check, X, AlertCircle, RotateCcw, UserCheck
 export function AdminStudentsManager() {
   const {
     students,
-    seats,
     globalPersons,
     refreshData,
     settings,
@@ -31,36 +30,17 @@ export function AdminStudentsManager() {
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
   const [editIdNumber, setEditIdNumber] = useState<string>('');
   const [editName, setEditName] = useState<string>('');
-  const [editSeatId, setEditSeatId] = useState<string>('');
   const [editNotes, setEditNotes] = useState<string>('');
 
   // Student adding
   const [isAdding, setIsAdding] = useState<boolean>(false);
   const [newIdNumber, setNewIdNumber] = useState<string>('');
   const [newName, setNewName] = useState<string>('');
-  const [newSeatId, setNewSeatId] = useState<string>('');
   const [newClassroom, setNewClassroom] = useState<string>('');
-
-  // Candidate editing
-  const [editingCandidateId, setEditingCandidateId] = useState<string | null>(null);
-  const [candidateEditSeat, setCandidateEditSeat] = useState<string>('');
 
   // Clear confirmation
   const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-
-  const handleSaveCandidateEdit = async (personId: string) => {
-    const success = await editCandidate(personId, {
-      seat_id: candidateEditSeat || undefined
-    });
-    if (success) {
-      setFeedback({ type: 'success', message: `Candidate ${personId} metadata updated.` });
-      setEditingCandidateId(null);
-      setTimeout(() => setFeedback(null), 3000);
-    } else {
-      setFeedback({ type: 'error', message: 'Failed to update candidate.' });
-    }
-  };
 
   const handleDeleteCandidate = async (personId: string) => {
     if (!window.confirm(`Remove candidate ${personId} from active session? This will untrack them until newly detected.`)) return;
@@ -88,7 +68,6 @@ export function AdminStudentsManager() {
     setEditingStudentId(student.id);
     setEditIdNumber(student.student_id_number);
     setEditName(student.name);
-    setEditSeatId(student.seat_id || '');
     setEditNotes(student.notes || '');
   };
 
@@ -108,7 +87,6 @@ export function AdminStudentsManager() {
         body: JSON.stringify({
           student_id_number: editIdNumber.trim(),
           name: editName.trim(),
-          seat_id: editSeatId.trim(),
           notes: editNotes.trim()
         })
       });
@@ -146,7 +124,6 @@ export function AdminStudentsManager() {
         body: JSON.stringify({
           student_id_number: newIdNumber.trim(),
           name: newName.trim(),
-          seat_id: newSeatId.trim() || undefined,
           classroom_id: newClassroom.trim() || undefined
         })
       });
@@ -156,7 +133,6 @@ export function AdminStudentsManager() {
         setIsAdding(false);
         setNewIdNumber('');
         setNewName('');
-        setNewSeatId('');
         setNewClassroom('');
         await refreshData();
         setTimeout(() => setFeedback(null), 3000);
@@ -283,7 +259,6 @@ export function AdminStudentsManager() {
               <tr>
                 <th className="px-4 py-3">Person ID</th>
                 <th className="px-4 py-3">Active Camera Tracks</th>
-                <th className="px-4 py-3">Assigned Desk</th>
                 <th className="px-4 py-3">Warning Status</th>
                 <th className="px-4 py-3">Monitoring Risk</th>
                 <th className="px-4 py-3 text-right">Actions</th>
@@ -292,7 +267,7 @@ export function AdminStudentsManager() {
             <tbody className="divide-y divide-slate-800/80 text-slate-300">
               {globalPersons.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-500 text-xs">
+                  <td colSpan={5} className="px-4 py-10 text-center text-slate-500 text-xs">
                     <div className="flex flex-col items-center justify-center space-y-2">
                       <Users className="w-7 h-7 text-slate-600 stroke-1" />
                       <p className="text-sm font-medium text-slate-400">0 Exam Candidates Detected</p>
@@ -304,67 +279,7 @@ export function AdminStudentsManager() {
                 </tr>
               ) : (
                 globalPersons.map(gp => {
-                  const isEditing = editingCandidateId === gp.id;
                   const trackList = gp.camera_tracks || [];
-
-                  if (isEditing) {
-                    return (
-                      <tr key={gp.id} className="bg-indigo-950/20">
-                        <td className="px-4 py-3 font-mono font-bold text-indigo-400">
-                          {gp.id} <span className="text-[10px] text-slate-500">(immutable)</span>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-slate-400 text-[11px]">
-                          {trackList.map(t => `${t.camera_id}:${t.track_id}`).join(', ') || 'None'}
-                        </td>
-                        <td className="px-4 py-3">
-                          <select
-                            value={candidateEditSeat}
-                            onChange={e => setCandidateEditSeat(e.target.value)}
-                            className="px-2 py-1 bg-slate-900 border border-indigo-500 rounded text-white text-xs"
-                          >
-                            <option value="">Unassigned</option>
-                            {seats.map(s => (
-                              <option key={s.id} value={s.id}>
-                                {s.seat_label || s.id}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                            gp.warning_latched 
-                              ? 'bg-rose-950 text-rose-300 border border-rose-800' 
-                              : (gp.current_score || 0) >= 35 
-                                ? 'bg-amber-950 text-amber-300 border border-amber-800' 
-                                : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                          }`}>
-                            {gp.warning_latched ? 'WARNING LATCHED' : ((gp.current_score || 0) >= 35 ? 'WARNING' : 'NORMAL')}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-slate-400">
-                          {Math.round(gp.current_score || 0)} pts
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <div className="flex items-center justify-end space-x-1">
-                            <button
-                              onClick={() => handleSaveCandidateEdit(gp.id)}
-                              className="p-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white"
-                              title="Save Changes"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => setEditingCandidateId(null)}
-                              className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
-                              title="Cancel"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  }
 
                   return (
                     <tr key={gp.id} className="hover:bg-slate-900/50 transition-colors">
@@ -387,9 +302,6 @@ export function AdminStudentsManager() {
                           </div>
                         )}
                       </td>
-                      <td className="px-4 py-3 font-mono text-cyan-400">
-                        {gp.seat_id?.toUpperCase() || <span className="text-slate-500">Unassigned</span>}
-                      </td>
                       <td className="px-4 py-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
                           gp.warning_latched 
@@ -408,16 +320,6 @@ export function AdminStudentsManager() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex items-center justify-end space-x-1.5">
-                          <button
-                            onClick={() => {
-                              setEditingCandidateId(gp.id);
-                              setCandidateEditSeat(gp.seat_id || '');
-                            }}
-                            className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-                            title="Edit Candidate Seat"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
                           <button
                             onClick={() => handleDeleteCandidate(gp.id)}
                             className="p-1.5 rounded hover:bg-rose-950 text-slate-500 hover:text-rose-400 transition-colors"
@@ -479,16 +381,6 @@ export function AdminStudentsManager() {
                 className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
-            <div>
-              <label className="block text-[10px] font-mono uppercase text-slate-400 mb-1">Assigned Desk / Seat ID</label>
-              <input
-                type="text"
-                value={newSeatId}
-                onChange={e => setNewSeatId(e.target.value)}
-                placeholder="e.g. seat-1"
-                className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
-              />
-            </div>
             <div className="flex items-end space-x-2">
               <button
                 type="submit"
@@ -507,7 +399,6 @@ export function AdminStudentsManager() {
               <tr>
                 <th className="px-4 py-3">Student ID Number</th>
                 <th className="px-4 py-3">Student Name</th>
-                <th className="px-4 py-3">Assigned Desk</th>
                 <th className="px-4 py-3">Exam Status</th>
                 <th className="px-4 py-3">Cumulative Risk</th>
                 <th className="px-4 py-3">Notes</th>
@@ -517,7 +408,7 @@ export function AdminStudentsManager() {
             <tbody className="divide-y divide-slate-800/80 text-slate-300">
               {students.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
+                  <td colSpan={6} className="px-4 py-12 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center space-y-2">
                       <Users className="w-8 h-8 text-slate-600 stroke-1" />
                       <p className="text-sm font-medium text-slate-400">No students registered in roster</p>
@@ -548,15 +439,6 @@ export function AdminStudentsManager() {
                           value={editName}
                           onChange={e => setEditName(e.target.value)}
                           className="w-full px-2 py-1 bg-slate-900 border border-indigo-500 rounded text-white text-xs"
-                        />
-                      </td>
-                      <td className="px-4 py-3">
-                        <input
-                          type="text"
-                          value={editSeatId}
-                          onChange={e => setEditSeatId(e.target.value)}
-                          placeholder="Seat ID (e.g. seat-1)"
-                          className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-white text-xs"
                         />
                       </td>
                       <td className="px-4 py-3 font-mono text-slate-400">
@@ -603,9 +485,6 @@ export function AdminStudentsManager() {
                     </td>
                     <td className="px-4 py-3 font-semibold text-white">
                       {student.name}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-cyan-400">
-                      {student.seat_id?.toUpperCase() || 'N/A'}
                     </td>
                     <td className="px-4 py-3">
                       <span

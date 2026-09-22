@@ -163,60 +163,6 @@ class PythonBehaviorAnalyzer:
             ctx["phone_since"] = None
             ctx["penalties"]["phone"] = max(0, ctx["penalties"]["phone"] - 1)
 
-        # 4. Seat Boundaries
-        if seat_region and "bbox" in track:
-            bbox = track["bbox"]
-            bx = (bbox.x + bbox.width / 2) if hasattr(bbox, "x") else (bbox["x"] + bbox["width"] / 2)
-            by = (bbox.y + bbox.height / 2) if hasattr(bbox, "y") else (bbox["y"] + bbox["height"] / 2)
-            margin = 0.08
-            inside = (
-                (seat_region["x"] - margin) <= bx <= (seat_region["x"] + seat_region["width"] + margin) and
-                (seat_region["y"] - margin) <= by <= (seat_region["y"] + seat_region["height"] + margin)
-            )
-            if not inside:
-                if ctx["left_seat_since"] is None:
-                    ctx["left_seat_since"] = now
-                left_dur = now - ctx["left_seat_since"]
-                if left_dur >= self.leave_seat_grace_sec and not ctx["left_seat_alerted"]:
-                    ctx["left_seat_alerted"] = True
-                    ctx["is_out_of_seat"] = True
-                    penalty = self.weights["leaving_seat"]
-                    ctx["penalties"]["seat"] = penalty
-                    evt = {
-                        "event_type": "LEFT_SEAT",
-                        "camera_id": track["camera_id"],
-                        "track_id": track_id,
-                        "student_id": track.get("associated_student_id"),
-                        "timestamp": now,
-                        "severity": "high",
-                        "score_contribution": penalty,
-                        "description": f"Student exited designated seating perimeter for {left_dur:.1f}s"
-                    }
-                    if global_person_id:
-                        evt["global_person_id"] = global_person_id
-                    events.append(evt)
-            else:
-                if ctx["is_out_of_seat"]:
-                    ctx["is_out_of_seat"] = False
-                    ctx["left_seat_alerted"] = False
-                    ctx["left_seat_since"] = None
-                    ctx["penalties"]["seat"] = 0
-                    evt = {
-                        "event_type": "RETURNED_TO_SEAT",
-                        "camera_id": track["camera_id"],
-                        "track_id": track_id,
-                        "student_id": track.get("associated_student_id"),
-                        "timestamp": now,
-                        "severity": "info",
-                        "score_contribution": 0,
-                        "description": "Student returned to designated workstation"
-                    }
-                    if global_person_id:
-                        evt["global_person_id"] = global_person_id
-                    events.append(evt)
-                else:
-                    ctx["left_seat_since"] = None
-
         # Dual score calculation:
         current_score = min(100, max(0, sum(ctx["penalties"].values())))
         # Cumulative score is monotonically non-decreasing
