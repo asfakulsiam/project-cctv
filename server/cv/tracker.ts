@@ -102,9 +102,9 @@ export class CameraTracker {
   private thresholds?: MonitoringThresholds;
 
   // Association & Lifecycle Parameters
-  private readonly confirmation_hits_required = 4; // Multi-frame confirmation
-  private readonly max_missed_frames = 25;         // Stationary persistence through occlusion
-  private readonly iou_threshold = 0.15;           // Spatial association threshold
+  private readonly confirmation_hits_required = 3; // Fast multi-frame confirmation
+  private readonly max_missed_frames = 150;        // Highly persistent tracking (never drop detected humans prematurely)
+  private readonly iou_threshold = 0.10;           // Spatial association threshold
   private readonly appearance_weight = 0.45;       // Combined cost weight when embeddings exist
 
   constructor(camera_id: string, thresholds?: MonitoringThresholds) {

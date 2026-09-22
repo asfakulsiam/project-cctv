@@ -409,7 +409,41 @@ export class UnifiedStudentManager {
           globalPersonId = this.generateGlobalPersonId();
         }
 
-        const studentRec = matchedStudentId ? this.students.get(matchedStudentId) : null;
+        // Ensure every detected human automatically has a StudentRecord (no seat limitations)
+        let studentRec: StudentRecord | null = null;
+        if (matchedStudentId) {
+          studentRec = this.students.get(matchedStudentId) || null;
+        } else {
+          for (const s of this.students.values()) {
+            if (s.person_id === globalPersonId || s.global_person_id === globalPersonId) {
+              studentRec = s;
+              matchedStudentId = s.id;
+              break;
+            }
+          }
+          if (!studentRec) {
+            const numPart = globalPersonId.replace(/^P-/i, '');
+            const autoId = `stu-auto-${globalPersonId.toLowerCase()}`;
+            studentRec = {
+              id: autoId,
+              student_id_number: `S-20${numPart.padStart(2, '0')}`,
+              name: `Student ${globalPersonId}`,
+              classroom_id: 'hall-a',
+              person_id: globalPersonId,
+              global_person_id: globalPersonId,
+              seat_id: matchedSeatId || undefined,
+              status: 'present',
+              current_score: 0,
+              cumulative_score: 0,
+              max_score: 0,
+              unified_suspicion_score: 0,
+              warning_level: 'normal',
+              active_observations: []
+            };
+            this.students.set(autoId, studentRec);
+            matchedStudentId = autoId;
+          }
+        }
 
         // Ensure global person is present in registry
         let gp = this.global_persons.get(globalPersonId);
