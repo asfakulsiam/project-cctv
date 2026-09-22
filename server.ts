@@ -142,6 +142,15 @@ async function startServer() {
     });
   });
 
+  // CV Pipeline Diagnostics (Source -> Frame Ingestion -> Detector -> Tracker -> Telemetry observability)
+  app.get('/api/cv/diagnostics', (req, res) => {
+    if (cvEngine && typeof (cvEngine as any).getDiagnostics === 'function') {
+      res.json((cvEngine as any).getDiagnostics());
+    } else {
+      res.status(503).json({ error: 'CV Engine not initialized or diagnostics unavailable' });
+    }
+  });
+
   // Public Settings & Branding
   app.get('/api/settings', async (req, res) => {
     try {

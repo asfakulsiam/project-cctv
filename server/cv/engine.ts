@@ -38,6 +38,7 @@ import { BehaviorAnalyzer } from './behavior.js';
 import { RealPersonDetector } from './personDetector.js';
 import { CameraTracker } from './tracker.js';
 import { UnifiedStudentManager } from './unified_model.js';
+import { CameraFrameExtractor } from './frameExtractor.js';
 
 export interface FrameSource {
   open(): Promise<void>;
@@ -114,6 +115,7 @@ export class CVEngine {
   private settings: AppSettings;
   private cameras: Map<string, CameraConfig> = new Map();
   private cameraSources: Map<string, FrameSource> = new Map();
+  private cameraExtractors: Map<string, CameraFrameExtractor> = new Map();
   private seats: SeatRecord[] = [];
   
   // Vision Components
@@ -210,11 +212,24 @@ export class CVEngine {
         source.open();
         this.cameraSources.set(camera.camera_id, source);
       }
+
+      if (!this.cameraExtractors.has(camera.camera_id) && camera.source_url) {
+        const extractor = new CameraFrameExtractor(camera.camera_id, camera.source_url, (frame) => {
+          this.pushCameraFrame(camera.camera_id, frame);
+        });
+        if (this.isRunning) {
+          extractor.start();
+        }
+        this.cameraExtractors.set(camera.camera_id, extractor);
+      }
     }
 
     // Prune removed cameras
     for (const staleId of this.cameras.keys()) {
       if (!currentCameraIds.has(staleId)) {
+        const ext = this.cameraExtractors.get(staleId);
+        if (ext) ext.stop();
+        this.cameraExtractors.delete(staleId);
         this.cameras.delete(staleId);
         this.trackers.delete(staleId);
         this.cameraSources.delete(staleId);
@@ -234,6 +249,9 @@ export class CVEngine {
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
+    for (const extractor of this.cameraExtractors.values()) {
+      extractor.start();
+    }
     console.log('[CV Engine] Multi-camera processing engine started at target', this.settings.processing_fps, 'FPS');
     this.scheduleNextTick();
   }
@@ -244,7 +262,37 @@ export class CVEngine {
       clearTimeout(this.loopTimer);
       this.loopTimer = null;
     }
+    for (const extractor of this.cameraExtractors.values()) {
+      extractor.stop();
+    }
     console.log('[CV Engine] Multi-camera processing engine stopped.');
+  }
+
+  public getDiagnostics() {
+    const cameraDiagnostics: any[] = [];
+    for (const [cameraId, camera] of this.cameras.entries()) {
+      const extractor = this.cameraExtractors.get(cameraId);
+      const extDiag = extractor ? extractor.getDiagnostics() : { source_status: 'idle', frames_received: 0, media_connected: false, processing_fps: 0 };
+      const tracks = this.latestTracksByCamera.get(cameraId) || [];
+      cameraDiagnostics.push({
+        camera_id: cameraId,
+        name: camera.name,
+        source_url: camera.source_url,
+        ...extDiag,
+        detections: tracks.length,
+        active_tracks: tracks.length,
+        global_persons: this.latestGlobalPersons.length
+      });
+    }
+    return {
+      engine_running: this.isRunning,
+      measured_fps: this.currentMeasuredFps,
+      total_cameras: this.cameras.size,
+      online_cameras: Array.from(this.cameras.values()).filter(c => c.status === 'online').length,
+      cameras: cameraDiagnostics,
+      global_persons_count: this.latestGlobalPersons.length,
+      unique_students_count: this.latestUnifiedStudents.length
+    };
   }
 
   private scheduleNextTick(): void {
