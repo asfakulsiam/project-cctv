@@ -44,7 +44,6 @@ export function AdminStudentsManager() {
   // Candidate editing
   const [editingCandidateId, setEditingCandidateId] = useState<string | null>(null);
   const [candidateEditSeat, setCandidateEditSeat] = useState<string>('');
-  const [candidateEditStudent, setCandidateEditStudent] = useState<string>('');
 
   // Clear confirmation
   const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
@@ -52,8 +51,7 @@ export function AdminStudentsManager() {
 
   const handleSaveCandidateEdit = async (personId: string) => {
     const success = await editCandidate(personId, {
-      seat_id: candidateEditSeat || undefined,
-      student_id: candidateEditStudent || null
+      seat_id: candidateEditSeat || undefined
     });
     if (success) {
       setFeedback({ type: 'success', message: `Candidate ${personId} metadata updated.` });
@@ -283,10 +281,10 @@ export function AdminStudentsManager() {
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 uppercase font-mono text-[10px]">
               <tr>
-                <th className="px-4 py-3">Technical Person ID</th>
+                <th className="px-4 py-3">Person ID</th>
                 <th className="px-4 py-3">Active Camera Tracks</th>
                 <th className="px-4 py-3">Assigned Desk</th>
-                <th className="px-4 py-3">Associated Student</th>
+                <th className="px-4 py-3">Warning Status</th>
                 <th className="px-4 py-3">Monitoring Risk</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
@@ -333,18 +331,15 @@ export function AdminStudentsManager() {
                           </select>
                         </td>
                         <td className="px-4 py-3">
-                          <select
-                            value={candidateEditStudent}
-                            onChange={e => setCandidateEditStudent(e.target.value)}
-                            className="px-2 py-1 bg-slate-900 border border-indigo-500 rounded text-white text-xs"
-                          >
-                            <option value="">No Student Linked</option>
-                            {students.map(s => (
-                              <option key={s.id} value={s.id}>
-                                {s.student_id_number} - {s.name}
-                              </option>
-                            ))}
-                          </select>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                            gp.warning_latched 
+                              ? 'bg-rose-950 text-rose-300 border border-rose-800' 
+                              : (gp.current_score || 0) >= 35 
+                                ? 'bg-amber-950 text-amber-300 border border-amber-800' 
+                                : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                          }`}>
+                            {gp.warning_latched ? 'WARNING LATCHED' : ((gp.current_score || 0) >= 35 ? 'WARNING' : 'NORMAL')}
+                          </span>
                         </td>
                         <td className="px-4 py-3 font-mono text-slate-400">
                           {Math.round(gp.current_score || 0)} pts
@@ -396,18 +391,15 @@ export function AdminStudentsManager() {
                         {gp.seat_id?.toUpperCase() || <span className="text-slate-500">Unassigned</span>}
                       </td>
                       <td className="px-4 py-3">
-                        {gp.associated_student_id || gp.student_id ? (
-                          <div className="flex items-center space-x-1.5">
-                            <span className="font-semibold text-white">
-                              {gp.associated_student_name || gp.student_name}
-                            </span>
-                            <span className="text-[10px] font-mono text-indigo-400 bg-indigo-950 px-1 py-0.5 rounded">
-                              {gp.student_id_number}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500 italic">No student associated</span>
-                        )}
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                          gp.warning_latched 
+                            ? 'bg-rose-950 text-rose-300 border border-rose-800' 
+                            : (gp.current_score || 0) >= 35 
+                              ? 'bg-amber-950 text-amber-300 border border-amber-800' 
+                              : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                        }`}>
+                          {gp.warning_latched ? 'WARNING LATCHED' : ((gp.current_score || 0) >= 35 ? 'WARNING' : 'NORMAL')}
+                        </span>
                       </td>
                       <td className="px-4 py-3 font-mono">
                         <span className={(gp.current_score || 0) >= highThreshold ? 'text-rose-400 font-bold' : 'text-slate-300'}>
@@ -420,10 +412,9 @@ export function AdminStudentsManager() {
                             onClick={() => {
                               setEditingCandidateId(gp.id);
                               setCandidateEditSeat(gp.seat_id || '');
-                              setCandidateEditStudent(gp.associated_student_id || gp.student_id || '');
                             }}
                             className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
-                            title="Edit Candidate Metadata & Seat"
+                            title="Edit Candidate Seat"
                           >
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>

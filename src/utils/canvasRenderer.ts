@@ -257,8 +257,12 @@ export function drawCameraFeed(
     // E. Ultra-Compact, Non-Blocking ID & Score Header Tag
     // (Small, sleek, and moves frame-by-frame on top of the bounding box)
     // ID-ONLY Architecture: Authoritative Person ID (P-001) + Score + Warning Status
+    // Strict requirement: Never display raw camera track ID (CAM1-T001) as person identity
     // -------------------------------------------------------------
-    const personId = track.global_person_id || track.person_id || track.track_id;
+    const rawPersonId = track.global_person_id || track.person_id;
+    const personId = (rawPersonId && /^P-\d+$/i.test(rawPersonId)) 
+      ? rawPersonId 
+      : (rawPersonId && !rawPersonId.startsWith('CAM') && !rawPersonId.includes('-T') ? rawPersonId : 'P-ID PENDING');
     const statusPrefix = isCritical ? '🚨 ' : (isWarning ? '⚠️ ' : '');
     const warnSuffix = isCritical ? ' • CRITICAL' : (isWarning ? ' • WARNING' : '');
     const tagText = `${statusPrefix}${personId} • SCORE ${liveScore}${warnSuffix}`;

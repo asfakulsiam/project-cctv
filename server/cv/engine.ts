@@ -143,7 +143,8 @@ export class CVEngine {
     settings: AppSettings,
     initialCameras: CameraConfig[],
     initialStudents: StudentRecord[],
-    initialSeats: SeatRecord[]
+    initialSeats: SeatRecord[],
+    initialGlobalPersons?: GlobalPerson[]
   ) {
     this.settings = settings;
     this.seats = initialSeats;
@@ -159,7 +160,9 @@ export class CVEngine {
         warning_suspicion_threshold: settings.thresholds.warning_suspicion_threshold,
         high_suspicion_threshold: settings.thresholds.high_suspicion_threshold,
         reid_similarity_threshold: 0.70
-      }
+      },
+      settings.thresholds,
+      initialGlobalPersons
     );
 
     this.behaviorAnalyzer = new BehaviorAnalyzer(
@@ -347,13 +350,11 @@ export class CVEngine {
 
       for (const track of tracks) {
         allActiveTrackIds.add(track.track_id);
-        const studentInfo = unifiedStudents.find(s => s.id === track.associated_student_id);
         const seat = this.seats.find(s => s.id === track.seat_id);
         const seatRegion = seat?.camera_regions[cameraId];
 
         const { events, suspicion_score, current_score, cumulative_score, max_score } = this.behaviorAnalyzer.analyzeTrack(
           track,
-          studentInfo ? { name: studentInfo.name, student_id_number: studentInfo.student_id_number } : undefined,
           seatRegion,
           now
         );
@@ -368,14 +369,9 @@ export class CVEngine {
 
         // Cross-camera event deduplication and enrichment
         for (const evt of events) {
-          evt.global_person_id = track.global_person_id;
-          evt.student_id = track.associated_student_id;
-          if (studentInfo) {
-            evt.student_id_number = studentInfo.student_id_number;
-            evt.student_name = studentInfo.name;
-          }
-          const shouldEmit = track.global_person_id
-            ? this.unifiedStudentManager.shouldEmitCrossCameraEvent(track.global_person_id, evt.event_type, now)
+          evt.global_person_id = track.global_person_id || track.person_id;
+          const shouldEmit = evt.global_person_id
+            ? this.unifiedStudentManager.shouldEmitCrossCameraEvent(evt.global_person_id, evt.event_type, now)
             : true;
 
           if (shouldEmit) {
@@ -772,24 +768,11 @@ export class CVEngine {
     return this.unifiedStudentManager.getGlobalPerson(personId);
   }
 
-  public async editCandidate(personId: string, updates: { seat_id?: string; student_id?: string | null; notes?: string }): Promise<GlobalPerson | null> {
+  public async editCandidate(personId: string, updates: { seat_id?: string; notes?: string }): Promise<GlobalPerson | null> {
     const updated = this.unifiedStudentManager.editCandidate(personId, updates);
     if (updated) {
       this.latestGlobalPersons = this.unifiedStudentManager.getCandidates();
       this.latestUnifiedStudents = this.unifiedStudentManager.getStudents();
-
-      // Persist student updates if candidate is associated with a student record
-      if (updated.associated_student_id) {
-        const student = this.unifiedStudentManager.getStudentRecord(updated.associated_student_id);
-        if (student) {
-          await db.updateStudent(student.id, {
-            seat_id: student.seat_id,
-            notes: student.notes,
-            person_id: student.person_id,
-            global_person_id: student.global_person_id
-          });
-        }
-      }
     }
     return updated;
   }

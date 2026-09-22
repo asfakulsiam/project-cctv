@@ -15,7 +15,8 @@ import {
   SeatRecord, 
   StudentRecord, 
   BehaviorEvent, 
-  ExamSession 
+  ExamSession,
+  GlobalPerson
 } from '../src/types.js';
 
 let mongoClient: MongoClient | null = null;
@@ -31,6 +32,7 @@ interface StorageCollections {
   students: StudentRecord[];
   events: BehaviorEvent[];
   sessions: ExamSession[];
+  global_persons: GlobalPerson[];
 }
 
 const memoryStore: StorageCollections = {
@@ -40,7 +42,8 @@ const memoryStore: StorageCollections = {
   seats: [],
   students: [],
   events: [],
-  sessions: []
+  sessions: [],
+  global_persons: []
 };
 
 // Production Default Settings (Configurable via Environment Variables or Admin Settings)
@@ -435,5 +438,52 @@ export const db = {
       return await mongoDb.collection<ExamSession>('sessions').findOne({ status: 'active' });
     }
     return memoryStore.sessions.find(s => s.status === 'active') || memoryStore.sessions[0] || null;
+  },
+
+  // Persistent Global Persons
+  async getGlobalPersons(): Promise<GlobalPerson[]> {
+    if (!isUsingFallback && mongoDb) {
+      return await mongoDb.collection<GlobalPerson>('global_persons').find({}).toArray();
+    }
+    return [...memoryStore.global_persons];
+  },
+
+  async saveGlobalPerson(person: GlobalPerson): Promise<GlobalPerson> {
+    if (!isUsingFallback && mongoDb) {
+      await mongoDb.collection('global_persons').replaceOne(
+        { id: person.id },
+        person,
+        { upsert: true }
+      );
+      return person;
+    }
+    const idx = memoryStore.global_persons.findIndex(p => p.id === person.id);
+    if (idx !== -1) {
+      memoryStore.global_persons[idx] = { ...person };
+    } else {
+      memoryStore.global_persons.push({ ...person });
+    }
+    return person;
+  },
+
+  async deleteGlobalPerson(id: string): Promise<boolean> {
+    if (!isUsingFallback && mongoDb) {
+      const res = await mongoDb.collection('global_persons').deleteOne({ id });
+      return res.deletedCount > 0;
+    }
+    const idx = memoryStore.global_persons.findIndex(p => p.id === id);
+    if (idx !== -1) {
+      memoryStore.global_persons.splice(idx, 1);
+      return true;
+    }
+    return false;
+  },
+
+  async clearGlobalPersons(): Promise<void> {
+    if (!isUsingFallback && mongoDb) {
+      await mongoDb.collection('global_persons').deleteMany({});
+      return;
+    }
+    memoryStore.global_persons = [];
   }
 };

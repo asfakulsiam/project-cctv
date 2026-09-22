@@ -140,11 +140,6 @@ export interface GlobalPerson {
   person_id?: string;            // Layer 3 Person ID (e.g. "P-001")
   global_person_id?: string;     // Alias for id / person_id
   classroom_id?: string;
-  associated_student_id?: string;// Associated formal student record in DB
-  associated_student_name?: string;
-  student_id?: string;
-  student_id_number?: string;
-  student_name?: string;
   seat_id?: string;
   active?: boolean;
   primary_camera_id?: string;

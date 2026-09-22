@@ -74,13 +74,35 @@ export class UnifiedStudentManager {
     initialStudents: StudentRecord[], 
     seats: SeatRecord[],
     thresholds?: Partial<GlobalIdentityThresholds>,
-    fullThresholds?: MonitoringThresholds
+    fullThresholds?: MonitoringThresholds,
+    initialGlobalPersons?: GlobalPerson[]
   ) {
     this.seats = seats;
     this.fullThresholds = fullThresholds;
     if (thresholds) {
       this.thresholds = { ...this.thresholds, ...thresholds };
     }
+    
+    // Restore persistent GlobalPerson entities across server restarts
+    if (initialGlobalPersons && initialGlobalPersons.length > 0) {
+      for (const gp of initialGlobalPersons) {
+        if (gp && gp.id) {
+          this.global_persons.set(gp.id, {
+            ...gp,
+            camera_tracks: [],
+            current_score: 0,
+            warning_latched: false
+          });
+          if (/^P-\d+$/i.test(gp.id)) {
+            const num = parseInt(gp.id.replace(/^P-/i, ''), 10);
+            if (!isNaN(num) && num >= this.next_person_number) {
+              this.next_person_number = num + 1;
+            }
+          }
+        }
+      }
+    }
+
     for (const student of initialStudents) {
       const pid = student.person_id || student.global_person_id;
       if (pid && /^P-\d+$/i.test(pid)) {
@@ -118,7 +140,7 @@ export class UnifiedStudentManager {
   }
 
   /**
-   * Update student roster. Ensures removed students are cleaned up and associations severed,
+   * Update student roster. Ensures removed students are cleaned up,
    * while preserving persistent person_id and global_person_id assignments.
    */
   public updateStudentList(students: StudentRecord[]): void {
@@ -128,16 +150,6 @@ export class UnifiedStudentManager {
     for (const [id] of this.students.entries()) {
       if (!newStudentIds.has(id)) {
         this.students.delete(id);
-        // Sever from global persons
-        for (const gp of this.global_persons.values()) {
-          if (gp.associated_student_id === id) {
-            gp.associated_student_id = undefined;
-            gp.associated_student_name = undefined;
-            gp.student_id = undefined;
-            gp.student_id_number = undefined;
-            gp.student_name = undefined;
-          }
-        }
       }
     }
 
@@ -152,18 +164,6 @@ export class UnifiedStudentManager {
         }
       }
 
-      // If existing had a person_id that is no longer assigned, sever it from global persons
-      if (existing && existing.person_id && existing.person_id !== pid) {
-        const oldGp = this.global_persons.get(existing.person_id);
-        if (oldGp && oldGp.associated_student_id === s.id) {
-          oldGp.associated_student_id = undefined;
-          oldGp.associated_student_name = undefined;
-          oldGp.student_id = undefined;
-          oldGp.student_id_number = undefined;
-          oldGp.student_name = undefined;
-        }
-      }
-
       if (existing) {
         this.students.set(s.id, {
           ...existing,
@@ -175,39 +175,23 @@ export class UnifiedStudentManager {
           person_id: pid,
           global_person_id: pid
         });
-        // Update associated Global Person display name
-        if (pid) {
-          const gp = this.global_persons.get(pid);
-          if (gp) {
-            gp.associated_student_id = s.id;
-            gp.associated_student_name = s.name;
-            gp.student_id = s.id;
-            gp.student_id_number = s.student_id_number;
-            gp.student_name = s.name;
-          }
-        }
       } else {
-        const existing = this.students.get(s.id);
+        const prev = this.students.get(s.id);
         this.students.set(s.id, {
           ...s,
           person_id: pid,
           global_person_id: pid,
-          status: existing ? existing.status : 'absent',
-          current_score: existing ? existing.current_score : 0,
-          cumulative_score: existing ? existing.cumulative_score : 0,
-          max_score: existing ? existing.max_score : 0,
-          warning_level: existing ? existing.warning_level : 'normal',
-          active_observations: existing ? existing.active_observations : []
+          status: prev ? prev.status : 'absent',
+          current_score: prev ? prev.current_score : 0,
+          cumulative_score: prev ? prev.cumulative_score : 0,
+          max_score: prev ? prev.max_score : 0,
+          warning_level: prev ? prev.warning_level : 'normal',
+          active_observations: prev ? prev.active_observations : []
         });
-        // If active global person already exists for this person_id, update metadata
+        // If active global person already exists for this person_id, update seat if available
         if (pid && this.global_persons.has(pid)) {
           const gp = this.global_persons.get(pid)!;
-          gp.associated_student_id = s.id;
-          gp.associated_student_name = s.name;
-          gp.student_id = s.id;
-          gp.student_id_number = s.student_id_number;
-          gp.student_name = s.name;
-          if (s.seat_id) gp.seat_id = s.seat_id;
+          if (s.seat_id && !gp.seat_id) gp.seat_id = s.seat_id;
         }
       }
     }
@@ -310,19 +294,14 @@ export class UnifiedStudentManager {
         );
       }
 
-      // Prior evidence from seat or formal student enrollment
+      // Prior evidence from seat position
       let priorScore = 0;
-      if (matchedStudentId && gp.associated_student_id === matchedStudentId) {
-        priorScore = 1.0;
-      } else if (matchedSeatId && gp.seat_id === matchedSeatId) {
+      if (matchedSeatId && gp.seat_id === matchedSeatId) {
         priorScore = 0.85;
       }
 
-      // Strong negative prior: If both have distinct seat IDs or distinct students, do not merge!
+      // Strong negative prior: If both have distinct assigned seats, do not merge
       if (matchedSeatId && gp.seat_id && matchedSeatId !== gp.seat_id) {
-        continue;
-      }
-      if (matchedStudentId && gp.associated_student_id && matchedStudentId !== gp.associated_student_id) {
         continue;
       }
 
@@ -439,11 +418,6 @@ export class UnifiedStudentManager {
             id: globalPersonId,
             person_id: globalPersonId,
             global_person_id: globalPersonId,
-            associated_student_id: matchedStudentId || undefined,
-            associated_student_name: studentRec?.name,
-            student_id: studentRec?.id,
-            student_id_number: studentRec?.student_id_number,
-            student_name: studentRec?.name,
             seat_id: matchedSeatId || undefined,
             appearance_embedding: track.appearance_embedding ? [...track.appearance_embedding] : undefined,
             camera_tracks: [],
@@ -470,15 +444,6 @@ export class UnifiedStudentManager {
           if (matchedSeatId && !gp.seat_id) {
             gp.seat_id = matchedSeatId;
           }
-          if (matchedStudentId && !gp.associated_student_id) {
-            gp.associated_student_id = matchedStudentId;
-            if (studentRec) {
-              gp.associated_student_name = studentRec.name;
-              gp.student_id = studentRec.id;
-              gp.student_id_number = studentRec.student_id_number;
-              gp.student_name = studentRec.name;
-            }
-          }
         }
 
         // Update student record link if known
@@ -493,9 +458,6 @@ export class UnifiedStudentManager {
         // Propagate GlobalPerson association back to CameraTrack!
         track.global_person_id = globalPersonId;
         track.person_id = globalPersonId;
-        if (gp.associated_student_id) {
-          track.associated_student_id = gp.associated_student_id;
-        }
         const quality = this.computeObservationQuality(track, camera);
 
         // Record active link for Global Person
@@ -644,9 +606,7 @@ export class UnifiedStudentManager {
       }
 
       // Warning Level & Status Flagging
-      // Warning latch is maintained until proctor clears it, or active current score breaches threshold
-      const assocGp = Array.from(this.global_persons.values()).find(g => g.associated_student_id === student.id);
-      const isGpLatched = assocGp?.warning_latched && (!student.warning_cleared_at || (assocGp.warning_latched_time || 0) > student.warning_cleared_at);
+      const isGpLatched = student.person_id ? this.global_persons.get(student.person_id)?.warning_latched : false;
 
       if ((student.current_score || 0) >= this.thresholds.high_suspicion_threshold) {
         student.warning_level = 'critical';
@@ -676,17 +636,9 @@ export class UnifiedStudentManager {
 
     if (updates.notes !== undefined) {
       gp.notes = updates.notes;
-      if (gp.associated_student_id) {
-        const student = this.students.get(gp.associated_student_id);
-        if (student) student.notes = updates.notes;
-      }
     }
     if (updates.seat_id !== undefined) {
       gp.seat_id = updates.seat_id || undefined;
-      if (gp.associated_student_id) {
-        const student = this.students.get(gp.associated_student_id);
-        if (student) student.seat_id = updates.seat_id || undefined;
-      }
     }
     if (updates.student_id !== undefined) {
       this.associatePersonWithStudent(personId, updates.student_id);
@@ -698,10 +650,11 @@ export class UnifiedStudentManager {
     const gp = this.global_persons.get(personId);
     if (!gp) return false;
 
-    // Unlink from student
-    if (gp.associated_student_id) {
-      const student = this.students.get(gp.associated_student_id);
-      if (student) {
+    // Clear student association if any student was linked to this personId
+    for (const student of this.students.values()) {
+      if (student.person_id === personId || student.global_person_id === personId) {
+        student.person_id = undefined;
+        student.global_person_id = undefined;
         student.active_observations = [];
         student.status = 'absent';
         student.current_score = 0;
@@ -804,8 +757,7 @@ export class UnifiedStudentManager {
       }
 
       // Warning Level & Status Flagging
-      const assocGp = Array.from(this.global_persons.values()).find(g => g.associated_student_id === student.id);
-      const isGpLatched = assocGp?.warning_latched && (!student.warning_cleared_at || (assocGp.warning_latched_time || 0) > student.warning_cleared_at);
+      const isGpLatched = student.person_id ? this.global_persons.get(student.person_id)?.warning_latched : false;
 
       if ((student.current_score || 0) >= this.thresholds.high_suspicion_threshold) {
         student.warning_level = 'critical';
@@ -851,12 +803,11 @@ export class UnifiedStudentManager {
     student.status = 'present';
 
     // Also unlatch warning on associated Global Person
-    for (const gp of this.global_persons.values()) {
-      if (gp.associated_student_id === studentId) {
-        gp.warning_latched = false;
-        gp.current_score = 0;
-        gp.warning_cleared_at = now;
-      }
+    if (student.person_id && this.global_persons.has(student.person_id)) {
+      const gp = this.global_persons.get(student.person_id)!;
+      gp.warning_latched = false;
+      gp.current_score = 0;
+      gp.warning_cleared_at = now;
     }
     return true;
   }
@@ -868,9 +819,6 @@ export class UnifiedStudentManager {
     gp.warning_latched = false;
     gp.current_score = 0;
     gp.warning_cleared_at = now;
-    if (gp.associated_student_id) {
-      this.clearStudentWarning(gp.associated_student_id);
-    }
     return true;
   }
 
@@ -883,11 +831,6 @@ export class UnifiedStudentManager {
     if (!gp) return false;
 
     if (!studentId) {
-      gp.associated_student_id = undefined;
-      gp.associated_student_name = undefined;
-      gp.student_id = undefined;
-      gp.student_id_number = undefined;
-      gp.student_name = undefined;
       for (const s of this.students.values()) {
         if (s.person_id === personId || s.global_person_id === personId) {
           s.person_id = undefined;
@@ -900,16 +843,6 @@ export class UnifiedStudentManager {
     const student = this.students.get(studentId);
     if (!student) return false;
 
-    // Sever previous associations for this student
-    for (const otherGp of this.global_persons.values()) {
-      if (otherGp.id !== personId && otherGp.associated_student_id === studentId) {
-        otherGp.associated_student_id = undefined;
-        otherGp.associated_student_name = undefined;
-        otherGp.student_id = undefined;
-        otherGp.student_id_number = undefined;
-        otherGp.student_name = undefined;
-      }
-    }
     for (const otherS of this.students.values()) {
       if (otherS.id !== studentId && (otherS.person_id === personId || otherS.global_person_id === personId)) {
         otherS.person_id = undefined;
@@ -919,12 +852,6 @@ export class UnifiedStudentManager {
 
     student.person_id = personId;
     student.global_person_id = personId;
-
-    gp.associated_student_id = student.id;
-    gp.associated_student_name = student.name;
-    gp.student_id = student.id;
-    gp.student_id_number = student.student_id_number;
-    gp.student_name = student.name;
     return true;
   }
 

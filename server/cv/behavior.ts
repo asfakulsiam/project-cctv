@@ -119,7 +119,6 @@ export class BehaviorAnalyzer {
    */
   public analyzeTrack(
     track: CameraTrack,
-    studentInfo?: { name: string; student_id_number: string },
     seatRegion?: { x: number; y: number; width: number; height: number },
     now: number = Date.now()
   ): { events: BehaviorEvent[]; suspicion_score: number; current_score: number; cumulative_score: number; max_score: number } {
@@ -152,9 +151,7 @@ export class BehaviorAnalyzer {
             event_type: eventType,
             camera_id: track.camera_id,
             track_id: track.track_id,
-            student_id: track.associated_student_id,
-            student_name: studentInfo?.name,
-            student_id_number: studentInfo?.student_id_number,
+            global_person_id: track.global_person_id || track.person_id,
             confidence: track.head_pose.confidence,
             score_contribution: this.weights.repeated_looking,
             severity: 'warning',
@@ -180,9 +177,7 @@ export class BehaviorAnalyzer {
           event_type: 'REPEATED_LOOKING',
           camera_id: track.camera_id,
           track_id: track.track_id,
-          student_id: track.associated_student_id,
-          student_name: studentInfo?.name,
-          student_id_number: studentInfo?.student_id_number,
+          global_person_id: track.global_person_id || track.person_id,
           confidence: track.head_pose.confidence,
           score_contribution: this.weights.repeated_looking,
           severity: 'warning',
@@ -213,9 +208,7 @@ export class BehaviorAnalyzer {
           event_type: 'FACE_NOT_VISIBLE',
           camera_id: track.camera_id,
           track_id: track.track_id,
-          student_id: track.associated_student_id,
-          student_name: studentInfo?.name,
-          student_id_number: studentInfo?.student_id_number,
+          global_person_id: track.global_person_id || track.person_id,
           confidence: track.face_confidence,
           score_contribution: this.weights.face_hidden,
           severity: 'warning',
@@ -247,9 +240,7 @@ export class BehaviorAnalyzer {
           event_type: 'PHONE_DETECTED',
           camera_id: track.camera_id,
           track_id: track.track_id,
-          student_id: track.associated_student_id,
-          student_name: studentInfo?.name,
-          student_id_number: studentInfo?.student_id_number,
+          global_person_id: track.global_person_id || track.person_id,
           confidence: track.phone_confidence,
           score_contribution: this.weights.phone_detected,
           severity: 'high',
@@ -290,13 +281,11 @@ export class BehaviorAnalyzer {
             event_type: 'LEFT_SEAT',
             camera_id: track.camera_id,
             track_id: track.track_id,
-            student_id: track.associated_student_id,
-            student_name: studentInfo?.name,
-            student_id_number: studentInfo?.student_id_number,
+            global_person_id: track.global_person_id || track.person_id,
             confidence: leftConf,
             score_contribution: this.weights.leaving_seat,
             severity: 'high',
-            description: `Student departed configured workstation desk for ${leftDurationSec.toFixed(1)}s`,
+            description: `Candidate departed configured workstation desk for ${leftDurationSec.toFixed(1)}s`,
             duration_ms: Math.round(leftDurationSec * 1000),
             track
           }, now));
@@ -312,13 +301,11 @@ export class BehaviorAnalyzer {
             event_type: 'RETURNED_TO_SEAT',
             camera_id: track.camera_id,
             track_id: track.track_id,
-            student_id: track.associated_student_id,
-            student_name: studentInfo?.name,
-            student_id_number: studentInfo?.student_id_number,
+            global_person_id: track.global_person_id || track.person_id,
             confidence: 0.90,
             score_contribution: -15,
             severity: 'info',
-            description: 'Student returned to assigned workstation',
+            description: 'Candidate returned to assigned workstation',
             track
           }, now));
         } else {
@@ -339,9 +326,7 @@ export class BehaviorAnalyzer {
           event_type: 'ABNORMAL_MOVEMENT',
           camera_id: track.camera_id,
           track_id: track.track_id,
-          student_id: track.associated_student_id,
-          student_name: studentInfo?.name,
-          student_id_number: studentInfo?.student_id_number,
+          global_person_id: track.global_person_id || track.person_id,
           confidence: moveConf,
           score_contribution: this.weights.abnormal_movement,
           severity: 'warning',
@@ -392,9 +377,6 @@ export class BehaviorAnalyzer {
     camera_id: string;
     track_id?: string;
     global_person_id?: string;
-    student_id?: string;
-    student_name?: string;
-    student_id_number?: string;
     confidence: number;
     score_contribution: number;
     severity: EventSeverity;
@@ -406,12 +388,9 @@ export class BehaviorAnalyzer {
       id: `evt-${now}-${Math.floor(Math.random() * 10000)}`,
       session_id: this.session_id,
       event_type: params.event_type,
-      student_id: params.student_id,
-      student_id_number: params.student_id_number,
-      student_name: params.student_name,
       camera_id: params.camera_id,
       track_id: params.track_id,
-      global_person_id: params.global_person_id || params.track?.global_person_id,
+      global_person_id: params.global_person_id || params.track?.global_person_id || params.track?.person_id,
       timestamp: now,
       confidence: Math.round(params.confidence * 100) / 100,
       score_contribution: params.score_contribution,

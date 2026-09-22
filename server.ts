@@ -69,13 +69,14 @@ async function startServer() {
 
   const server = http.createServer(app);
 
-  // Initialize CV Engine
+  // Initialize CV Engine with persistent state
   const settings = await db.getSettings();
   const cameras = await db.getCameras();
   const students = await db.getStudents();
   const seats = await db.getSeats();
+  const globalPersons = await db.getGlobalPersons();
 
-  cvEngine = new MultiCameraCVEngine(settings, cameras, students, seats);
+  cvEngine = new MultiCameraCVEngine(settings, cameras, students, seats, globalPersons);
   cvEngine.start();
 
   // Setup WebSocket Server
@@ -1034,10 +1035,10 @@ async function startServer() {
   app.put('/api/candidates/:id', requireAdminAuth, async (req, res) => {
     try {
       const personId = req.params.id;
-      const { seat_id, student_id, notes } = req.body;
+      const { seat_id, notes } = req.body;
       if (!cvEngine) return res.status(503).json({ error: 'CV engine not initialized' });
 
-      const updated = await cvEngine.editCandidate(personId, { seat_id, student_id, notes });
+      const updated = await cvEngine.editCandidate(personId, { seat_id, notes });
       if (!updated) return res.status(404).json({ error: 'Exam candidate not found' });
       res.json(updated);
     } catch (err: any) {

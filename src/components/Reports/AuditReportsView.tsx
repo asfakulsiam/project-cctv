@@ -279,21 +279,13 @@ export function AuditReportsView() {
                 </Badge>
                 {e.global_person_id && (
                   <span className="font-mono-apple text-[10px] text-indigo-300 bg-indigo-950/80 px-1.5 py-0.5 rounded border border-indigo-800/60 font-bold">
-                    PERSON {e.global_person_id}
+                    {e.global_person_id}
                   </span>
                 )}
                 {e.track_id && (
                   <span className="font-mono-apple text-[10px] text-sky-300 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">
                     TRACK {e.track_id}
                   </span>
-                )}
-                {e.student_id_number && (
-                  <span className="font-mono-apple text-[10px] text-slate-300 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">
-                    ID {e.student_id_number}
-                  </span>
-                )}
-                {e.student_name && (
-                  <span className="text-[var(--system-text-primary)] font-medium">{e.student_name}</span>
                 )}
                 <span className="text-[var(--system-text-secondary)]">{e.description}</span>
                 {e.confidence !== undefined && (
