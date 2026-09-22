@@ -29,19 +29,36 @@ export class CameraFrameExtractor {
 
   private resolveInputUrl(): string {
     if (!this.sourceUrl) return '';
+    const port = Number(process.env.PORT) || 3000;
+
+    // 1. Resilient local sample video
     if (this.sourceUrl === '/api/video/sample' || this.sourceUrl === '/sample_cctv.mp4' || this.sourceUrl.includes('sample_cctv.mp4') || this.sourceUrl.includes('classroom.mp4')) {
       return path.join(process.cwd(), 'public', 'sample_cctv.mp4');
     }
-    if (this.sourceUrl.startsWith('/')) {
-      return path.join(process.cwd(), 'public', this.sourceUrl);
-    }
-    // If Google Drive link, extract ID and route through download proxy or direct link
-    if (this.sourceUrl.includes('drive.google.com')) {
-      const match = this.sourceUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+
+    // 2. Google Drive video link -> route through local backend proxy
+    if (this.sourceUrl.includes('drive.google.com') || this.sourceUrl.includes('drive.usercontent.google.com')) {
+      const match = this.sourceUrl.match(/\/file\/d\/([a-zA-Z0-9_-]{20,})/) ||
+                    this.sourceUrl.match(/\/d\/([a-zA-Z0-9_-]{20,})/) ||
+                    this.sourceUrl.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
       if (match && match[1]) {
-        return `https://drive.usercontent.google.com/download?id=${match[1]}&export=download&confirm=t`;
+        return `http://127.0.0.1:${port}/api/proxy/gdrive/${match[1]}`;
       }
     }
+
+    // 3. API Relative endpoint -> attach local server base URL
+    if (this.sourceUrl.startsWith('/api/')) {
+      return `http://127.0.0.1:${port}${this.sourceUrl}`;
+    }
+
+    // 4. Local relative static file
+    if (this.sourceUrl.startsWith('/') && !this.sourceUrl.startsWith('/api/')) {
+      const localPath = path.join(process.cwd(), 'public', this.sourceUrl);
+      if (fs.existsSync(localPath)) {
+        return localPath;
+      }
+    }
+
     return this.sourceUrl;
   }
 

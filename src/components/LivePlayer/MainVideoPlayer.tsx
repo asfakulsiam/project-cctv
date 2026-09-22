@@ -124,7 +124,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const [liveTrackCount, setLiveTrackCount] = useState<number>(0);
 
   const focusedCamera = cameras.find(c => c.camera_id === focusedCameraId) || cameras[0];
-  const tracks = getTracksForCamera(tracksByCamera, focusedCameraId);
+  const targetCamId = focusedCamera?.camera_id || focusedCameraId || '';
+  const tracks = getTracksForCamera(tracksByCamera, targetCamId);
   const isPrimary = focusedCamera?.camera_id === primaryCameraId;
   const streamResolution = resolveCameraStream(focusedCamera);
 

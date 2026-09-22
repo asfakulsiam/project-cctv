@@ -19,9 +19,22 @@ import { spawn } from 'child_process';
 
 dotenv.config();
 
+function getPythonWorkerConfig() {
+  const host = process.env.PYTHON_WORKER_HOST || '127.0.0.1';
+  const port = process.env.PYTHON_WORKER_PORT || process.env.CV_WORKER_PORT || process.env.CV_PORT || process.env.PYTHON_PORT || '5001';
+  const rawUrl = process.env.PYTHON_WORKER_URL || process.env.CV_INFERENCE_URL || `http://${host}:${port}`;
+  const cleanBase = rawUrl.replace(/\/detect\/?$/, '').replace(/\/$/, '');
+  return {
+    host,
+    port,
+    healthUrl: `${cleanBase}/health`,
+    detectUrl: `${cleanBase}/detect`
+  };
+}
+
 function ensurePythonWorkerRunning() {
-  const checkUrl = 'http://127.0.0.1:5001/health';
-  fetch(checkUrl, { signal: AbortSignal.timeout(800) })
+  const config = getPythonWorkerConfig();
+  fetch(config.healthUrl, { signal: AbortSignal.timeout(800) })
     .then(res => {
       if (!res.ok) spawnPythonWorker();
     })
@@ -32,13 +45,21 @@ function ensurePythonWorkerRunning() {
 
 function spawnPythonWorker() {
   try {
+    const config = getPythonWorkerConfig();
+    const env = {
+      ...process.env,
+      PYTHON_WORKER_PORT: String(config.port),
+      CV_PORT: String(config.port),
+      PYTHON_WORKER_HOST: config.host
+    };
     const workerProcess = spawn('python3', ['./cv/python_worker_server.py'], {
       cwd: process.cwd(),
+      env,
       stdio: 'ignore',
       detached: true
     });
     workerProcess.unref();
-    console.log('[Server] Spawned Python CV Worker on http://127.0.0.1:5001');
+    console.log(`[Server] Spawned Python CV Worker on ${config.healthUrl}`);
   } catch (err: any) {
     console.error('[Server] Failed to spawn Python CV Worker:', err.message);
   }

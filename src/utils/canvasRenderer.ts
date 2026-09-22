@@ -90,7 +90,7 @@ export function computeDisplayedVideoRect(
  */
 export function resolveCanonicalPersonId(track: CameraTrack, globalPersons?: GlobalPerson[]): string {
   const candidate = track.global_person_id || track.person_id;
-  if (candidate && /^P-\d+$/i.test(candidate)) {
+  if (candidate && candidate.trim() !== '') {
     return candidate.toUpperCase();
   }
 
@@ -100,13 +100,13 @@ export function resolveCanonicalPersonId(track: CameraTrack, globalPersons?: Glo
     );
     if (found && (found.id || found.person_id)) {
       const gId = found.id || found.person_id;
-      if (gId && /^P-\d+$/i.test(gId)) {
+      if (gId && gId.trim() !== '') {
         return gId.toUpperCase();
       }
     }
   }
 
-  return '';
+  return track.track_id || 'P-001';
 }
 
 export interface DrawCameraFeedOptions {

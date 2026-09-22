@@ -83,7 +83,17 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
   private lastError: string | null = null;
 
   constructor(inferenceUrl?: string) {
-    this.inferenceUrl = inferenceUrl || process.env.CV_INFERENCE_URL || 'http://127.0.0.1:5001/detect';
+    if (inferenceUrl) {
+      this.inferenceUrl = inferenceUrl;
+    } else if (process.env.PYTHON_WORKER_URL) {
+      this.inferenceUrl = process.env.PYTHON_WORKER_URL;
+    } else if (process.env.CV_INFERENCE_URL) {
+      this.inferenceUrl = process.env.CV_INFERENCE_URL;
+    } else {
+      const host = process.env.PYTHON_WORKER_HOST || '127.0.0.1';
+      const port = process.env.PYTHON_WORKER_PORT || process.env.CV_WORKER_PORT || process.env.CV_PORT || process.env.PYTHON_PORT || '5001';
+      this.inferenceUrl = `http://${host}:${port}/detect`;
+    }
   }
 
   public getDiagnostics() {
@@ -112,6 +122,14 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
           formattedFrame = framePayload;
         } else if (Buffer.isBuffer(framePayload)) {
           formattedFrame = framePayload.toString('base64');
+        } else if (framePayload && Buffer.isBuffer(framePayload.buffer)) {
+          formattedFrame = framePayload.buffer.toString('base64');
+        } else if (framePayload && typeof framePayload.buffer === 'string') {
+          formattedFrame = framePayload.buffer;
+        } else if (framePayload && typeof framePayload.frame === 'string') {
+          formattedFrame = framePayload.frame;
+        } else if (framePayload && Buffer.isBuffer(framePayload.frame)) {
+          formattedFrame = framePayload.frame.toString('base64');
         }
 
         const response = await fetch(this.inferenceUrl, {

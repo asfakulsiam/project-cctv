@@ -19,8 +19,12 @@ import struct
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import List, Dict, Any, Tuple
 
-HOST = os.environ.get("CV_HOST", "127.0.0.1")
-PORT = int(os.environ.get("CV_PORT", "5001"))
+HOST = os.environ.get("PYTHON_WORKER_HOST") or os.environ.get("CV_HOST") or "0.0.0.0"
+port_val = os.environ.get("PYTHON_WORKER_PORT") or os.environ.get("CV_WORKER_PORT") or os.environ.get("CV_PORT") or os.environ.get("PYTHON_PORT") or "5001"
+try:
+    PORT = int(port_val)
+except ValueError:
+    PORT = 5001
 
 class ImageFrameAnalyzer:
     """
