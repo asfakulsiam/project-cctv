@@ -56,7 +56,7 @@ export function LiveStatisticsBar() {
       accentColor: 'text-[var(--system-warning)]'
     },
     {
-      label: 'Suspicion Flags',
+      label: 'Attention Flags',
       value: flaggedStudents,
       subvalue: `${warningStudents} elevated`,
       icon: ShieldAlert,

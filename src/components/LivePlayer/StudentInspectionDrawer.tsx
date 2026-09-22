@@ -71,11 +71,11 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
     >
       <div className="space-y-4">
         
-        {/* Suspicion Score Card */}
+        {/* Teacher Attention Activity Score Card */}
         <Card padding="md" className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-medium text-[var(--system-text-secondary)]">
-              Behavioral Suspicion Index
+              Teacher Attention Activity Index
             </span>
             <Badge variant={suspicionVariant}>
               {suspicionLabel}
@@ -112,16 +112,20 @@ export function StudentInspectionDrawer({ student, onClose }: StudentInspectionD
               {clearedSuccess ? (
                 <>
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Warning Cleared</span>
+                  <span>Indicator Reset</span>
                 </>
               ) : (
                 <>
                   <RotateCcw className={`w-3.5 h-3.5 ${clearing ? 'animate-spin' : ''}`} />
-                  <span>Clear Warning / Reset</span>
+                  <span>Reset Indicator</span>
                 </>
               )}
             </button>
           </div>
+
+          <p className="text-[11px] text-[var(--system-text-tertiary)] italic pt-1 border-t border-[var(--system-chrome-border)]">
+            Note: Scores indicate observable activity requiring teacher review, not a judgment of guilt or cheating. The teacher remains the final authority.
+          </p>
 
           {/* Progress bar */}
           <div className="w-full bg-[var(--system-fill)] h-2 rounded-full overflow-hidden">
