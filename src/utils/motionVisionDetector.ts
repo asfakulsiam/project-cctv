@@ -1,27 +1,10 @@
 /**
  * Smart Classroom Exam Monitoring System
- * Human-First Computer Vision Engine & Multi-Person Persistent Tracker
+ * Legacy Client Utility Module (Non-Authoritative)
  * 
- * CORE ARCHITECTURAL INVARIANTS:
- * 1. HUMAN DETECTION IS THE GATEKEEPER.
- *    Nothing creates a track, activity, score, warning, or box unless
- *    a human has first been positively detected by structural & morphological analysis.
- * 2. EMPTY CAMERA PRODUCES ZERO TRACKS, ZERO BOXES, ZERO EVENTS, ZERO SCORE.
- * 3. MOVEMENT NEVER CREATES A PERSON.
- *    Motion is purely an observation within an already confirmed human track.
- * 4. A STATIONARY HUMAN REMAINS TRACKED.
- *    Stillness never deletes a person or decreases suspicion score.
- * 5. DYNAMIC ARBITRARY PERSON CAPACITY (NO 4-PERSON LIMIT).
- *    Continuous search finds all humans dynamically in the scene.
- * 6. THREE-LAYER IDENTITY ARCHITECTURE:
- *    - Layer 1: Detection ID (ephemeral per-frame bounding box)
- *    - Layer 2: Camera Track ID (camera-scoped: e.g. CAM1-T001, CAM2-T001)
- *    - Layer 3: Global Person ID (classroom-level: e.g. P-001, associated with formal student STU-2026-0812)
- * 7. DUAL SUSPICION SCORES & LATCHED WARNINGS:
- *    - Current Score: Immediate behavioral anomaly in current window (0 - 100)
- *    - Cumulative Score: Monotonically non-decreasing audit score (0 - 100)
- *    - Warning Latched: Crosses threshold (>=65) and latches until cleared by admin.
- *    - Admin Clear: Unlatches warning, resets current_score = 0, preserves cumulative_score.
+ * NOTE: All authoritative person detection, temporal confirmation, Global Person
+ * IDs (P-001, P-002), behavioral analysis, and scoring are executed exclusively
+ * by the server-authoritative CV pipeline (/server/cv/*).
  */
 
 import { 
@@ -703,8 +686,7 @@ export class MotionVisionDetector {
           // Only confirm if evidence is spatially stable and confidence is high
           if (avgConfidence >= 0.65 && spatialVariance < 0.08) {
             const permTrackId = this.generateTrackId(camPrefix);
-            const activeIndex = this.activeTracks.size;
-            const assignedStudentId = cand.associated_student_id || availableStudents[activeIndex]?.id;
+            const assignedStudentId = cand.associated_student_id || undefined;
             const globalPersonId = `P-${String(this.activeTracks.size + 1).padStart(3, '0')}`;
 
             const newTrack: InternalPersonTrack = {

@@ -83,10 +83,7 @@ const DEFAULT_CLASSROOMS: ClassroomRecord[] = [
   }
 ];
 
-const DEFAULT_STUDENTS: StudentRecord[] = process.env.DEMO_MODE === 'true' ? [
-  { id: 'stu-1', student_id_number: 'STU-2026-001', name: 'Alex Johnson', classroom_id: 'hall-a', seat_id: 'seat-1', status: 'absent', unified_suspicion_score: 0, current_score: 0, cumulative_score: 0, max_score: 0, warning_level: 'normal', active_observations: [] },
-  { id: 'stu-2', student_id_number: 'STU-2026-002', name: 'Sarah Chen', classroom_id: 'hall-a', seat_id: 'seat-2', status: 'absent', unified_suspicion_score: 0, current_score: 0, cumulative_score: 0, max_score: 0, warning_level: 'normal', active_observations: [] }
-] : [];
+const DEFAULT_STUDENTS: StudentRecord[] = [];
 
 const DEFAULT_SEATS: SeatRecord[] = [];
 

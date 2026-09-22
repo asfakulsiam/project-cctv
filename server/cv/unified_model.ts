@@ -412,24 +412,12 @@ export class UnifiedStudentManager {
         if (confirmedSeatId) {
           matchedSeatId = confirmedSeatId;
           track.seat_id = confirmedSeatId;
-          const assignedStudentId = rawSeat?.assigned_student_id;
-          if (assignedStudentId && this.students.has(assignedStudentId)) {
-            matchedStudentId = assignedStudentId;
-            track.associated_student_id = matchedStudentId;
-          }
         }
 
         // Layer 3: Visual Re-ID Global Person Matching
         let globalPersonId = track.global_person_id || track.person_id;
         if (globalPersonId && cameraAssignedGPs.has(globalPersonId)) {
           globalPersonId = undefined;
-        }
-
-        // Association Priority C: Check if associated student already has a known person ID
-        const studentRec = matchedStudentId ? this.students.get(matchedStudentId) : null;
-        const existingStudentPersonId = studentRec?.person_id || studentRec?.global_person_id;
-        if (!globalPersonId && existingStudentPersonId && !cameraAssignedGPs.has(existingStudentPersonId)) {
-          globalPersonId = existingStudentPersonId;
         }
 
         if (!globalPersonId) {
@@ -439,12 +427,10 @@ export class UnifiedStudentManager {
 
         // Allocate or reuse Global Person ID
         if (!globalPersonId) {
-          if (existingStudentPersonId && !cameraAssignedGPs.has(existingStudentPersonId)) {
-            globalPersonId = existingStudentPersonId;
-          } else {
-            globalPersonId = this.generateGlobalPersonId();
-          }
+          globalPersonId = this.generateGlobalPersonId();
         }
+
+        const studentRec = matchedStudentId ? this.students.get(matchedStudentId) : null;
 
         // Ensure global person is present in registry
         let gp = this.global_persons.get(globalPersonId);

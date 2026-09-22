@@ -372,13 +372,23 @@ async function startServer() {
 
   app.post('/api/students', requireAdminAuth, async (req, res) => {
     try {
+      const name = req.body.name?.trim();
+      if (!name) {
+        return res.status(400).json({ error: 'A valid student name is required for manual registration.' });
+      }
+
+      const studentIdNumber = req.body.student_id_number?.trim();
+      if (!studentIdNumber) {
+        return res.status(400).json({ error: 'A valid student ID number (e.g. 2026-001) is required.' });
+      }
+
       const newStudent = await db.addStudent({
         id: `stu-${Date.now()}`,
-        student_id_number: req.body.student_id_number || `STU-${Date.now().toString().slice(-4)}`,
-        name: req.body.name || 'New Student',
+        student_id_number: studentIdNumber,
+        name,
         classroom_id: req.body.classroom_id || '',
         seat_id: req.body.seat_id,
-        status: 'present',
+        status: 'absent',
         unified_suspicion_score: 0,
         active_observations: [],
         notes: req.body.notes

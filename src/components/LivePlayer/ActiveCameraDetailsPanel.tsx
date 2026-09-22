@@ -112,7 +112,8 @@ export function ActiveCameraDetailsPanel({ onInspectStudent }: ActiveCameraDetai
         ) : (
           <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5">
             {tracks.map(t => {
-              const matchedStudent = students.find(s => s.id === t.associated_student_id);
+              const personId = t.global_person_id || t.person_id || t.track_id;
+              const liveScore = t.current_score ?? t.suspicion_score ?? 0;
 
               return (
                 <div
@@ -123,23 +124,23 @@ export function ActiveCameraDetailsPanel({ onInspectStudent }: ActiveCameraDetai
                     <span className="w-1.5 h-1.5 rounded-full bg-[var(--system-accent)]" />
                     <div>
                       <span className="font-semibold text-[var(--system-text-primary)] font-mono-apple">
-                        {matchedStudent ? matchedStudent.student_id_number : t.track_id}
+                        {personId}
                       </span>
                       <span className="text-[10px] font-mono-apple text-[var(--system-text-tertiary)] block">
-                        Track: {t.track_id} • Score: {t.suspicion_score}
+                        Track: {t.track_id} • Score: {liveScore}
                       </span>
                     </div>
                   </div>
 
                   <div className="flex items-center space-x-1.5">
-                    {t.suspicion_score >= 35 && (
+                    {liveScore >= 35 && (
                       <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
                         WARN
                       </span>
                     )}
-                    {matchedStudent && onInspectStudent && (
+                    {onInspectStudent && (
                       <button
-                        onClick={() => onInspectStudent(matchedStudent.id)}
+                        onClick={() => onInspectStudent(t.associated_student_id || personId)}
                         className="px-2 py-1 rounded-[6px] bg-[var(--system-accent-subtle)] text-[var(--system-accent)] text-[11px] font-medium hover:opacity-80 transition-opacity flex items-center space-x-0.5 cursor-pointer"
                       >
                         <span>Inspect</span>

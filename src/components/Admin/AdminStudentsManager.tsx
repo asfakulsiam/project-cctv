@@ -133,6 +133,11 @@ export function AdminStudentsManager() {
     e.preventDefault();
     const token = localStorage.getItem('admin_token');
 
+    if (!newName.trim() || !newIdNumber.trim()) {
+      setFeedback({ type: 'error', message: 'Both Student ID Number and Full Name are required.' });
+      return;
+    }
+
     try {
       const res = await fetch('/api/students', {
         method: 'POST',
@@ -141,7 +146,7 @@ export function AdminStudentsManager() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          student_id_number: newIdNumber.trim() || `STU-${Date.now().toString().slice(-4)}`,
+          student_id_number: newIdNumber.trim(),
           name: newName.trim(),
           seat_id: newSeatId.trim() || undefined,
           classroom_id: newClassroom.trim() || undefined

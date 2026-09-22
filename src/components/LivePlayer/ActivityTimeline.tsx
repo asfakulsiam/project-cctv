@@ -169,9 +169,6 @@ export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityT
           </div>
         ) : (
           filteredEvents.map(event => {
-            const foundStudent = students.find(s => s.id === event.student_id);
-            const studentIdDisplay = event.student_id_number || foundStudent?.student_id_number;
-            const studentNameDisplay = event.student_name || foundStudent?.name;
             const trackIdDisplay = event.track_id || 'UNASSIGNED';
             const personIdDisplay = event.global_person_id || 'UNASSIGNED';
 
@@ -186,32 +183,17 @@ export function ActivityTimeline({ onInspectStudent, maxEvents = 35 }: ActivityT
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    {/* Top line: Person ID + Track ID + Student ID (if assigned) + Event Title + Severity Badge */}
+                    {/* Top line: Person ID + Track ID + Event Title + Severity Badge */}
                     <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
                       {/* Person ID Pill */}
                       <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-bold bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">
-                        PERSON {personIdDisplay}
+                        {personIdDisplay}
                       </span>
 
                       {/* Camera Track ID Pill */}
-                      <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-bold bg-slate-800 text-sky-400 border border-slate-700">
-                        TRACK {trackIdDisplay}
+                      <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-semibold bg-slate-800 text-sky-400 border border-slate-700">
+                        {trackIdDisplay}
                       </span>
-
-                      {/* Student Identification (Only if associated) */}
-                      {studentIdDisplay && (
-                        <span className="px-1.5 py-0.5 rounded-[4px] font-mono-apple text-[10px] font-semibold bg-slate-800/80 text-slate-300 border border-slate-700/60 flex items-center space-x-1">
-                          <User className="w-2.5 h-2.5 text-slate-400" />
-                          <span>ID {studentIdDisplay}</span>
-                        </span>
-                      )}
-
-                      {/* Real Student Name (Only if associated) */}
-                      {studentNameDisplay && (
-                        <span className="font-semibold text-slate-200 text-[11px]">
-                          {studentNameDisplay}
-                        </span>
-                      )}
 
                       {/* Event Type */}
                       <span className="font-semibold text-[var(--system-text-primary)] truncate text-[12px]">

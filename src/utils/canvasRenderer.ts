@@ -256,13 +256,12 @@ export function drawCameraFeed(
     // -------------------------------------------------------------
     // E. Ultra-Compact, Non-Blocking ID & Score Header Tag
     // (Small, sleek, and moves frame-by-frame on top of the bounding box)
+    // ID-ONLY Architecture: Authoritative Person ID (P-001) + Score + Warning Status
     // -------------------------------------------------------------
-    const student = students.find(s => s.id === track.associated_student_id);
-    const personId = track.global_person_id || track.person_id;
-    const personIdText = personId ? ` | ${personId}` : '';
-    const studentIdText = student?.student_id_number ? ` [${student.student_id_number}]` : (student?.name ? ` [${student.name}]` : '');
+    const personId = track.global_person_id || track.person_id || track.track_id;
     const statusPrefix = isCritical ? '🚨 ' : (isWarning ? '⚠️ ' : '');
-    const tagText = `${statusPrefix}${track.track_id}${personIdText}${studentIdText} • ${liveScore}`;
+    const warnSuffix = isCritical ? ' • CRITICAL' : (isWarning ? ' • WARNING' : '');
+    const tagText = `${statusPrefix}${personId} • SCORE ${liveScore}${warnSuffix}`;
     
     // Sleek small font to avoid blocking camera views
     ctx.font = 'bold 8.5px "JetBrains Mono", monospace';
@@ -333,6 +332,7 @@ export function drawCameraFeed(
     }
 
     // Cross-Camera Best View Arbitration Badge
+    const student = track.associated_student_id ? students.find(s => s.id === track.associated_student_id) : null;
     if (student && student.active_observations && student.active_observations.length > 0) {
       const myObs = student.active_observations.find(o => o.camera_id === cameraId);
       const isBest = myObs ? myObs.is_best_view : false;

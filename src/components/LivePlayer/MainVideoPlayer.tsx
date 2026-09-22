@@ -60,9 +60,10 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     setSelectedTrack,
     setSelectedStudent,
     primaryCameraId,
-    broadcastDetections,
     updateCameraConfig
   } = useMonitoring();
+
+  const isDemoMode = (import.meta as any).env?.VITE_DEMO_MODE === 'true';
 
   const [isDrivePreviewMode, setIsDrivePreviewMode] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -141,8 +142,6 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   isPrimaryRef.current = isPrimary;
   const fitModeRef = useRef(fitMode);
   fitModeRef.current = fitMode;
-  const broadcastDetectionsRef = useRef(broadcastDetections);
-  broadcastDetectionsRef.current = broadcastDetections;
 
   // Responsive ResizeObserver for crisp Canvas sizing
   useEffect(() => {
@@ -768,13 +767,15 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
                     <span>Switch to Webcam</span>
                   </button>
 
-                  <button
-                    onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'stream', source_url: '/api/video/sample', status: 'online' })}
-                    className="px-3.5 py-2 rounded-xl bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-800/80 text-cyan-300 font-semibold text-xs flex items-center space-x-1.5 transition-colors cursor-pointer"
-                  >
-                    <Video className="w-3.5 h-3.5" />
-                    <span>Load Demo CCTV Sample</span>
-                  </button>
+                  {isDemoMode && (
+                    <button
+                      onClick={() => updateCameraConfig(focusedCamera.camera_id, { source_type: 'stream', source_url: '/api/video/sample', status: 'online' })}
+                      className="px-3.5 py-2 rounded-xl bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-800/80 text-cyan-300 font-semibold text-xs flex items-center space-x-1.5 transition-colors cursor-pointer"
+                    >
+                      <Video className="w-3.5 h-3.5" />
+                      <span>Load Demo CCTV Sample</span>
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -786,17 +787,22 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
           <div className="absolute bottom-4 left-4 z-20 bg-slate-950/90 border border-cyan-500/50 p-2.5 rounded-lg shadow-xl backdrop-blur-sm flex items-center space-x-3 text-xs">
             <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
             <div>
-              <span className="font-mono text-cyan-300 font-bold">{selectedTrack.track_id}</span>
+              <span className="font-mono text-cyan-300 font-bold">
+                {selectedTrack.global_person_id || selectedTrack.person_id || selectedTrack.track_id}
+              </span>
               <span className="text-slate-400 ml-2">
-                Suspicion: <strong className="text-white">{selectedTrack.suspicion_score}</strong>
+                Track: <span className="font-mono text-slate-300">{selectedTrack.track_id}</span>
+              </span>
+              <span className="text-slate-400 ml-2">
+                Score: <strong className="text-white">{selectedTrack.current_score ?? selectedTrack.suspicion_score}</strong>
               </span>
             </div>
-            {selectedTrack.associated_student_id && (
+            {onInspectStudent && (
               <button 
-                onClick={() => onInspectStudent?.(selectedTrack.associated_student_id!)}
+                onClick={() => onInspectStudent(selectedTrack.associated_student_id || selectedTrack.global_person_id || selectedTrack.track_id)}
                 className="ml-2 px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-[10px] flex items-center space-x-1"
               >
-                <span>Inspect Student</span>
+                <span>Inspect Subject</span>
                 <ChevronRight className="w-3 h-3" />
               </button>
             )}
