@@ -388,6 +388,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               zoomLevel: zoomLevelRef.current,
               panOffset: panOffsetRef.current,
               selectedTrackId: selectedTrackRef.current?.track_id || null,
+              warningSuspicionThreshold: settingsRef.current?.thresholds?.warning_suspicion_threshold || 35,
               highSuspicionThreshold: settingsRef.current?.thresholds?.high_suspicion_threshold || 65,
               videoSource: activeSource,
               fitMode: fitModeRef.current

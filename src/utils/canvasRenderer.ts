@@ -106,12 +106,7 @@ export function resolveCanonicalPersonId(track: CameraTrack, globalPersons?: Glo
     }
   }
 
-  if (candidate && !candidate.startsWith('CAM') && !candidate.includes('-T')) {
-    return candidate;
-  }
-
-  console.warn(`[CanvasRenderer] Track ${track.track_id} has unresolvable P-ID (raw: ${candidate}). Suppressing raw camera track ID.`);
-  return 'P-ID PENDING';
+  return '';
 }
 
 export interface DrawCameraFeedOptions {
@@ -358,11 +353,11 @@ export function drawCameraFeed(
     // Format: "P-001 • SCORE 24", "P-001 • SCORE 72 • WARNING", "P-001 • SCORE 91 • CRITICAL"
     // -------------------------------------------------------------
     const personId = resolveCanonicalPersonId(track, globalPersons);
-    let tagText = `${personId} • SCORE ${liveScore}`;
+    let tagText = personId ? `${personId} • SCORE ${liveScore}` : `SCORE ${liveScore}`;
     if (isCritical) {
-      tagText = `${personId} • SCORE ${liveScore} • CRITICAL`;
+      tagText = personId ? `${personId} • SCORE ${liveScore} • CRITICAL` : `SCORE ${liveScore} • CRITICAL`;
     } else if (isWarning) {
-      tagText = `${personId} • SCORE ${liveScore} • WARNING`;
+      tagText = personId ? `${personId} • SCORE ${liveScore} • WARNING` : `SCORE ${liveScore} • WARNING`;
     }
     
     // Crisp typography for maximum readability
