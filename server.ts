@@ -65,7 +65,7 @@ function spawnPythonWorker() {
   }
 }
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = process.env.RENDER ? Number(process.env.PORT || 3000) : 3000;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 

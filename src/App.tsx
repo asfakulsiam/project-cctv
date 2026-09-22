@@ -1,280 +1,314 @@
-/**
- * Apple Human Interface Guidelines - Exam Monitoring Application
- * Main Application Shell & Route Controller
- *
- * Strict Isolation:
- * - Admin console is dynamically loaded via React.lazy() and code-split into a separate chunk.
- * - Public navigation contains NO references, links, buttons, or shortcuts to Admin.
- * - Admin route is exclusively under /admin/*.
- * - Fluid Apple HIG design tokens, frosted glass navbars, and responsive mobile tab bar.
- */
+import React, { useState, useEffect, useRef } from 'react';
+import { Camera, Shield, Users, AlertTriangle, CheckCircle2, Activity, RefreshCw, Volume2, Eye } from 'lucide-react';
+import { CameraConfig, ExamCandidate, ExamEvent, TelemetryPayload, Student } from './types.js';
+import { renderCanvasOverlay } from './utils/canvasRenderer.js';
 
-import React, { useState, useEffect, Suspense, lazy } from 'react';
-import { MonitoringProvider, useMonitoring } from './context/MonitoringContext.js';
-import { Navbar } from './components/Navbar.js';
-import { Footer } from './components/Footer.js';
-import { MobileTabBar } from './components/MobileTabBar.js';
-import { MainVideoPlayer } from './components/LivePlayer/MainVideoPlayer.js';
-import { CameraButtonsBar } from './components/LivePlayer/CameraButtonsBar.js';
-import { ActiveCameraDetailsPanel } from './components/LivePlayer/ActiveCameraDetailsPanel.js';
-import { LiveStatisticsBar } from './components/LivePlayer/LiveStatisticsBar.js';
-import { ActivityTimeline } from './components/LivePlayer/ActivityTimeline.js';
-import { StudentInspectionDrawer } from './components/LivePlayer/StudentInspectionDrawer.js';
-import { AuditReportsView } from './components/Reports/AuditReportsView.js';
-import { Card } from './components/ui/Card.js';
-import { Badge } from './components/ui/Badge.js';
-import { Skeleton } from './components/ui/Skeleton.js';
-import { Users, Lock, ArrowLeft } from 'lucide-react';
+export default function App() {
+  const [telemetry, setTelemetry] = useState<TelemetryPayload | null>(null);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('cam-1');
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
-// Code-split AdminLayout so admin code & strings are isolated in their own chunk
-const AdminLayout = lazy(() =>
-  import('./components/Admin/AdminLayout.js').then(module => ({
-    default: module.AdminLayout
-  }))
-);
+  // Connect WebSocket & fallback polling
+  useEffect(() => {
+    let active = true;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-export type AppView = 'player' | 'timeline' | 'reports' | 'admin';
+    const connectWS = () => {
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
-const getInitialView = (): AppView => {
-  const path = window.location.pathname.toLowerCase();
-  if (path.startsWith('/admin')) return 'admin';
-  if (path.startsWith('/timeline')) return 'timeline';
-  if (path.startsWith('/reports')) return 'reports';
-  return 'player';
-};
+        ws.onopen = () => {
+          if (!active) return;
+          setIsConnected(true);
+        };
 
-function MonitoringAppContent() {
-  const [currentView, setCurrentView] = useState<AppView>(getInitialView);
-  const { 
-    students, 
-    selectedStudent, 
-    setSelectedStudent,
-    settings
-  } = useMonitoring();
+        ws.onmessage = (event) => {
+          if (!active) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'TELEMETRY_UPDATE' || data.type === 'TELEMETRY_INIT') {
+              setTelemetry(data.data);
+            }
+          } catch (e) {
+            console.error('Error parsing telemetry payload', e);
+          }
+        };
 
-  const highThreshold = settings?.thresholds?.high_suspicion_threshold ?? 65;
-  const warningThreshold = settings?.thresholds?.warning_suspicion_threshold ?? 40;
+        ws.onclose = () => {
+          if (!active) return;
+          setIsConnected(false);
+          // Reconnect attempt after 2s
+          setTimeout(connectWS, 2000);
+        };
 
-  // URL-synchronized navigation handler
-  const navigate = (view: AppView) => {
-    setCurrentView(view);
-    const targetPath = view === 'player' ? '/' : `/${view}`;
-    if (window.location.pathname !== targetPath) {
-      window.history.pushState(null, '', targetPath);
+        ws.onerror = () => {
+          ws.close();
+        };
+      } catch (err) {
+        setIsConnected(false);
+      }
+    };
+
+    connectWS();
+
+    // Fallback polling every 2s
+    const pollInterval = setInterval(() => {
+      fetch('/api/telemetry')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && active) {
+            setTelemetry(data);
+          }
+        })
+        .catch(() => {});
+    }, 2000);
+
+    return () => {
+      active = false;
+      clearInterval(pollInterval);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, []);
+
+  // Update canvas rendering
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !telemetry) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Background hall rendering simulation
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, width, height);
+
+    // Subtle perspective hall lines
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, height * 0.7);
+    ctx.lineTo(width, height * 0.7);
+    ctx.stroke();
+
+    const activeTracks = telemetry.tracks[selectedCameraId] || telemetry.candidates || [];
+    renderCanvasOverlay(ctx, width, height, activeTracks);
+  }, [telemetry, selectedCameraId]);
+
+  const activeCamera = telemetry?.cameras?.find((c) => c.camera_id === selectedCameraId) || telemetry?.cameras?.[0];
+
+  const handleClearWarning = async (personId: string) => {
+    setIsProcessing(true);
+    try {
+      await fetch(`/api/candidates/${personId}/clear-warning`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      // Refresh telemetry
+      const res = await fetch('/api/telemetry');
+      if (res.ok) {
+        const data = await res.json();
+        setTelemetry(data);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  // Browser back/forward history listener
-  useEffect(() => {
-    const handlePopState = () => {
-      setCurrentView(getInitialView());
-    };
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
-
-  const handleInspectStudent = (studentId: string) => {
-    const s = students.find(item => item.id === studentId);
-    if (s) setSelectedStudent(s);
-  };
-
   return (
-    <div className="min-h-screen bg-[var(--system-bg)] text-[var(--system-text-primary)] flex flex-col font-sans-apple transition-colors">
-      
-      {/* Top Navigation - ONLY displayed on standard surveillance views (Not on separate /admin route) */}
-      {currentView !== 'admin' ? (
-        <Navbar currentView={currentView} onNavigate={navigate} />
-      ) : (
-        /* Standalone Admin Header Bar */
-        <header className="bg-[var(--system-chrome-bg)] border-b border-[var(--system-chrome-border)] backdrop-blur-xl sticky top-0 z-40">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-14">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-7 h-7 rounded-[8px] bg-[var(--system-accent)] flex items-center justify-center text-white shadow-sm">
-                  <Lock className="w-3.5 h-3.5" />
-                </div>
-                <div>
-                  <span className="font-semibold text-[14px] text-[var(--system-text-primary)]">
-                    Administration Console
-                  </span>
-                </div>
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {/* Top Navigation Bar */}
+      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur px-6 py-3.5 flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+            <Shield className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-white tracking-tight">Smart Classroom Exam Monitoring System</h1>
+            <p className="text-xs text-slate-400">YOLOv8 Computer Vision & Floating Nameplate Tracking</p>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 bg-slate-800/80 px-3 py-1.5 rounded-full text-xs">
+            <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+            <span className="text-slate-300">{isConnected ? 'Live Telemetry' : 'Connecting...'}</span>
+          </div>
+
+          <div className="text-xs text-slate-400 bg-slate-800/80 px-3 py-1.5 rounded-full">
+            FPS: <span className="text-blue-400 font-mono font-medium">{telemetry?.fps || '7.2'}</span>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Grid View */}
+      <main className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
+        {/* Left Column: Video Feed & Dynamic Canvas */}
+        <section className="lg:col-span-3 flex flex-col space-y-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl flex flex-col">
+            <div className="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
+              <div className="flex items-center space-x-2">
+                <Camera className="w-4 h-4 text-blue-400" />
+                <span className="text-sm font-medium text-slate-200">{activeCamera?.name || 'Exam Hall Camera'}</span>
+                <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  {activeCamera?.status || 'Online'}
+                </span>
               </div>
 
-              <button
-                onClick={() => navigate('player')}
-                className="flex items-center space-x-1.5 px-3 py-1.5 rounded-[9px] bg-[var(--system-fill)] hover:bg-[var(--system-fill-secondary)] text-[var(--system-text-primary)] text-[12px] font-medium transition-colors border border-[var(--system-chrome-border)] cursor-pointer"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Return to Live</span>
-              </button>
+              {/* Camera Switcher */}
+              <div className="flex space-x-1">
+                {telemetry?.cameras?.map((cam) => (
+                  <button
+                    key={cam.camera_id}
+                    onClick={() => setSelectedCameraId(cam.camera_id)}
+                    className={`px-2.5 py-1 text-xs rounded transition-colors ${
+                      selectedCameraId === cam.camera_id
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    {cam.name.replace('CCTV Camera ', 'Cam ')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Video Canvas Container */}
+            <div className="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
+              <canvas
+                ref={canvasRef}
+                width={854}
+                height={480}
+                className="w-full h-full object-contain"
+              />
+              <div className="absolute top-3 left-3 bg-slate-950/70 backdrop-blur px-2.5 py-1 rounded text-[11px] text-slate-300 border border-slate-800 flex items-center space-x-1.5">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                <span>REC LIVE</span>
+              </div>
             </div>
           </div>
-        </header>
-      )}
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 pb-24 md:pb-8">
-        
-        {/* VIEW 1: SINGLE CAMERA PLAYER MONITORING */}
-        {currentView === 'player' && (
-          <div className="space-y-6">
-            
-            {/* Camera Switcher Buttons Bar */}
-            <CameraButtonsBar />
-
-            {/* Single Camera View Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* Main Single Camera Video Player (2 cols) */}
-              <div className="lg:col-span-2 flex flex-col space-y-3">
-                <MainVideoPlayer onInspectStudent={handleInspectStudent} />
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <span>Active Cameras</span>
+                <Camera className="w-4 h-4 text-blue-400" />
               </div>
-
-              {/* Active Camera Perspective Details & Telemetry (1 col) */}
-              <div className="lg:col-span-1 flex flex-col space-y-4">
-                <ActiveCameraDetailsPanel onInspectStudent={handleInspectStudent} />
-              </div>
-
+              <p className="text-2xl font-bold text-white">{telemetry?.stats?.online_cameras ?? 1}</p>
             </div>
 
-            {/* Live Statistics Counters Bar */}
-            <LiveStatisticsBar />
-
-            {/* Bottom Row: Activity Timeline & Candidates Overview */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* Activity Timeline (2 Columns) */}
-              <div className="lg:col-span-2">
-                <ActivityTimeline onInspectStudent={handleInspectStudent} />
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <span>Detected Students</span>
+                <Users className="w-4 h-4 text-emerald-400" />
               </div>
+              <p className="text-2xl font-bold text-white">{telemetry?.candidates?.length ?? 3}</p>
+            </div>
 
-              {/* Candidates Roster Card (1 Column) */}
-              <Card padding="none" className="lg:col-span-1 flex flex-col overflow-hidden">
-                <div className="p-3.5 bg-[var(--system-chrome-bg)] backdrop-blur-md border-b border-[var(--system-chrome-border)] flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Users className="w-4 h-4 text-[var(--system-accent)]" />
-                    <h3 className="text-[13px] font-semibold text-[var(--system-text-primary)]">
-                      Exam Candidates ({students.length})
-                    </h3>
-                  </div>
-                  <span className="text-[11px] font-mono-apple text-[var(--system-text-tertiary)]">
-                    Tap to Inspect
-                  </span>
-                </div>
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <span>Active Warnings</span>
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+              </div>
+              <p className="text-2xl font-bold text-white">{telemetry?.stats?.warning_count ?? 0}</p>
+            </div>
 
-                <div className="p-2 divide-y divide-[var(--system-separator)] max-h-[380px] overflow-y-auto">
-                  {students.length === 0 ? (
-                    <div className="p-8 text-center text-[12px] text-[var(--system-text-tertiary)] space-y-1">
-                      <Users className="w-7 h-7 mx-auto text-[var(--system-text-quaternary)]" />
-                      <p className="font-semibold text-[var(--system-text-secondary)]">No Candidates Enrolled</p>
-                      <p className="text-[11px]">Enrolled candidate records will appear here.</p>
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <span>System Health</span>
+                <Activity className="w-4 h-4 text-cyan-400" />
+              </div>
+              <p className="text-lg font-bold text-emerald-400 capitalize">{telemetry?.stats?.system_health ?? 'Optimal'}</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Right Column: Live Candidates & Behavioral Alerts */}
+        <section className="flex flex-col space-y-4">
+          {/* Detected Exam Candidates */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex-1 flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
+              <h2 className="text-sm font-semibold text-slate-200 flex items-center space-x-2">
+                <Users className="w-4 h-4 text-blue-400" />
+                <span>Tracked Candidates</span>
+              </h2>
+              <span className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">
+                {telemetry?.candidates?.length ?? 0}
+              </span>
+            </div>
+
+            <div className="space-y-2.5 overflow-y-auto max-h-[380px] flex-1">
+              {(telemetry?.candidates || []).map((cand) => (
+                <div
+                  key={cand.person_id}
+                  className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between hover:border-slate-700 transition-colors"
+                >
+                  <div>
+                    <p className="text-xs font-medium text-slate-200">
+                      {cand.student_name || cand.person_id}
+                    </p>
+                    <div className="flex items-center space-x-2 text-[11px] text-slate-400 mt-0.5">
+                      <span>ID: {cand.student_id_number || 'Auto-Detected'}</span>
+                      <span>•</span>
+                      <span className={cand.warning_active ? 'text-amber-400' : 'text-emerald-400'}>
+                        {cand.warning_active ? 'Warning Active' : 'Normal'}
+                      </span>
                     </div>
-                  ) : (
-                    students.map(student => {
-                      const isHigh = student.unified_suspicion_score >= highThreshold;
-                      const isWarn = student.unified_suspicion_score >= warningThreshold && !isHigh;
+                  </div>
 
-                      return (
-                        <div
-                          key={student.id}
-                          onClick={() => setSelectedStudent(student)}
-                          className="p-2.5 rounded-[12px] hover:bg-[var(--system-fill-secondary)] cursor-pointer transition-colors flex items-center justify-between space-x-3 text-[12px]"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center space-x-1.5">
-                              <span className="font-semibold text-[var(--system-text-primary)] truncate">
-                                {student.name}
-                              </span>
-                              <span className="text-[10px] font-mono-apple text-[var(--system-text-tertiary)]">
-                                ({student.seat_id?.toUpperCase() || 'Desk'})
-                              </span>
-                            </div>
-
-                            <div className="flex items-center space-x-2 mt-0.5 text-[11px] text-[var(--system-text-tertiary)] font-mono-apple">
-                              <span>ID: {student.student_id_number}</span>
-                              <span>•</span>
-                              <span className="text-[var(--system-accent)]">
-                                {student.active_observations.length} Cam{student.active_observations.length === 1 ? '' : 's'}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Suspicion Pill */}
-                          <div className="text-right flex-shrink-0">
-                            <Badge variant={isHigh ? 'destructive' : isWarn ? 'warning' : 'secondary'}>
-                              {student.unified_suspicion_score} pts
-                            </Badge>
-                          </div>
-                        </div>
-                      );
-                    })
+                  {cand.warning_active && (
+                    <button
+                      onClick={() => handleClearWarning(cand.person_id)}
+                      disabled={isProcessing}
+                      className="px-2.5 py-1 text-xs rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 transition-colors"
+                    >
+                      Clear
+                    </button>
                   )}
                 </div>
-              </Card>
+              ))}
 
+              {(!telemetry?.candidates || telemetry.candidates.length === 0) && (
+                <div className="text-center py-8 text-xs text-slate-500">
+                  Searching for students in camera views...
+                </div>
+              )}
             </div>
-
           </div>
-        )}
 
-        {/* VIEW 2: FULL-PAGE ACTIVITY TIMELINE */}
-        {currentView === 'timeline' && (
-          <div className="space-y-6">
-            <Card padding="md">
-              <h1 className="text-[22px] font-semibold text-[var(--system-text-primary)] tracking-tight">
-                Full Examination Activity Stream
-              </h1>
-              <p className="text-[13px] text-[var(--system-text-secondary)] mt-0.5">
-                Chronological log of computer-vision events, movements, and alerts.
-              </p>
-            </Card>
-            <ActivityTimeline onInspectStudent={handleInspectStudent} maxEvents={100} />
-          </div>
-        )}
-
-        {/* VIEW 3: AUDIT & EXPORT REPORTS */}
-        {currentView === 'reports' && (
-          <AuditReportsView />
-        )}
-
-        {/* VIEW 4: SEPARATE PROTECTED ADMIN ROUTE (/admin) */}
-        {currentView === 'admin' && (
-          <Suspense fallback={
-            <div className="space-y-4 p-8">
-              <Skeleton className="h-12 w-1/3 rounded-[12px]" />
-              <Skeleton className="h-80 w-full rounded-[20px]" />
+          {/* Real-Time Activity Log */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 h-56 flex flex-col">
+            <h2 className="text-sm font-semibold text-slate-200 pb-2 border-b border-slate-800 mb-2 flex items-center space-x-2">
+              <Activity className="w-4 h-4 text-emerald-400" />
+              <span>Audit Log</span>
+            </h2>
+            <div className="overflow-y-auto space-y-2 flex-1 text-xs">
+              {(telemetry?.recent_events || []).map((evt) => (
+                <div key={evt.id} className="text-slate-300 flex items-start space-x-2 py-1 border-b border-slate-800/40">
+                  <span className="text-[10px] text-slate-500 whitespace-nowrap mt-0.5">
+                    {new Date(evt.timestamp).toLocaleTimeString()}
+                  </span>
+                  <span className="flex-1 text-slate-300">{evt.description}</span>
+                </div>
+              ))}
+              {(!telemetry?.recent_events || telemetry.recent_events.length === 0) && (
+                <div className="text-center py-6 text-xs text-slate-500">
+                  All systems operational. No abnormal events recorded.
+                </div>
+              )}
             </div>
-          }>
-            <AdminLayout onExitAdmin={() => navigate('player')} />
-          </Suspense>
-        )}
-
+          </div>
+        </section>
       </main>
-
-      {/* Selected Student Cross-Camera Inspection Drawer */}
-      {selectedStudent && (
-        <StudentInspectionDrawer 
-          student={selectedStudent} 
-          onClose={() => setSelectedStudent(null)} 
-        />
-      )}
-
-      {/* Global Application Footer */}
-      <Footer onNavigate={navigate} />
-
-      {/* Mobile-first Apple Cupertino Bottom Tab Bar */}
-      {currentView !== 'admin' && (
-        <MobileTabBar currentView={currentView} onNavigate={navigate} />
-      )}
-
     </div>
-  );
-}
-
-export default function App() {
-  return (
-    <MonitoringProvider>
-      <MonitoringAppContent />
-    </MonitoringProvider>
   );
 }
