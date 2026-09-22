@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
+import { resolveCanonicalPersonId } from '../../utils/canvasRenderer.js';
 import { 
   Camera, 
   Eye, 
@@ -27,6 +28,7 @@ export function ActiveCameraDetailsPanel({ onInspectStudent }: ActiveCameraDetai
     primaryCameraId, 
     tracksByCamera, 
     students,
+    globalPersons,
     seats 
   } = useMonitoring();
 
@@ -112,7 +114,7 @@ export function ActiveCameraDetailsPanel({ onInspectStudent }: ActiveCameraDetai
         ) : (
           <div className="space-y-1.5 max-h-52 overflow-y-auto pr-0.5">
             {tracks.map(t => {
-              const personId = t.global_person_id || t.person_id || t.track_id;
+              const personId = resolveCanonicalPersonId(t, globalPersons);
               const liveScore = t.current_score ?? t.suspicion_score ?? 0;
 
               return (
@@ -140,7 +142,7 @@ export function ActiveCameraDetailsPanel({ onInspectStudent }: ActiveCameraDetai
                     )}
                     {onInspectStudent && (
                       <button
-                        onClick={() => onInspectStudent(t.associated_student_id || personId)}
+                        onClick={() => onInspectStudent(t.associated_student_id || t.global_person_id || t.person_id || personId)}
                         className="px-2 py-1 rounded-[6px] bg-[var(--system-accent-subtle)] text-[var(--system-accent)] text-[11px] font-medium hover:opacity-80 transition-opacity flex items-center space-x-0.5 cursor-pointer"
                       >
                         <span>Inspect</span>

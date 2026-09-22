@@ -4,17 +4,115 @@
  * 
  * CORE REQUIREMENTS:
  * 1. Fixed Person Tracking ID & Suspicion Score Display:
- *    - Bounding boxes prominently show the fixed ID (e.g. CAM1-S001) and real-time Suspicion Score (0 - 100).
+ *    - Bounding boxes prominently show the fixed ID (e.g. P-001) and real-time Suspicion Score (0 - 100).
+ *    - Formatted as "P-001 • SCORE 24", "P-001 • SCORE 72 • WARNING", "P-001 • SCORE 91 • CRITICAL".
  * 2. Visual Warning / Alert Color Hierarchy:
  *    - WARNING (Score 35 - 64): Pure High-Visibility Yellow (#eab308 / #fbbf24) bounding box, tag & brackets.
  *    - CRITICAL ALERT (Score >= 65): Bright Crimson Red (#ef4444) bounding box & alert badge.
  *    - NORMAL (Score < 35): Crisp Emerald Green (#10b981) bounding box & normal tag.
- * 3. Optical Gaze Vector & Behavior Overlay:
- *    - Renders head orientation vector, phone detection reticle, and student identification.
+ * 3. Exact Displayed Video Aspect Ratio & Coordinate Mapping:
+ *    - Accounts for video intrinsic aspect ratio (16:9, 4:3, etc.), letterbox/pillarbox margins,
+ *      center-origin zoom and pan, and clamps labels within the visible viewport.
  */
 
-import { CameraTrack, SeatRecord, StudentRecord } from '../types.js';
-import { getTrackVisualState, VISUAL_STATE_CONFIG } from './visualState.js';
+import { CameraTrack, SeatRecord, StudentRecord, GlobalPerson } from '../types.js';
+
+export interface DisplayedVideoRect {
+  offsetX: number;
+  offsetY: number;
+  displayedWidth: number;
+  displayedHeight: number;
+}
+
+export function computeDisplayedVideoRect(
+  canvasWidth: number,
+  canvasHeight: number,
+  videoSource?: HTMLVideoElement | HTMLImageElement | null,
+  fitMode: 'contain' | 'cover' = 'contain'
+): DisplayedVideoRect {
+  if (!videoSource) {
+    return { offsetX: 0, offsetY: 0, displayedWidth: canvasWidth, displayedHeight: canvasHeight };
+  }
+
+  let sourceWidth = 0;
+  let sourceHeight = 0;
+
+  if (videoSource instanceof HTMLVideoElement) {
+    sourceWidth = videoSource.videoWidth;
+    sourceHeight = videoSource.videoHeight;
+  } else if (videoSource instanceof HTMLImageElement) {
+    sourceWidth = videoSource.naturalWidth || videoSource.width;
+    sourceHeight = videoSource.naturalHeight || videoSource.height;
+  }
+
+  if (!sourceWidth || !sourceHeight || sourceWidth <= 0 || sourceHeight <= 0) {
+    return { offsetX: 0, offsetY: 0, displayedWidth: canvasWidth, displayedHeight: canvasHeight };
+  }
+
+  const sourceAspect = sourceWidth / sourceHeight;
+  const canvasAspect = canvasWidth / canvasHeight;
+
+  if (fitMode === 'cover') {
+    if (sourceAspect > canvasAspect) {
+      // Source is wider: fit height, overflow width
+      const displayedHeight = canvasHeight;
+      const displayedWidth = canvasHeight * sourceAspect;
+      const offsetX = (canvasWidth - displayedWidth) / 2;
+      return { offsetX, offsetY: 0, displayedWidth, displayedHeight };
+    } else {
+      // Source is taller: fit width, overflow height
+      const displayedWidth = canvasWidth;
+      const displayedHeight = canvasWidth / sourceAspect;
+      const offsetY = (canvasHeight - displayedHeight) / 2;
+      return { offsetX: 0, offsetY, displayedWidth, displayedHeight };
+    }
+  }
+
+  // Default 'contain' (Auto Frame - Best View)
+  if (sourceAspect > canvasAspect) {
+    // Source is wider: letterbox top & bottom
+    const displayedWidth = canvasWidth;
+    const displayedHeight = canvasWidth / sourceAspect;
+    const offsetY = (canvasHeight - displayedHeight) / 2;
+    return { offsetX: 0, offsetY, displayedWidth, displayedHeight };
+  } else {
+    // Source is taller/narrower (e.g. 4:3 in 16:9 canvas): pillarbox left & right
+    const displayedHeight = canvasHeight;
+    const displayedWidth = canvasHeight * sourceAspect;
+    const offsetX = (canvasWidth - displayedWidth) / 2;
+    return { offsetX, offsetY: 0, displayedWidth, displayedHeight };
+  }
+}
+
+/**
+ * Resolve canonical Person ID (P-001, P-002, etc.) from track and global registry.
+ * Strictly prevents camera track IDs (e.g. CAM1-T001) from ever being used as person identities.
+ */
+export function resolveCanonicalPersonId(track: CameraTrack, globalPersons?: GlobalPerson[]): string {
+  const candidate = track.global_person_id || track.person_id;
+  if (candidate && /^P-\d+$/i.test(candidate)) {
+    return candidate.toUpperCase();
+  }
+
+  if (globalPersons && globalPersons.length > 0) {
+    const found = globalPersons.find(gp => 
+      gp.camera_tracks?.some(ct => ct.track_id === track.track_id)
+    );
+    if (found && (found.id || found.person_id)) {
+      const gId = found.id || found.person_id;
+      if (gId && /^P-\d+$/i.test(gId)) {
+        return gId.toUpperCase();
+      }
+    }
+  }
+
+  if (candidate && !candidate.startsWith('CAM') && !candidate.includes('-T')) {
+    return candidate;
+  }
+
+  console.warn(`[CanvasRenderer] Track ${track.track_id} has unresolvable P-ID (raw: ${candidate}). Suppressing raw camera track ID.`);
+  return 'P-ID PENDING';
+}
 
 export interface DrawCameraFeedOptions {
   width: number;
@@ -25,6 +123,7 @@ export interface DrawCameraFeedOptions {
   tracks: CameraTrack[];
   seats?: SeatRecord[];
   students: StudentRecord[];
+  globalPersons?: GlobalPerson[];
   zoomLevel: number;
   panOffset: { x: number; y: number };
   selectedTrackId?: string | null;
@@ -46,20 +145,27 @@ export function drawCameraFeed(
     tracks,
     seats = [],
     students,
+    globalPersons = [],
     zoomLevel = 1.0,
     panOffset = { x: 0, y: 0 },
     selectedTrackId = null,
     warningSuspicionThreshold = 35,
-    highSuspicionThreshold = 65
+    highSuspicionThreshold = 65,
+    videoSource = null,
+    fitMode = 'contain'
   } = options;
 
   // Clear canvas buffer completely
   ctx.clearRect(0, 0, width, height);
 
-  // Apply zoom and pan transformation (matching video player)
+  // Compute exact displayed video rectangle inside the canvas viewport
+  const rect = computeDisplayedVideoRect(width, height, videoSource, fitMode);
+
+  // Apply zoom and pan transformation (matching video element CSS transform-origin: center center)
   ctx.save();
-  ctx.translate(panOffset.x, panOffset.y);
+  ctx.translate(width / 2 + panOffset.x, height / 2 + panOffset.y);
   ctx.scale(zoomLevel, zoomLevel);
+  ctx.translate(-width / 2, -height / 2);
 
   // -------------------------------------------------------------
   // 1. Render Configured Seat Grid & Zones
@@ -68,10 +174,10 @@ export function drawCameraFeed(
     const region = seat.camera_regions?.[cameraId];
     if (!region) continue;
 
-    const sx = region.x * width;
-    const sy = region.y * height;
-    const sw = region.width * width;
-    const sh = region.height * height;
+    const sx = rect.offsetX + region.x * rect.displayedWidth;
+    const sy = rect.offsetY + region.y * rect.displayedHeight;
+    const sw = region.width * rect.displayedWidth;
+    const sh = region.height * rect.displayedHeight;
 
     // Subtle seat bounding perimeter
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
@@ -90,18 +196,17 @@ export function drawCameraFeed(
   }
 
   // -------------------------------------------------------------
-  // 2. Render Real-Time Person Tracks, Fixed IDs & Suspicion Scores
+  // 2. Render Real-Time Person Tracks, Fixed P-IDs & Suspicion Scores
   // -------------------------------------------------------------
   for (const track of tracks) {
-    // Convert normalized bounding box to canvas pixels
-    const px = track.bbox.x * width;
-    const py = track.bbox.y * height;
-    const pw = track.bbox.width * width;
-    const ph = track.bbox.height * height;
+    // Convert normalized bounding box to canvas pixels relative to displayed video frame
+    const px = rect.offsetX + track.bbox.x * rect.displayedWidth;
+    const py = rect.offsetY + track.bbox.y * rect.displayedHeight;
+    const pw = track.bbox.width * rect.displayedWidth;
+    const ph = track.bbox.height * rect.displayedHeight;
 
     const isSelected = track.track_id === selectedTrackId;
     const liveScore = Math.max(0, Math.min(100, Math.round(track.current_score !== undefined ? track.current_score : (track.suspicion_score || 0))));
-    const cumulativeScore = Math.max(0, Math.min(100, Math.round(track.cumulative_score !== undefined ? track.cumulative_score : (track.suspicion_score || 0))));
     
     // Status Classification based on live current_score and warning_latched
     const isCritical = Boolean(track.warning_latched) || liveScore >= highSuspicionThreshold;
@@ -111,20 +216,17 @@ export function drawCameraFeed(
     let cornerColor = '#10b981';
     let badgeBg = '#10b981';
     let badgeTextColor = '#ffffff';
-    let statusLabel = 'NORMAL';
 
     if (isCritical) {
       borderColor = '#ef4444'; // Critical: Bright Red
       cornerColor = '#ef4444';
       badgeBg = '#ef4444';
       badgeTextColor = '#ffffff';
-      statusLabel = track.warning_latched ? 'WARNING LATCHED' : 'CRITICAL ALERT';
     } else if (isWarning) {
       borderColor = '#eab308'; // Warning: High-Visibility Yellow
       cornerColor = '#fbbf24';
       badgeBg = '#eab308';
       badgeTextColor = '#0f172a'; // High contrast black text on yellow
-      statusLabel = 'WARNING';
     }
 
     if (isSelected) {
@@ -138,8 +240,8 @@ export function drawCameraFeed(
       ctx.lineWidth = 2;
       for (let i = 0; i < track.history_trajectory.length; i++) {
         const pt = track.history_trajectory[i];
-        const hx = pt.x * width;
-        const hy = pt.y * height;
+        const hx = rect.offsetX + pt.x * rect.displayedWidth;
+        const hy = rect.offsetY + pt.y * rect.displayedHeight;
         if (i === 0) ctx.moveTo(hx, hy);
         else ctx.lineTo(hx, hy);
       }
@@ -179,12 +281,11 @@ export function drawCameraFeed(
     }
 
     // C. Mobile Phone Detection Reticle Overlay
-    // Only render phone box if real phone_bbox was detected
     if (track.phone_detected && track.phone_bbox) {
-      const phoneX = track.phone_bbox.x * width;
-      const phoneY = track.phone_bbox.y * height;
-      const phoneW = track.phone_bbox.width * width;
-      const phoneH = track.phone_bbox.height * height;
+      const phoneX = rect.offsetX + track.phone_bbox.x * rect.displayedWidth;
+      const phoneY = rect.offsetY + track.phone_bbox.y * rect.displayedHeight;
+      const phoneW = track.phone_bbox.width * rect.displayedWidth;
+      const phoneH = track.phone_bbox.height * rect.displayedHeight;
 
       // Glow pulsation
       const pulse = (Math.sin(now / 180) + 1) / 2;
@@ -203,7 +304,6 @@ export function drawCameraFeed(
 
     // -------------------------------------------------------------
     // D. Dynamic Person Bounding Box (Snug, Frame-by-Frame Motion Tracking)
-    // Clearly encloses the student without cluttering or blocking views
     // -------------------------------------------------------------
     ctx.strokeStyle = borderColor;
     ctx.lineWidth = isSelected ? 2.2 : (isWarning || isCritical ? 1.8 : 1.3);
@@ -254,44 +354,57 @@ export function drawCameraFeed(
     ctx.stroke();
 
     // -------------------------------------------------------------
-    // E. Ultra-Compact, Non-Blocking ID & Score Header Tag
-    // (Small, sleek, and moves frame-by-frame on top of the bounding box)
-    // ID-ONLY Architecture: Authoritative Person ID (P-001) + Score + Warning Status
-    // Strict requirement: Never display raw camera track ID (CAM1-T001) as person identity
+    // E. Prominent, Clamped P-ID & Score Header Label
+    // Format: "P-001 • SCORE 24", "P-001 • SCORE 72 • WARNING", "P-001 • SCORE 91 • CRITICAL"
     // -------------------------------------------------------------
-    const rawPersonId = track.global_person_id || track.person_id;
-    const personId = (rawPersonId && /^P-\d+$/i.test(rawPersonId)) 
-      ? rawPersonId 
-      : (rawPersonId && !rawPersonId.startsWith('CAM') && !rawPersonId.includes('-T') ? rawPersonId : 'P-ID PENDING');
-    const statusPrefix = isCritical ? '🚨 ' : (isWarning ? '⚠️ ' : '');
-    const warnSuffix = isCritical ? ' • CRITICAL' : (isWarning ? ' • WARNING' : '');
-    const tagText = `${statusPrefix}${personId} • SCORE ${liveScore}${warnSuffix}`;
+    const personId = resolveCanonicalPersonId(track, globalPersons);
+    let tagText = `${personId} • SCORE ${liveScore}`;
+    if (isCritical) {
+      tagText = `${personId} • SCORE ${liveScore} • CRITICAL`;
+    } else if (isWarning) {
+      tagText = `${personId} • SCORE ${liveScore} • WARNING`;
+    }
     
-    // Sleek small font to avoid blocking camera views
-    ctx.font = 'bold 8.5px "JetBrains Mono", monospace';
-    const tagWidth = ctx.measureText(tagText).width + 8;
-    const tagHeight = 13.5;
+    // Crisp typography for maximum readability
+    ctx.font = 'bold 9.5px "JetBrains Mono", "SF Mono", monospace';
+    const tagPaddingH = 5;
+    const tagWidth = ctx.measureText(tagText).width + tagPaddingH * 2;
+    const tagHeight = 15;
 
-    // Header Y position (clamped so it is never clipped by top canvas border)
-    const headerY = py >= tagHeight + 2 ? py - tagHeight - 1 : py + 1;
+    // Preferred placement: directly above the bounding box
+    let headerY = py - tagHeight - 2;
+    // Clamping: If not enough headroom above, place inside top of bounding box
+    if (headerY < rect.offsetY + 2 || headerY < 2) {
+      headerY = py + 2;
+      if (ph < tagHeight + 4) {
+        headerY = py + ph + 2;
+      }
+    }
 
-    // Compact Header Badge
+    // Clamp header horizontally to remain inside the visible viewport
+    let headerX = px;
+    const minX = Math.max(2, rect.offsetX);
+    const maxX = Math.min(width - tagWidth - 2, rect.offsetX + rect.displayedWidth - tagWidth - 2);
+    if (headerX < minX) headerX = minX;
+    if (headerX > maxX) headerX = maxX;
+
+    // Draw header pill
     ctx.fillStyle = badgeBg;
-    ctx.fillRect(px, headerY, tagWidth, tagHeight);
+    ctx.fillRect(headerX, headerY, tagWidth, tagHeight);
 
     // Subtle dark border around header badge
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(px, headerY, tagWidth, tagHeight);
+    ctx.strokeRect(headerX, headerY, tagWidth, tagHeight);
 
     // Header badge text
     ctx.fillStyle = badgeTextColor;
-    ctx.fillText(tagText, px + 4, headerY + 9.8);
+    ctx.fillText(tagText, headerX + tagPaddingH, headerY + 11);
 
     // -------------------------------------------------------------
-    // G. Bottom Telemetry Alerts (Only rendered when active alerts occur)
+    // G. Bottom Telemetry Alerts (Gaze direction / Phone detection)
     // -------------------------------------------------------------
-    const footerY = Math.min(height - 6, py + ph + 14);
+    const footerY = Math.min(rect.offsetY + rect.displayedHeight - 4, py + ph + 14);
     let badgeOffset = 0;
 
     // Gaze Direction Alert
@@ -320,7 +433,7 @@ export function drawCameraFeed(
       badgeOffset += phoneW + 3;
     }
 
-    // Face Occlusion Alert - Only when actual face analysis exists (face_confidence > 0.35) and confirms occlusion
+    // Face Occlusion Alert
     const hasActualFaceAnalysis = (track.face_confidence ?? 0) > 0.35;
     const isFaceOccluded = hasActualFaceAnalysis && (track.face_occluded === true || track.face_visible === false);
     if (isFaceOccluded) {
@@ -333,25 +446,6 @@ export function drawCameraFeed(
       ctx.fillStyle = '#ffffff';
       ctx.fillText(faceText, px + badgeOffset + 4, footerY - 1.5);
       badgeOffset += faceW + 3;
-    }
-
-    // Cross-Camera Best View Arbitration Badge
-    const student = track.associated_student_id ? students.find(s => s.id === track.associated_student_id) : null;
-    if (student && student.active_observations && student.active_observations.length > 0) {
-      const myObs = student.active_observations.find(o => o.camera_id === cameraId);
-      const isBest = myObs ? myObs.is_best_view : false;
-      const bestObs = student.active_observations.find(o => o.is_best_view);
-
-      const bestText = isBest
-        ? `★ BEST VIEW (${Math.round(myObs?.quality || 92)}%)`
-        : `BEST: ${bestObs ? bestObs.camera_id.toUpperCase().replace('-', ' ') : 'OTHER'}`;
-
-      ctx.font = 'bold 9px "JetBrains Mono", monospace';
-      const bestW = ctx.measureText(bestText).width + 10;
-      ctx.fillStyle = isBest ? 'rgba(16, 185, 129, 0.95)' : 'rgba(51, 65, 85, 0.88)';
-      ctx.fillRect(px + badgeOffset, footerY - 14, bestW, 18);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(bestText, px + badgeOffset + 5, footerY - 1);
     }
   }
 
@@ -378,12 +472,15 @@ export function renderTelemetryCanvas(
     tracks: CameraTrack[];
     seats: SeatRecord[];
     students: StudentRecord[];
+    globalPersons?: GlobalPerson[];
     cameraId: string;
     selectedTrackId?: string | null;
     warningSuspicionThreshold?: number;
     highSuspicionThreshold?: number;
     zoomLevel?: number;
     panOffset?: { x: number; y: number };
+    videoSource?: HTMLVideoElement | HTMLImageElement | null;
+    fitMode?: 'contain' | 'cover';
   }
 ): void {
   const ctx = canvas.getContext('2d');
@@ -397,10 +494,13 @@ export function renderTelemetryCanvas(
     tracks: options.tracks,
     seats: options.seats,
     students: options.students,
+    globalPersons: options.globalPersons,
     zoomLevel: options.zoomLevel || 1.0,
     panOffset: options.panOffset || { x: 0, y: 0 },
     selectedTrackId: options.selectedTrackId,
     warningSuspicionThreshold: options.warningSuspicionThreshold || 35,
-    highSuspicionThreshold: options.highSuspicionThreshold || 65
+    highSuspicionThreshold: options.highSuspicionThreshold || 65,
+    videoSource: options.videoSource,
+    fitMode: options.fitMode || 'contain'
   });
 }

@@ -15,7 +15,11 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { useMonitoring } from '../../context/MonitoringContext.js';
 import { useScreenWakeLock } from '../../hooks/useScreenWakeLock.js';
-import { drawCameraFeed } from '../../utils/canvasRenderer.js';
+import { 
+  drawCameraFeed, 
+  computeDisplayedVideoRect, 
+  resolveCanonicalPersonId 
+} from '../../utils/canvasRenderer.js';
 import { resolveCameraStream } from '../../utils/streamHelper.js';
 import { CameraTrack } from '../../types.js';
 import { 
@@ -47,6 +51,19 @@ interface MainVideoPlayerProps {
   onInspectStudent?: (studentId: string) => void;
 }
 
+function getTracksForCamera(tracksByCamera: Record<string, CameraTrack[]>, targetCameraId: string): CameraTrack[] {
+  if (!targetCameraId || !tracksByCamera) return [];
+  if (tracksByCamera[targetCameraId]) return tracksByCamera[targetCameraId];
+  
+  const normTarget = targetCameraId.toLowerCase().replace(/[-_]/g, '');
+  for (const [key, tracks] of Object.entries(tracksByCamera)) {
+    if (key.toLowerCase().replace(/[-_]/g, '') === normTarget) {
+      return tracks;
+    }
+  }
+  return [];
+}
+
 export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const { 
     cameras, 
@@ -54,6 +71,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     setFocusedCameraId,
     tracksByCamera, 
     students, 
+    globalPersons,
     settings, 
     seats,
     selectedTrack, 
@@ -106,7 +124,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   const [liveTrackCount, setLiveTrackCount] = useState<number>(0);
 
   const focusedCamera = cameras.find(c => c.camera_id === focusedCameraId) || cameras[0];
-  const tracks = tracksByCamera[focusedCameraId] || [];
+  const tracks = getTracksForCamera(tracksByCamera, focusedCameraId);
   const isPrimary = focusedCamera?.camera_id === primaryCameraId;
   const streamResolution = resolveCameraStream(focusedCamera);
 
@@ -128,6 +146,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
   tracksRef.current = tracks;
   const studentsRef = useRef(students);
   studentsRef.current = students;
+  const globalPersonsRef = useRef(globalPersons);
+  globalPersonsRef.current = globalPersons;
   const seatsRef = useRef(seats);
   seatsRef.current = seats;
   const settingsRef = useRef(settings);
@@ -362,7 +382,9 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               cameraId: focusedCamera.camera_id,
               isPrimary: isPrimaryRef.current,
               tracks: effectiveTracks,
+              seats: seatsRef.current,
               students: studentsRef.current,
+              globalPersons: globalPersonsRef.current,
               zoomLevel: zoomLevelRef.current,
               panOffset: panOffsetRef.current,
               selectedTrackId: selectedTrackRef.current?.track_id || null,
@@ -463,10 +485,28 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const clickX = ((e.clientX - rect.left - panOffset.x) / zoomLevel) / canvas.width;
-    const clickY = ((e.clientY - rect.top - panOffset.y) / zoomLevel) / canvas.height;
+    const videoEl = videoRef.current;
+    const mjpegEl = mjpegRef.current;
+    const isMjpeg = focusedCamera?.source_type === 'ip_webcam' || (focusedCamera?.source_url || '').includes(':8080');
+    const activeSource = isMjpeg ? mjpegEl : videoEl;
 
-    const effectiveTracks = tracks;
+    const displayedRect = computeDisplayedVideoRect(canvas.width, canvas.height, activeSource, fitMode);
+
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const screenX = (e.clientX - rect.left) * scaleX;
+    const screenY = (e.clientY - rect.top) * scaleY;
+
+    // Reverse center-origin transform:
+    // screenX = width/2 + panOffset.x + (untransformedX - width/2) * zoomLevel
+    const untransformedX = (screenX - (canvas.width / 2 + panOffset.x)) / zoomLevel + canvas.width / 2;
+    const untransformedY = (screenY - (canvas.height / 2 + panOffset.y)) / zoomLevel + canvas.height / 2;
+
+    // Normalized video coordinates
+    const clickX = (untransformedX - displayedRect.offsetX) / displayedRect.displayedWidth;
+    const clickY = (untransformedY - displayedRect.offsetY) / displayedRect.displayedHeight;
+
+    const effectiveTracks = getTracksForCamera(tracksByCamera, focusedCameraId);
     const hitTrack = effectiveTracks.find(t => 
       clickX >= t.bbox.x &&
       clickX <= t.bbox.x + t.bbox.width &&
@@ -656,7 +696,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               muted={isMuted}
               loop
               crossOrigin="anonymous"
-              className="absolute inset-0 w-full h-full object-contain pointer-events-none z-0"
+              className={`absolute inset-0 w-full h-full pointer-events-none z-0 ${fitMode === 'cover' ? 'object-cover' : 'object-contain'}`}
               style={{
                 transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
                 transformOrigin: 'center center',
@@ -669,7 +709,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
               ref={mjpegRef}
               crossOrigin="anonymous"
               alt="stream-frame"
-              className="absolute inset-0 w-full h-full object-contain pointer-events-none z-0"
+              className={`absolute inset-0 w-full h-full pointer-events-none z-0 ${fitMode === 'cover' ? 'object-cover' : 'object-contain'}`}
               style={{
                 transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
                 transformOrigin: 'center center',
@@ -684,7 +724,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
                 width={canvasDimensions.width}
                 height={canvasDimensions.height}
                 onClick={handleCanvasClick}
-                className="cv-canvas absolute inset-0 w-full h-full object-contain z-10 pointer-events-auto cursor-crosshair"
+                className={`cv-canvas absolute inset-0 w-full h-full z-10 pointer-events-auto cursor-crosshair ${fitMode === 'cover' ? 'object-cover' : 'object-contain'}`}
               />
             )}
 
@@ -788,7 +828,7 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
             <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
             <div>
               <span className="font-mono text-cyan-300 font-bold">
-                {selectedTrack.global_person_id || selectedTrack.person_id || selectedTrack.track_id}
+                {resolveCanonicalPersonId(selectedTrack, globalPersons)}
               </span>
               <span className="text-slate-400 ml-2">
                 Track: <span className="font-mono text-slate-300">{selectedTrack.track_id}</span>
@@ -799,8 +839,8 @@ export function MainVideoPlayer({ onInspectStudent }: MainVideoPlayerProps) {
             </div>
             {onInspectStudent && (
               <button 
-                onClick={() => onInspectStudent(selectedTrack.associated_student_id || selectedTrack.global_person_id || selectedTrack.track_id)}
-                className="ml-2 px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-[10px] flex items-center space-x-1"
+                onClick={() => onInspectStudent(selectedTrack.global_person_id || selectedTrack.person_id || selectedTrack.associated_student_id || selectedTrack.track_id)}
+                className="ml-2 px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-[10px] flex items-center space-x-1 cursor-pointer"
               >
                 <span>Inspect Subject</span>
                 <ChevronRight className="w-3 h-3" />
