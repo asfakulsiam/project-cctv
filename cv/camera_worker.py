@@ -28,25 +28,23 @@ from cv.behavior_analyzer import PythonBehaviorAnalyzer
 
 class StructuralMorphologyDetector:
     """
-    Validates structural morphology of candidate detections before admitting to tracking:
-    - Anatomical aspect ratio: Human upper body / seated posture ratio H/W between 1.2 and 4.2
-    - Minimum spatial area and boundaries
-    - Bilateral symmetry and confidence gating
+    Validates structural morphology of candidate human detections:
+    Supports heads, faces, upper bodies, chests, and full body shapes across all camera angles and depths.
     """
-    MIN_ASPECT_RATIO = 1.15
-    MAX_ASPECT_RATIO = 4.30
-    MIN_BBOX_AREA = 0.008
-    MAX_BBOX_AREA = 0.850
+    MIN_ASPECT_RATIO = 0.20
+    MAX_ASPECT_RATIO = 8.00
+    MIN_BBOX_AREA = 0.0005
+    MAX_BBOX_AREA = 0.950
 
     @classmethod
     def validate_human_structure(cls, bbox: Any, confidence: float) -> Tuple[bool, float]:
-        if confidence < 0.55:
+        if confidence < 0.25:
             return False, 0.0
 
-        bw = bbox.width if hasattr(bbox, "width") else bbox.get("width", 0)
-        bh = bbox.height if hasattr(bbox, "height") else bbox.get("height", 0)
+        bw = bbox.width if hasattr(bbox, "width") else (bbox.get("width", 0) if isinstance(bbox, dict) else 0)
+        bh = bbox.height if hasattr(bbox, "height") else (bbox.get("height", 0) if isinstance(bbox, dict) else 0)
 
-        if bw <= 0.01 or bh <= 0.01:
+        if bw <= 0.002 or bh <= 0.002:
             return False, 0.0
 
         area = bw * bh
@@ -58,15 +56,14 @@ class StructuralMorphologyDetector:
             return False, 0.0
 
         # Structural confidence weighting
-        structural_score = min(1.0, confidence * 0.7 + (1.0 - abs(aspect_ratio - 2.1) / 3.0) * 0.3)
+        structural_score = max(0.50, min(0.98, confidence))
         return True, round(structural_score, 3)
 
 
 class HumanGate:
     """
     Enforces Rule 1 & Rule 2:
-    Human detection is the absolute gatekeeper.
-    Nothing creates a track, activity, score, warning, or box unless a human is first confirmed.
+    Human detection gatekeeper that admits all detected human heads, upper bodies, chests, and full bodies.
     """
     @staticmethod
     def filter_detections(raw_detections: List[dict]) -> List[dict]:
@@ -82,7 +79,7 @@ class HumanGate:
 
             conf = float(det.get("confidence", 0.0))
             is_valid, struct_conf = StructuralMorphologyDetector.validate_human_structure(bbox, conf)
-            if is_valid and struct_conf >= 0.55:
+            if is_valid and struct_conf >= 0.25:
                 det_id = det.get("detection_id", f"det-{int(time.time()*1000)}-{i:02d}")
                 confirmed_humans.append({
                     **det,

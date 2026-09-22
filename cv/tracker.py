@@ -96,7 +96,7 @@ class PythonCameraTracker:
         # Enforce Rule 1: Human-First Gatekeeper
         valid_humans = []
         for d in human_detections:
-            if d.get("class_name", "person") == "person" and d.get("confidence", 0.0) >= 0.55:
+            if d.get("class_name", "person") == "person" and d.get("confidence", 0.0) >= 0.25:
                 # Wrap bbox if dict
                 bbox_raw = d["bbox"]
                 if isinstance(bbox_raw, dict):
