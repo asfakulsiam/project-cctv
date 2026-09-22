@@ -76,18 +76,35 @@ export interface PersonDetectorAdapter {
  */
 export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
   public name = 'ExternalInferenceWorkerAdapter';
-  private inferenceUrl?: string;
+  private inferenceUrl: string;
+  private workerOnline = false;
+  private lastInferenceLatencyMs = 0;
+  private totalCalls = 0;
+  private lastError: string | null = null;
 
   constructor(inferenceUrl?: string) {
-    this.inferenceUrl = inferenceUrl || process.env.CV_INFERENCE_URL;
+    this.inferenceUrl = inferenceUrl || process.env.CV_INFERENCE_URL || 'http://127.0.0.1:5001/detect';
+  }
+
+  public getDiagnostics() {
+    return {
+      adapter_name: this.name,
+      inference_url: this.inferenceUrl,
+      worker_online: this.workerOnline,
+      last_latency_ms: this.lastInferenceLatencyMs,
+      total_calls: this.totalCalls,
+      last_error: this.lastError
+    };
   }
 
   public async detect(input: PersonDetectorInput): Promise<DetectorOutput> {
-    // If an external inference endpoint is configured and frame data is provided
+    this.totalCalls++;
+    const startTime = Date.now();
+
     if (this.inferenceUrl && input.frame) {
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 1200);
+        const timeout = setTimeout(() => controller.abort(), 2000);
 
         const framePayload: any = input.frame;
         let formattedFrame: string | undefined = undefined;
@@ -111,8 +128,13 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
         });
         clearTimeout(timeout);
 
+        this.lastInferenceLatencyMs = Date.now() - startTime;
+
         if (response.ok) {
           const data: any = await response.json();
+          this.workerOnline = true;
+          this.lastError = null;
+
           if (Array.isArray(data.detections)) {
             const humans: HumanDetection[] = data.detections
               .filter((d: any) => (d.class_name?.toLowerCase() === 'person' || d.class === 'person') && d.confidence >= 0.40)
@@ -143,12 +165,18 @@ export class ExternalInferenceWorkerAdapter implements PersonDetectorAdapter {
               timestamp: input.timestamp
             };
           }
+        } else {
+          this.workerOnline = false;
+          this.lastError = `HTTP ${response.status}: ${response.statusText}`;
         }
-      } catch {
-        // Fall back gracefully to internal or input detections
+      } catch (err: any) {
+        this.workerOnline = false;
+        this.lastError = err.message || 'Python inference worker connection failed';
       }
     }
 
+    // STRICT ARCHITECTURAL RULE: No synthetic fallback when Python worker is offline.
+    // Return empty detections list to preserve authentic system telemetry.
     const rawDetections = input.detections || [];
     const rawPhones = input.phones || [];
 

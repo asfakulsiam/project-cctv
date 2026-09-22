@@ -284,14 +284,41 @@ export class CVEngine {
         global_persons: this.latestGlobalPersons.length
       });
     }
+
+    let detectorDiagnostics: any = { status: 'internal_default' };
+    if (this.personDetector && (this.personDetector as any).customAdapter && typeof (this.personDetector as any).customAdapter.getDiagnostics === 'function') {
+      detectorDiagnostics = (this.personDetector as any).customAdapter.getDiagnostics();
+    }
+
+    const cameraTrackCounts: Record<string, number> = {};
+    let totalActiveTracks = 0;
+    for (const [camId, tracker] of this.trackers.entries()) {
+      const count = tracker.getActiveTrackCount();
+      cameraTrackCounts[camId] = count;
+      totalActiveTracks += count;
+    }
+
+    const globalPersons = this.unifiedStudentManager.getAllGlobalPersons();
+
     return {
+      timestamp: Date.now(),
       engine_running: this.isRunning,
+      system_health: this.cachedStats.system_health,
+      overall_processing_fps: this.currentMeasuredFps,
       measured_fps: this.currentMeasuredFps,
       total_cameras: this.cameras.size,
       online_cameras: Array.from(this.cameras.values()).filter(c => c.status === 'online').length,
       cameras: cameraDiagnostics,
-      global_persons_count: this.latestGlobalPersons.length,
-      unique_students_count: this.latestUnifiedStudents.length
+      python_inference_worker: detectorDiagnostics,
+      tracks: {
+        total_active_tracks: totalActiveTracks,
+        by_camera: cameraTrackCounts
+      },
+      canonical_persons: {
+        total_global_persons: globalPersons.length,
+        candidates_count: this.unifiedStudentManager.getCandidates().length
+      },
+      stats: this.cachedStats
     };
   }
 

@@ -15,7 +15,34 @@ import { MultiCameraCVEngine } from './server/cv/engine.js';
 import { CameraConfig } from './src/types.js';
 import dotenv from 'dotenv';
 
+import { spawn } from 'child_process';
+
 dotenv.config();
+
+function ensurePythonWorkerRunning() {
+  const checkUrl = 'http://127.0.0.1:5001/health';
+  fetch(checkUrl, { signal: AbortSignal.timeout(800) })
+    .then(res => {
+      if (!res.ok) spawnPythonWorker();
+    })
+    .catch(() => {
+      spawnPythonWorker();
+    });
+}
+
+function spawnPythonWorker() {
+  try {
+    const workerProcess = spawn('python3', ['./cv/python_worker_server.py'], {
+      cwd: process.cwd(),
+      stdio: 'ignore',
+      detached: true
+    });
+    workerProcess.unref();
+    console.log('[Server] Spawned Python CV Worker on http://127.0.0.1:5001');
+  } catch (err: any) {
+    console.error('[Server] Failed to spawn Python CV Worker:', err.message);
+  }
+}
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
@@ -63,6 +90,7 @@ function requireAdminAuth(req: express.Request, res: express.Response, next: exp
 
 async function startServer() {
   await initDatabase();
+  ensurePythonWorkerRunning();
 
   const app = express();
   app.use(express.json());
