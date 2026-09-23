@@ -1,147 +1,125 @@
-# Architecture & System Design Document
+# System Architecture: Exam Hall Monitoring Assistant
 
-**Title:** Smart Classroom Exam Monitoring System Using Computer Vision and Behavioral Analysis  
-**Document Version:** 1.0.0 (Academic & Production Specification)
+## 1. End-to-End Data Flow Pipeline
 
----
-
-## 1. System Architecture Overview
-
-The system adopts a **modular hybrid pipeline** combining an edge-capable Computer Vision engine with a high-throughput WebSocket broadcast server and an interactive Player-First React frontend.
-
-```
-+-------------------------------------------------------------------------------+
-|                             CAMERA HARDWARE LAYER                             |
-|  [ Camera 1: Frontal Main ]   [ Camera 2: Left Flank ]   [ Camera 3: Overhead ]|
-+-------------------------------------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------+
-|                    INDEPENDENT PER-CAMERA TRACKING ENGINE                     |
-|  • Isolated ByteTrack Loop 1 -> Produces CAM1-S001, CAM1-S002                 |
-|  • Isolated ByteTrack Loop 2 -> Produces CAM2-S001, CAM2-S002                 |
-|  • Isolated ByteTrack Loop 3 -> Produces CAM3-S001, CAM3-S002                 |
-+-------------------------------------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------+
-|                    TEMPORAL BEHAVIOR ANALYSIS HEURISTICS                      |
-|  • Sustained Gaze Tracking (>3.5s window with debounce)                       |
-|  • Face Occlusion Tracking (>4.0s grace window)                              |
-|  • Desk Boundary Verification (>5.0s out-of-seat threshold)                  |
-|  • Object/Phone Detector (Confidence floor >= 0.65)                           |
-+-------------------------------------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------+
-|                        UNIFIED CROSS-CAMERA STUDENT MODEL                     |
-|  • Spatial Homography / Desk Mapping: Links camera tracks to Student Records  |
-|  • Clarity Score Arbitration: Resolves Best View Angle per candidate          |
-|  • Deduplicated Present Count: 3 students in room => exactly 3 records        |
-+-------------------------------------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------+
-|                    GATEWAY & EVENT DISPATCHER (Node/Express)                  |
-|  • REST Configuration API (`/api/students`, `/api/cameras`, `/api/settings`)   |
-|  • WebSocket Broadcast Engine (15 FPS Telemetry Stream)                       |
-|  • MongoDB Storage Driver (Audits, Sessions, Incident Logs)                  |
-+-------------------------------------------------------------------------------+
-                                        |
-                                        v
-+-------------------------------------------------------------------------------+
-|                     PLAYER-FIRST REACT SPA PRESENTATION LAYER                 |
-|  • Primary Camera 1 Live Video Player + Canvas CV Overlays (60 FPS RAF)       |
-|  • Multi-Angle Secondary Strip + Instant View Switching                       |
-|  • Interactive Student Inspection Drawer (Clarity Comparison)                 |
-|  • Protected Admin Management Console (`/admin` + Session Auth)               |
-+-------------------------------------------------------------------------------+
+```text
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                           1. VIDEO SOURCES                              │
+  │   RTSP Stream / IP Camera / Google Drive Link / Video File / Webcam     │
+  └────────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                 2. STREAM RESOLVER & INGESTION MODULE                   │
+  │   - server/ingestion.ts (ffmpeg spawn probing & frame extraction)       │
+  │   - src/utils/sourceResolver.ts (Google Drive & auth URL formatting)    │
+  └────────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                 3. COMPUTER VISION DETECTION ENGINE                     │
+  │   - On-Device: TensorFlow.js COCO-SSD (src/services/realDetector.ts)   │
+  │   - Microservice Worker (Opt.): Python YOLOv8 (cv_service/main.py)      │
+  └────────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                4. SPATIAL CENTROID & BYTETRACK TRACKER                  │
+  │   - Bounding Box EMA Smoothing (alpha = 0.15)                           │
+  │   - Persistent Candidate Identifier (P-ID) Assignment                   │
+  │   - 60-second Score Archive (scoreArchive) for Occlusion Recovery       │
+  └────────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │             5. MOTION SCORING & STATE PERSISTENCE ENGINE                │
+  │   - server/db.ts (MongoDB Collections / local JSON fallback)           │
+  │   - Bounded Cumulative Score (0 – 100)                                  │
+  │   - Warning Level Categorization (Normal / Warning / High Warning)      │
+  └────────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                    6. EXPRESS REST API SERVER                           │
+  │   - server/routes.ts (Camera CRUD, Candidates, Activities, Admin Auth) │
+  └────────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                    7. REACT FRONTEND APPLICATION                        │
+  │   - Live Monitor (MainPlayer.tsx) with SVG Overlays & Highlight Cards  │
+  │   - Candidate Roster & Warning Clearing (CandidateList.tsx)             │
+  │   - Filterable Audit Log & CSV Exporter (ActivityPanel.tsx)             │
+  │   - Protected Admin Panel (AdminPanel.tsx)                              │
+  └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Multi-Camera Tracking Strategy: Strict Isolation
+## 2. Technical Design Rationale
 
-### The Cross-Camera ID Contamination Problem
-In naive multi-camera systems, a single global tracker ID space is shared across all cameras. When a student is detected in Camera 1 as `ID: 1` and in Camera 2 as `ID: 1`, trackers frequently swap targets when students move or cameras glitch, resulting in tracker jitter, catastrophic trajectory merging, and false accusations.
+### A. Why `ffmpeg` for Stream Ingestion?
+Standard web browsers cannot natively demux RTSP network camera streams (`rtsp://`) or raw MJPEG streams. Spawning `ffmpeg` child processes on the server allows the system to interface directly with industrial IP cameras, execute frame extractions, probe stream connectivity (`POST /api/cameras/test-source`), and serve clean frame data to the frontend or vision pipeline.
 
-### The Solution: Isolated Scoped Identifiers
-Each camera feed runs an isolated instance of the tracking algorithm. Track IDs are prefixed with the camera identifier:
-- Camera 1: `CAM1-S001`, `CAM1-S002`, `CAM1-S003`
-- Camera 2: `CAM2-S001`, `CAM2-S002`, `CAM2-S003`
-- Camera 3: `CAM3-S001`, `CAM3-S002`, `CAM3-S003`
+### B. Why Dual Vision Engine Support (Browser JS & Python Worker)?
+- **Browser On-Device Vision Engine (`src/services/realDetector.ts`)**: Runs TensorFlow.js COCO-SSD directly in the browser via WebGL acceleration. This eliminates zero-network external server dependencies, ensuring the app runs out-of-the-box on any computer with Node.js.
+- **Python Microservice Worker (`cv_service/main.py`)**: Provides server-side GPU/CPU accelerated YOLOv8 object detection combined with ByteTrack multi-object tracking. When a Python environment is present, `server.ts` automatically spawns the microservice.
 
-These localized tracks are never mixed directly. Instead, they are fed as independent observations into the **Unified Student Model**.
-
----
-
-## 3. Unified Student Model & Observation Fusion
-
-A single candidate seated in Desk A-02 is observed simultaneously by Camera 1, Camera 2, and Camera 3. The Unified Student Model maps these 3 tracks into a single canonical `StudentRecord`:
-
-```json
-{
-  "id": "stu-2",
-  "student_id_number": "STU-2026-0441",
-  "name": "Elena Rostova",
-  "seat_id": "seat-2",
-  "status": "present",
-  "unified_suspicion_score": 42,
-  "active_observations": [
-    {
-      "camera_id": "cam-1",
-      "track_id": "CAM1-S002",
-      "quality": 88,
-      "is_best_view": false,
-      "bbox": { "x": 0.38, "y": 0.28, "width": 0.22, "height": 0.44 }
-    },
-    {
-      "camera_id": "cam-2",
-      "track_id": "CAM2-S002",
-      "quality": 95,
-      "is_best_view": true,
-      "bbox": { "x": 0.36, "y": 0.26, "width": 0.25, "height": 0.48 }
-    }
-  ]
-}
-```
-
-### Observation Clarity Arbitration
-When an invigilator clicks on Elena Rostova, the UI checks `is_best_view`. If Camera 1 has 88% clarity but Camera 2 has 95% clarity (due to less occlusion), the inspector proactively indicates:
-> *"Camera 2 has a clearer view (95% observation clarity) — Click to switch focus."*
+### C. Why Server-Side Persistence & Capped Scoring?
+If scoring logic were computed strictly inside browser state, refreshing the page or closing a browser tab would lose examinee tracking history and reset warning levels. Persisting examinee state and activity logs in MongoDB via `server/db.ts` (with automatic fallback to `/data/exam_monitoring.json`) ensures state consistency across multiple proctor terminals. Score bounding (strictly capped between `0` and `100`) prevents runaway score inflation.
 
 ---
 
-## 4. Behavioral Analysis & Temporal Cooldowns
+## 3. Complete REST API Endpoint Reference
 
-Single-frame anomalies (a momentary blink, natural cough, adjusting glasses) must never trigger cheating penalties. The behavioral engine implements strict temporal windows:
+All endpoints are mounted under `/api` in `server/routes.ts`:
 
-$$\text{Alert Fired} \iff \Delta t_{\text{sustained}} \ge T_{\text{threshold}} \land \text{Cooldown Expired}$$
+### Diagnostics & Health
+- `GET /api/health` — Returns system status, server health, and diagnostic metrics (FPS, active tracks, warnings).
+- `GET /api/cv/health` — Returns computer vision engine health.
+- `GET /api/diagnostics` — Returns performance metrics (latency, processed frames count).
 
-1. **Sustained Head Turn (`T = 3.5s`)**: Lateral yaw exceeding $\pm 25^\circ$ must persist continuously for 3.5 seconds before firing `LOOKING_LEFT` or `LOOKING_RIGHT`.
-2. **Face Occlusion Grace Window (`T = 4.0s`)**: Face landmarks must be missing for over 4.0 seconds continuously to account for brief posture shifts or sneezing.
-3. **Desk Boundary Grace Window (`T = 5.0s`)**: Bounding box center must deviate from assigned desk coordinates for $\ge 5.0$ seconds before penalizing `LEFT_SEAT`.
+### Computer Vision Frame Pipeline
+- `POST /api/cv/sync-detections` — Syncs real-time client detections and recorded activity events with the server database.
+- `POST /api/cv/process-frame` — Processes base64 frame images on the server.
+- `POST /api/cv/reset-tracks` — Resets active tracking state for a specific camera or all cameras.
 
----
+### Camera Ingestion & Stream Testing
+- `POST /api/cameras/test-source` — Tests stream connectivity by executing a 1-frame extraction via `ffmpeg`.
+- `POST /api/cameras/upload` — Handles video file uploads (up to 1GB) via Multer and saves them to `/uploads/`.
+- `GET /api/cameras/resolve-url` — Resolves Google Drive share links or credentialed RTSP URLs into direct playable streams.
 
-## 5. Explainable Additive Suspicion Score Equation
+### Camera Management (CRUD)
+- `GET /api/cameras` — Returns list of all configured cameras.
+- `GET /api/cameras/:id` — Returns details for a specific camera.
+- `POST /api/cameras` — Creates a new camera configuration.
+- `PUT /api/cameras/:id` — Updates an existing camera configuration.
+- `DELETE /api/cameras/:id` — Deletes a camera configuration.
 
-The suspicion score $S \in [0, 100]$ is computed as a deterministic sum of active behavioral penalties:
+### Candidate Roster & Warning Management
+- `GET /api/candidates` — Returns all tracked candidates (supports `?activeOnly=true`).
+- `GET /api/candidates/:id` — Returns details for a specific candidate.
+- `PUT /api/candidates/:id` — Updates candidate metadata (student name, seat number, notes).
+- `POST /api/candidates/:id/clear-warning` — Clears warning badge for an examinee and resets score to 0 while preserving activity log history.
+- `DELETE /api/candidates/:id` — Removes an individual candidate from the roster.
+- `DELETE /api/candidates` — Clears all candidate roster entries.
+- `POST /api/candidates/clear-all` / `POST /api/candidates/reset-session` — Resets session tracking data for a new examination.
 
-$$S = \min\left(100, \max(0, P_{\text{phone}} + P_{\text{seat}} + P_{\text{turn}} + P_{\text{face}} + P_{\text{motion}})\right)$$
+### Activity Audit Logs
+- `GET /api/activities` — Returns recorded activity logs (supports filtering by `pId`, `activityType`, `warningLevel`, `cameraId`, `limit`).
+- `POST /api/activities` — Records a new activity event.
+- `DELETE /api/activities/:id` — Deletes an individual activity log record.
+- `POST /api/activities/clear` / `DELETE /api/activities` — Clears all activity log history.
 
-Where default calibrated weights are:
-- $P_{\text{phone}} = 40$ pts (Mobile phone detected with confidence $\ge 0.65$)
-- $P_{\text{seat}} = 30$ pts (Candidate departed assigned examination desk)
-- $P_{\text{turn}} = 25$ pts (Repeated or sustained glancing at neighbor's workspace)
-- $P_{\text{face}} = 20$ pts (Candidate face actively obscured or hidden)
-- $P_{\text{motion}} = 15$ pts (Abnormal rapid agitation or sudden posture surges)
+### Activity Type Configuration & Score Thresholds
+- `GET /api/activity-types` — Returns configured activity rules and point weights.
+- `POST /api/activity-types` — Creates a new activity rule.
+- `PUT /api/activity-types/:id` / `PATCH /api/activity-types/:id` — Updates an activity rule's point weight or severity.
+- `DELETE /api/activity-types/:id` — Deletes an activity rule.
+- `GET /api/scores/config` / `GET /api/settings/thresholds` — Returns score thresholds (*Normal*, *Warning*, *High Warning*).
+- `PUT /api/scores/config` / `PUT /api/settings/thresholds` — Updates score threshold limits.
 
----
-
-## 6. Separate Admin Protection Architecture
-
-The `/admin` route is decoupled from the public live stream:
-- Protected by token-based authentication verified against environment variables (`ADMIN_USERNAME`, `ADMIN_PASSWORD`).
-- Administrative APIs reject unauthenticated requests with `401 Unauthorized`.
-- Full audit trails of configuration updates (student ID corrections, camera source switches, rule modifications) are persisted directly into MongoDB.
+### Application Settings & Admin Auth
+- `GET /api/settings` — Returns global application settings (e.g. app name).
+- `PUT /api/settings` — Updates application settings.
+- `POST /api/auth/login` — Authenticates admin access via environment variables `ADMIN_USERNAME` & `ADMIN_PASSWORD` (timing-safe comparison).

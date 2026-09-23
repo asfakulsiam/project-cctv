@@ -1,314 +1,488 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Shield, Users, AlertTriangle, CheckCircle2, Activity, RefreshCw, Volume2, Eye } from 'lucide-react';
-import { CameraConfig, ExamCandidate, ExamEvent, TelemetryPayload, Student } from './types.js';
-import { renderCanvasOverlay } from './utils/canvasRenderer.js';
+/**
+ * src/App.tsx - React Application Root Component
+ * Coordinates main application state, tab navigation (Live Monitor, Activities, Candidates, Admin),
+ * REST API polling, real-time candidate score updates, and system health status.
+ */
+import React, { useState, useEffect, useCallback } from 'react';
+import { Navbar } from './components/Navbar.js';
+import { MainPlayer } from './components/MainPlayer.js';
+import { ActivityPanel } from './components/ActivityPanel.js';
+import { CandidateList } from './components/CandidateList.js';
+import { AdminPanel } from './components/AdminPanel.js';
+import { ExportModal } from './components/ExportModal.js';
+import { visionDetector } from './services/realDetector.js';
+import {
+  CameraSource,
+  Candidate,
+  ActivityRecord,
+  ActivityTypeConfig,
+  ScoreThresholds,
+  SystemDiagnostics,
+} from './types.js';
 
 export default function App() {
-  const [telemetry, setTelemetry] = useState<TelemetryPayload | null>(null);
-  const [selectedCameraId, setSelectedCameraId] = useState<string>('cam-1');
-  const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const [currentTab, setCurrentTab] = useState<'player' | 'activities' | 'candidates' | 'admin'>('player');
+  const [cameras, setCameras] = useState<CameraSource[]>([]);
+  const [selectedCamera, setSelectedCamera] = useState<CameraSource | null>(null);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [activities, setActivities] = useState<ActivityRecord[]>([]);
+  const [activityTypes, setActivityTypes] = useState<ActivityTypeConfig[]>([]);
+  const [scoreThresholds, setScoreThresholds] = useState<ScoreThresholds>({
+    normalMax: 35,
+    warningMax: 70,
+    highMin: 71,
+  });
+  const [diagnostics, setDiagnostics] = useState<SystemDiagnostics | null>(null);
+  const [appName, setAppName] = useState<string>('Exam Hall Monitoring Assistant');
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
 
-  // Connect WebSocket & fallback polling
-  useEffect(() => {
-    let active = true;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-    const connectWS = () => {
+  // Helper for resilient fetching with retry
+  const safeFetchJson = async <T,>(url: string, retries = 2): Promise<T | null> => {
+    for (let i = 0; i <= retries; i++) {
       try {
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-          if (!active) return;
-          setIsConnected(true);
-        };
-
-        ws.onmessage = (event) => {
-          if (!active) return;
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'TELEMETRY_UPDATE' || data.type === 'TELEMETRY_INIT') {
-              setTelemetry(data.data);
-            }
-          } catch (e) {
-            console.error('Error parsing telemetry payload', e);
-          }
-        };
-
-        ws.onclose = () => {
-          if (!active) return;
-          setIsConnected(false);
-          // Reconnect attempt after 2s
-          setTimeout(connectWS, 2000);
-        };
-
-        ws.onerror = () => {
-          ws.close();
-        };
-      } catch (err) {
-        setIsConnected(false);
+        const res = await fetch(url);
+        if (res.ok) {
+          return (await res.json()) as T;
+        }
+      } catch {
+        if (i < retries) {
+          await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+        }
       }
-    };
+    }
+    return null;
+  };
 
-    connectWS();
+  // Fetch initial cameras
+  const fetchCameras = useCallback(async () => {
+    const data = await safeFetchJson<CameraSource[]>('/api/cameras');
+    if (data && Array.isArray(data) && data.length > 0) {
+      setCameras(data);
+      if (!selectedCamera) {
+        setSelectedCamera(data[0]);
+      }
+    } else {
+      // Fallback default cameras if server is starting
+      setCameras((prev) => {
+        if (prev.length > 0) return prev;
+        const defaults: CameraSource[] = [
+          {
+            id: 'cam-1',
+            name: 'Main Exam Hall - Front View',
+            location: 'Hall A (North)',
+            sourceType: 'file',
+            sourceUrl: '/assets/classroom.mp4',
+            enabled: true,
+            status: 'active',
+            resolution: '1920x1080',
+          },
+          {
+            id: 'cam-2',
+            name: 'Exam Hall - Rear View',
+            location: 'Hall A (South)',
+            sourceType: 'file',
+            sourceUrl: '/assets/camera2_hall.mp4',
+            enabled: true,
+            status: 'active',
+            resolution: '1920x1080',
+          },
+        ];
+        if (!selectedCamera) setSelectedCamera(defaults[0]);
+        return defaults;
+      });
+    }
+  }, [selectedCamera]);
 
-    // Fallback polling every 2s
-    const pollInterval = setInterval(() => {
-      fetch('/api/telemetry')
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data && active) {
-            setTelemetry(data);
-          }
-        })
-        .catch(() => {});
-    }, 2000);
-
-    return () => {
-      active = false;
-      clearInterval(pollInterval);
-      if (wsRef.current) wsRef.current.close();
-    };
+  // Fetch candidates (pull active candidates by default or all)
+  const fetchCandidates = useCallback(async (activeOnly = false) => {
+    const url = activeOnly ? '/api/candidates?activeOnly=true' : '/api/candidates';
+    const data = await safeFetchJson<Candidate[]>(url);
+    if (data && Array.isArray(data)) {
+      setCandidates(data);
+    }
   }, []);
 
-  // Update canvas rendering
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !telemetry) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  // Fetch activity records
+  const fetchActivities = useCallback(async () => {
+    const data = await safeFetchJson<ActivityRecord[]>('/api/activities?limit=100');
+    if (data && Array.isArray(data)) {
+      setActivities(data);
+    }
+  }, []);
 
-    const width = canvas.width;
-    const height = canvas.height;
-
-    // Background hall rendering simulation
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, width, height);
-
-    // Subtle perspective hall lines
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, height * 0.7);
-    ctx.lineTo(width, height * 0.7);
-    ctx.stroke();
-
-    const activeTracks = telemetry.tracks[selectedCameraId] || telemetry.candidates || [];
-    renderCanvasOverlay(ctx, width, height, activeTracks);
-  }, [telemetry, selectedCameraId]);
-
-  const activeCamera = telemetry?.cameras?.find((c) => c.camera_id === selectedCameraId) || telemetry?.cameras?.[0];
-
-  const handleClearWarning = async (personId: string) => {
-    setIsProcessing(true);
+  // Clear all activities
+  const handleClearActivities = async () => {
     try {
-      await fetch(`/api/candidates/${personId}/clear-warning`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      // Refresh telemetry
-      const res = await fetch('/api/telemetry');
+      const res = await fetch('/api/activities/clear', { method: 'POST' });
       if (res.ok) {
-        const data = await res.json();
-        setTelemetry(data);
+        setActivities([]);
+        visionDetector.clearAllActivities();
+        await fetchCandidates();
       }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsProcessing(false);
+    } catch (e: any) {
+      console.warn('Failed to clear activities:', e?.message || String(e));
     }
   };
 
+  // Delete individual activity
+  const handleDeleteActivity = async (activityId: string) => {
+    try {
+      const res = await fetch(`/api/activities/${activityId}`, { method: 'DELETE' });
+      if (res.ok) {
+        setActivities((prev) => prev.filter((a) => a.id !== activityId));
+        await fetchCandidates();
+      }
+    } catch (e: any) {
+      console.warn('Failed to delete activity:', e?.message || String(e));
+    }
+  };
+
+  // Fetch activity types config
+  const fetchActivityTypes = useCallback(async () => {
+    const data = await safeFetchJson<ActivityTypeConfig[]>('/api/activity-types');
+    if (data && Array.isArray(data)) {
+      setActivityTypes(data);
+    }
+  }, []);
+
+  // Fetch score thresholds
+  const fetchThresholds = useCallback(async () => {
+    const data = await safeFetchJson<any>('/api/settings/thresholds');
+    if (data) {
+      setScoreThresholds({
+        normalMax: data.normalMax ?? 35,
+        warningMax: data.warningMax ?? 70,
+        highMin: data.highMin ?? data.highWarningMin ?? 71,
+      });
+    }
+  }, []);
+
+  // Fetch system diagnostics
+  const fetchDiagnostics = useCallback(async () => {
+    const data = await safeFetchJson<SystemDiagnostics>('/api/diagnostics');
+    if (data) {
+      setDiagnostics(data);
+    }
+  }, []);
+
+  // Fetch application settings
+  const fetchSettings = useCallback(async () => {
+    const data = await safeFetchJson<{ appName?: string }>('/api/settings');
+    if (data && data.appName) {
+      setAppName(data.appName);
+    }
+  }, []);
+
+  // Initial load
+  useEffect(() => {
+    const init = async () => {
+      await Promise.allSettled([
+        fetchCameras(),
+        fetchCandidates(),
+        fetchActivities(),
+        fetchActivityTypes(),
+        fetchThresholds(),
+        fetchDiagnostics(),
+        fetchSettings(),
+      ]);
+      setIsInitializing(false);
+    };
+    init();
+  }, [
+    fetchCameras,
+    fetchCandidates,
+    fetchActivities,
+    fetchActivityTypes,
+    fetchThresholds,
+    fetchDiagnostics,
+    fetchSettings,
+  ]);
+
+  // Periodic health polling (every 4 seconds)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      fetchDiagnostics();
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [fetchDiagnostics]);
+
+  // URL Route Synchronization for /admin and tabs
+  useEffect(() => {
+    const syncRouteFromLocation = () => {
+      const pathname = window.location.pathname.toLowerCase();
+      const hash = window.location.hash.toLowerCase();
+
+      if (pathname === '/admin' || pathname.startsWith('/admin/') || hash === '#admin' || hash === '#/admin') {
+        setCurrentTab('admin');
+      } else if (pathname === '/candidates' || hash === '#candidates') {
+        setCurrentTab('candidates');
+      } else if (pathname === '/activities' || hash === '#activities') {
+        setCurrentTab('activities');
+      } else {
+        setCurrentTab('player');
+      }
+    };
+
+    syncRouteFromLocation();
+    window.addEventListener('popstate', syncRouteFromLocation);
+    window.addEventListener('hashchange', syncRouteFromLocation);
+    return () => {
+      window.removeEventListener('popstate', syncRouteFromLocation);
+      window.removeEventListener('hashchange', syncRouteFromLocation);
+    };
+  }, []);
+
+  const handleSetTab = (tab: 'player' | 'activities' | 'candidates' | 'admin') => {
+    setCurrentTab(tab);
+    if (tab === 'admin') {
+      window.history.pushState({}, '', '/admin');
+    } else if (tab === 'player') {
+      window.history.pushState({}, '', '/');
+    } else {
+      window.history.pushState({}, '', `/${tab}`);
+    }
+  };
+
+  // Candidate updates
+  const handleUpdateCandidate = async (candidate: Candidate) => {
+    const candidateId = candidate.id || (candidate as any).pId;
+    try {
+      const sanitized = {
+        id: candidate.id,
+        trackerId: candidate.trackerId,
+        cameraId: candidate.cameraId,
+        studentName: candidate.studentName,
+        seatNumber: candidate.seatNumber,
+        firstSeen: candidate.firstSeen,
+        lastSeen: candidate.lastSeen,
+        currentScore: candidate.currentScore,
+        warningLevel: candidate.warningLevel,
+        warningCleared: candidate.warningCleared,
+        isCurrentlyTracked: candidate.isCurrentlyTracked,
+        lastActivity: candidate.lastActivity,
+        notes: candidate.notes,
+        name: candidate.name,
+      };
+
+      const res = await fetch(`/api/candidates/${candidateId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sanitized),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setCandidates((prev) =>
+          prev.map((c) => ((c.id || (c as any).pId) === candidateId ? updated : c))
+        );
+      }
+    } catch (e: any) {
+      console.warn('Failed to update candidate:', e?.message || String(e));
+    }
+  };
+
+  // Clear warning for candidate
+  const handleClearWarning = async (pId: string) => {
+    if (selectedCamera) {
+      visionDetector.clearScore(selectedCamera.id, pId);
+    } else {
+      cameras.forEach((cam) => visionDetector.clearScore(cam.id, pId));
+    }
+    try {
+      const res = await fetch(`/api/candidates/${pId}/clear-warning`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.candidate) {
+          setCandidates((prev) =>
+            prev.map((c) => ((c.id || (c as any).pId) === pId ? data.candidate : c))
+          );
+        }
+      }
+    } catch (e: any) {
+      console.warn('Failed to clear candidate warning:', e?.message || String(e));
+    }
+  };
+
+  // Delete individual candidate
+  const handleDeleteCandidate = async (candidateId: string) => {
+    try {
+      const res = await fetch(`/api/candidates/${candidateId}`, { method: 'DELETE' });
+      if (res.ok) {
+        setCandidates((prev) => prev.filter((c) => (c.id || (c as any).pId) !== candidateId));
+      }
+    } catch (e: any) {
+      console.warn('Failed to delete candidate:', e?.message || String(e));
+    }
+  };
+
+  // Clear / Delete all candidates
+  const handleClearCandidates = async () => {
+    try {
+      const res = await fetch('/api/candidates', { method: 'DELETE' });
+      if (res.ok) {
+        setCandidates([]);
+        visionDetector.resetTracks();
+      }
+    } catch (e: any) {
+      console.warn('Failed to clear candidates:', e?.message || String(e));
+    }
+  };
+
+  // Real-time activity callback from CV processing
+  const handleNewActivity = useCallback((act: ActivityRecord) => {
+    setActivities((prev) => [act, ...prev.slice(0, 199)]);
+  }, []);
+
+  // Real-time candidates list callback from CV processing (Fix 4: merge monotonically)
+  const handleUpdateCandidatesFromCV = useCallback((updatedCandidates: Candidate[]) => {
+    setCandidates((prev) => {
+      const map = new Map<string, Candidate>(prev.map((c) => [c.id, c]));
+      for (const incoming of updatedCandidates) {
+        const existing = map.get(incoming.id);
+        if (!existing) {
+          map.set(incoming.id, incoming);
+        } else {
+          const mergedScore = Math.max(existing.currentScore, incoming.currentScore);
+          const warningLevel =
+            mergedScore > 70 ? 'high' : mergedScore > 35 ? 'warning' : 'normal';
+          map.set(incoming.id, {
+            ...existing,
+            ...incoming,
+            currentScore: incoming.warningCleared ? 0 : mergedScore,
+            warningLevel: incoming.warningCleared ? 'normal' : warningLevel,
+          });
+        }
+      }
+      return Array.from(map.values());
+    });
+  }, []);
+
+  // Update app name in settings
+  const handleUpdateAppName = async (name: string) => {
+    setAppName(name);
+    try {
+      await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appName: name }),
+      });
+    } catch (e) {
+      console.error('Failed to persist app name:', e);
+    }
+  };
+
+  const handleSelectCameraById = (id: string) => {
+    const found = cameras.find((c) => c.id === id);
+    if (found) {
+      setSelectedCamera(found);
+    }
+  };
+
+  const handleRefreshAll = () => {
+    fetchCameras();
+    fetchCandidates();
+    fetchActivities();
+    fetchDiagnostics();
+  };
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen flex flex-col font-sans transition-colors bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 selection:bg-emerald-500 selection:text-white">
       {/* Top Navigation Bar */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Shield className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-base font-semibold text-white tracking-tight">Smart Classroom Exam Monitoring System</h1>
-            <p className="text-xs text-slate-400">YOLOv8 Computer Vision & Floating Nameplate Tracking</p>
-          </div>
-        </div>
+      <Navbar
+        currentTab={currentTab}
+        setCurrentTab={handleSetTab}
+        diagnostics={diagnostics}
+        cameras={cameras}
+        selectedCameraId={selectedCamera?.id || ''}
+        onSelectCamera={handleSelectCameraById}
+        onRefresh={handleRefreshAll}
+        appName={appName}
+        candidateCount={candidates.length}
+        onOpenExport={() => setIsExportModalOpen(true)}
+      />
 
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2 bg-slate-800/80 px-3 py-1.5 rounded-full text-xs">
-            <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-            <span className="text-slate-300">{isConnected ? 'Live Telemetry' : 'Connecting...'}</span>
-          </div>
+      {/* Main Content Area */}
+      <main className="flex-1 w-full min-w-0 pb-12">
+        {currentTab === 'player' && (
+          <MainPlayer
+            selectedCamera={selectedCamera}
+            cameras={cameras}
+            onSelectCamera={setSelectedCamera}
+            onNewActivity={handleNewActivity}
+            onUpdateCandidates={handleUpdateCandidatesFromCV}
+            diagnostics={diagnostics}
+            onUpdateDiagnostics={setDiagnostics}
+          />
+        )}
 
-          <div className="text-xs text-slate-400 bg-slate-800/80 px-3 py-1.5 rounded-full">
-            FPS: <span className="text-blue-400 font-mono font-medium">{telemetry?.fps || '7.2'}</span>
-          </div>
-        </div>
-      </header>
+        {currentTab === 'activities' && (
+          <ActivityPanel
+            activities={activities}
+            cameras={cameras}
+            activityTypes={activityTypes}
+            onRefresh={() => {
+              fetchActivities();
+              fetchCandidates(true);
+            }}
+            onClearActivities={handleClearActivities}
+            onDeleteActivity={handleDeleteActivity}
+            onOpenExport={() => setIsExportModalOpen(true)}
+          />
+        )}
 
-      {/* Main Grid View */}
-      <main className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-4 gap-6 max-w-7xl mx-auto w-full">
-        {/* Left Column: Video Feed & Dynamic Canvas */}
-        <section className="lg:col-span-3 flex flex-col space-y-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl flex flex-col">
-            <div className="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
-              <div className="flex items-center space-x-2">
-                <Camera className="w-4 h-4 text-blue-400" />
-                <span className="text-sm font-medium text-slate-200">{activeCamera?.name || 'Exam Hall Camera'}</span>
-                <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  {activeCamera?.status || 'Online'}
-                </span>
-              </div>
+        {currentTab === 'candidates' && (
+          <CandidateList
+            candidates={candidates}
+            onRefresh={() => {
+              fetchCandidates(true);
+              fetchActivities();
+            }}
+            onClearWarning={handleClearWarning}
+            onUpdateCandidate={handleUpdateCandidate}
+            onClearActivities={handleClearActivities}
+            onClearCandidates={handleClearCandidates}
+            onDeleteCandidate={handleDeleteCandidate}
+            onOpenExport={() => setIsExportModalOpen(true)}
+          />
+        )}
 
-              {/* Camera Switcher */}
-              <div className="flex space-x-1">
-                {telemetry?.cameras?.map((cam) => (
-                  <button
-                    key={cam.camera_id}
-                    onClick={() => setSelectedCameraId(cam.camera_id)}
-                    className={`px-2.5 py-1 text-xs rounded transition-colors ${
-                      selectedCameraId === cam.camera_id
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                  >
-                    {cam.name.replace('CCTV Camera ', 'Cam ')}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Video Canvas Container */}
-            <div className="relative aspect-video bg-black flex items-center justify-center overflow-hidden">
-              <canvas
-                ref={canvasRef}
-                width={854}
-                height={480}
-                className="w-full h-full object-contain"
-              />
-              <div className="absolute top-3 left-3 bg-slate-950/70 backdrop-blur px-2.5 py-1 rounded text-[11px] text-slate-300 border border-slate-800 flex items-center space-x-1.5">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-                <span>REC LIVE</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Quick Metrics */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>Active Cameras</span>
-                <Camera className="w-4 h-4 text-blue-400" />
-              </div>
-              <p className="text-2xl font-bold text-white">{telemetry?.stats?.online_cameras ?? 1}</p>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>Detected Students</span>
-                <Users className="w-4 h-4 text-emerald-400" />
-              </div>
-              <p className="text-2xl font-bold text-white">{telemetry?.candidates?.length ?? 3}</p>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>Active Warnings</span>
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
-              </div>
-              <p className="text-2xl font-bold text-white">{telemetry?.stats?.warning_count ?? 0}</p>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-                <span>System Health</span>
-                <Activity className="w-4 h-4 text-cyan-400" />
-              </div>
-              <p className="text-lg font-bold text-emerald-400 capitalize">{telemetry?.stats?.system_health ?? 'Optimal'}</p>
-            </div>
-          </div>
-        </section>
-
-        {/* Right Column: Live Candidates & Behavioral Alerts */}
-        <section className="flex flex-col space-y-4">
-          {/* Detected Exam Candidates */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex-1 flex flex-col">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
-              <h2 className="text-sm font-semibold text-slate-200 flex items-center space-x-2">
-                <Users className="w-4 h-4 text-blue-400" />
-                <span>Tracked Candidates</span>
-              </h2>
-              <span className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">
-                {telemetry?.candidates?.length ?? 0}
-              </span>
-            </div>
-
-            <div className="space-y-2.5 overflow-y-auto max-h-[380px] flex-1">
-              {(telemetry?.candidates || []).map((cand) => (
-                <div
-                  key={cand.person_id}
-                  className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 flex items-center justify-between hover:border-slate-700 transition-colors"
-                >
-                  <div>
-                    <p className="text-xs font-medium text-slate-200">
-                      {cand.student_name || cand.person_id}
-                    </p>
-                    <div className="flex items-center space-x-2 text-[11px] text-slate-400 mt-0.5">
-                      <span>ID: {cand.student_id_number || 'Auto-Detected'}</span>
-                      <span>•</span>
-                      <span className={cand.warning_active ? 'text-amber-400' : 'text-emerald-400'}>
-                        {cand.warning_active ? 'Warning Active' : 'Normal'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {cand.warning_active && (
-                    <button
-                      onClick={() => handleClearWarning(cand.person_id)}
-                      disabled={isProcessing}
-                      className="px-2.5 py-1 text-xs rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 transition-colors"
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-              ))}
-
-              {(!telemetry?.candidates || telemetry.candidates.length === 0) && (
-                <div className="text-center py-8 text-xs text-slate-500">
-                  Searching for students in camera views...
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Real-Time Activity Log */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 h-56 flex flex-col">
-            <h2 className="text-sm font-semibold text-slate-200 pb-2 border-b border-slate-800 mb-2 flex items-center space-x-2">
-              <Activity className="w-4 h-4 text-emerald-400" />
-              <span>Audit Log</span>
-            </h2>
-            <div className="overflow-y-auto space-y-2 flex-1 text-xs">
-              {(telemetry?.recent_events || []).map((evt) => (
-                <div key={evt.id} className="text-slate-300 flex items-start space-x-2 py-1 border-b border-slate-800/40">
-                  <span className="text-[10px] text-slate-500 whitespace-nowrap mt-0.5">
-                    {new Date(evt.timestamp).toLocaleTimeString()}
-                  </span>
-                  <span className="flex-1 text-slate-300">{evt.description}</span>
-                </div>
-              ))}
-              {(!telemetry?.recent_events || telemetry.recent_events.length === 0) && (
-                <div className="text-center py-6 text-xs text-slate-500">
-                  All systems operational. No abnormal events recorded.
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
+        {currentTab === 'admin' && (
+          <AdminPanel
+            cameras={cameras}
+            onRefreshCameras={fetchCameras}
+            activityTypes={activityTypes}
+            onRefreshActivityTypes={fetchActivityTypes}
+            scoreThresholds={scoreThresholds}
+            onRefreshThresholds={fetchThresholds}
+            candidates={candidates}
+            onRefreshCandidates={fetchCandidates}
+            diagnostics={diagnostics}
+            onRefreshDiagnostics={fetchDiagnostics}
+            appName={appName}
+            onUpdateAppName={handleUpdateAppName}
+            onExitAdmin={() => handleSetTab('player')}
+          />
+        )}
       </main>
+
+      {/* Export Modal */}
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        candidates={candidates}
+        activities={activities}
+        cameras={cameras}
+        appName={appName}
+      />
+
+      {/* Footer with core compliance notice */}
+      <footer className="border-t py-4 px-4 sm:px-6 text-center text-xs transition-colors bg-white/80 border-neutral-200 text-neutral-500 dark:bg-neutral-950/80 dark:border-neutral-900 dark:text-neutral-400">
+        <p className="max-w-3xl mx-auto">
+          <strong>Teacher Supervisory Assistant:</strong> This system assists invigilation by observing video feeds and calculating activity indicators. The system does not make automated disciplinary determinations; invigilators and supervisors retain sole authority.
+        </p>
+      </footer>
     </div>
   );
 }

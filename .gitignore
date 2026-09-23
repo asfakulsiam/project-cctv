@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+*.pt
+*.onnx
+cv_service/models/*.pt

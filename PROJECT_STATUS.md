@@ -1,62 +1,33 @@
-# PROJECT_STATUS.md
-## Smart Classroom Exam Monitoring System Using Computer Vision and Behavioral Analysis
+# Project Status & Feature Checklist
 
-**Status:** In Active Implementation  
-**Architecture:** Player-First Live Computer Vision Monitoring & Distributed Multi-Camera Analysis  
-**Repository Audit Date:** September 2026  
+This document details the operational status of every system feature based on codebase inspection and verification testing.
 
----
-
-### Initial Repository Audit
-1. **Initial State Assessment:**
-   - Empty starter React 19 app with basic Vite scaffolding.
-   - `metadata.json` had empty placeholder title and description.
-   - No computer vision processing, camera streams, backend endpoints, or database models.
-   - Strict requirement adherence: Player-First interface (Camera 1 primary), independent multi-camera tracking contexts (`CAM1-S001`, `CAM2-S001`), unified cross-camera student models, no mock data in production flows, dedicated protected `/admin` route with env credentials, MongoDB persistence with graceful local memory fallback, and complete academic reports/documentation.
-
-2. **Core Architectural Invariants:**
-   - **Player-First UX:** Primary camera (Camera 1 by default) dominates view with responsive zoom/pan/focus controls. Secondary cameras appear as interactive thumbnail feeds that can be promoted to focus without resetting tracking state.
-   - **Per-Camera Tracking Isolation:** Every live camera maintains its own independent tracking context. IDs are prefixed (e.g., `CAM1-S001`) preventing cross-camera collisions.
-   - **Unified Student Model:** When multiple cameras observe the same classroom/seat, observations are mapped into a single student record based on seat mapping / spatial association without creating duplicate students.
-   - **Camera Quality Observation:** Clearer camera angles prioritized for behavioral scoring when multiple cameras observe the same subject.
-   - **Realtime CV & Temporal Behavioral Scoring:** Explainable scoring based on persistence, head pose/gaze heuristics, face visibility grace periods, leaving seat detection, and object/phone detection with cooldowns.
-   - **Database & Offline Robustness:** MongoDB model architecture with automatic fallback store if external MongoDB is offline, strictly zero fake telemetry.
-   - **Security:** Protected `/admin` panel using environment credentials (`ADMIN_USERNAME`, `ADMIN_PASSWORD`), public monitoring view accessible for classroom display.
-
----
-
-### Implementation Phases Tracker
-
-- [x] **Audit & Project Setup**: `metadata.json`, `index.html`, dependencies (`ws`, `mongodb`), project status.
-- [ ] **Phase 1: Shared Domain Types & Design Foundation**: `src/types.ts` defining all entities (Cameras, Tracks, Students, Classrooms, Seats, Behavior Events, Suspicion Scores, Settings, Reports).
-- [ ] **Phase 2: Database Layer & Persistent Models**: MongoDB client with schemas and fallback in-memory store in `server/db.ts`.
-- [ ] **Phase 3: Multi-Camera CV Engine & Pipeline**:
-  - Independent tracker per camera (`server/cv/tracker.ts`, `server/cv/detector.ts`, `server/cv/behavior.ts`).
-  - Python CV standalone pipeline in `cv/` with OpenCV/YOLO/ByteTrack scripts, test suites, and documentation for academic viva.
-  - Video stream generator and live camera feed ingest (supporting browser webcam, video clips, and live synthetic exam feeds).
-- [ ] **Phase 4: Backend API & WebSocket Server (`server.ts`)**:
-  - REST endpoints for cameras, students, classrooms, seats, exams, reports, settings, admin authentication.
-  - WebSocket hub broadcasting live frame coordinates, bounding boxes, telemetry, and behavior events.
-- [ ] **Phase 5: Player-First Frontend Architecture**:
-  - Main Player Component with Canvas overlay, zoom/pan controls, bounding boxes with unique IDs, behavior badges.
-  - Secondary Camera Strip with quick switcher & focus promotion.
-  - Live Statistics bar & Activity Timeline.
-  - Camera observation quality selector.
-- [ ] **Phase 6: Separate Protected Admin Panel (`/admin`)**:
-  - Admin login gate with env-configured credentials.
-  - Student manager (editing student ID numbers, mapping names/seats).
-  - Classroom & Seat layout editor.
-  - Multi-Camera manager (sources, primary toggle, FPS, thresholds).
-  - Behavior rules & score weights editor.
-  - Branding and public display settings.
-  - Real database report generator & export (CSV, JSON, print format).
-- [ ] **Phase 7: Academic Documentation Suite**:
-  - `README.md`
-  - `DEVELOPER_GUIDE.md`
-  - `workflow.md`
-  - `MASTER_PROJECT_REPORT.md` (Comprehensive academic thesis/report with Mermaid diagrams)
-  - `MASTER_PRESENTATION.md` (10-15 slides + viva Q&A)
-  - `DEPLOYMENT_GUIDE.md`
-- [ ] **Phase 8: End-to-End Verification & QA**:
-  - Lint and build verification.
-  - Full end-to-end user journey verification.
+| Feature Category | Feature Description | Status | Verification Details |
+| :--- | :--- | :---: | :--- |
+| **Camera Ingestion** | RTSP Stream Ingest (`rtsp://`) | **Done** | Formats auth strings, tested via `ffmpeg` child process |
+| **Camera Ingestion** | IP Camera Stream Ingest (MJPEG/HTTP) | **Done** | Ingested and tested via `testSourceConnection()` |
+| **Camera Ingestion** | Live Stream Link Ingest (HLS `.m3u8` / Direct MP4) | **Done** | Supported and playable in HTML5 video player |
+| **Camera Ingestion** | Google Drive Video Share Link Ingest | **Done** | Auto-converted to direct video stream via `resolveSourceUrl()` |
+| **Camera Ingestion** | Local Video File Upload | **Done** | Uploads up to 1GB to `/uploads/` via Multer (`POST /api/cameras/upload`) |
+| **Camera Ingestion** | Browser Webcam Ingest | **Done** | Acquired via browser `navigator.mediaDevices.getUserMedia` |
+| **Stream Testing** | Pipeline Connection Test (`POST /api/cameras/test-source`) | **Done** | Spawns `ffmpeg` to capture 1 frame and returns validation metrics |
+| **Vision Detection** | On-Device Browser Detection (TensorFlow.js COCO-SSD) | **Done** | Runs on-device in `src/services/realDetector.ts` (~30 FPS WebGL) |
+| **Vision Detection** | Python Microservice Detection (YOLOv8 + ByteTrack) | **Done** | Implemented in `cv_service/main.py` with FastAPI endpoints |
+| **Model Automation** | Auto-Download YOLOv8 Weights (Zero-Config) | **Done** | Downloaded via `postinstall` into `cv_service/models/` and `./` |
+| **Spatial Tracking** | Centroid Tracking & EMA Box Stabilization | **Done** | Smooth interpolation (`alpha = 0.15`), eliminates box jitter |
+| **Spatial Tracking** | Candidate Identifier (P-ID) Assignment | **Done** | Assigns persistent P-IDs (`P-1`, `P-2`) to examinees |
+| **Spatial Tracking** | Occlusion Score Archive Recovery | **Done** | Retains P-ID score history during temporary 60s occlusions |
+| **Activity Motion** | Velocity-Based Motion Analysis (`observedMotion`) | **Done** | Calculates motion independently of video frame rate |
+| **Activity Scoring** | Bounded Cumulative Activity Score (0 – 100) | **Done** | Strictly bounded in `server/db.ts` |
+| **Activity Scoring** | Warning Level Categorization | **Done** | *Normal* (0–35), *Warning* (36–70), *High Warning* (71–100) |
+| **Live Monitor** | Real-Time Video Player & SVG Overlay Renderer | **Done** | Displays examinee bounding boxes, P-IDs, and toggle controls |
+| **Candidate Roster** | Roster List & Metadata Editing | **Done** | Displays examinees with seat numbers, score, and edit controls |
+| **Candidate Roster** | Individual Warning Clearing | **Done** | Resets score/warning via `/api/candidates/:id/clear-warning` while preserving activity logs |
+| **Audit Logging** | Filterable Activity Audit Log & CSV Export | **Done** | Filters by P-ID, camera, type, or warning; exports to CSV |
+| **Audit Logging** | Individual Activity Record Deletion | **Done** | Backed by `DELETE /api/activities/:id` with confirmation UI |
+| **Admin Panel** | Protected Dashboard (Environment Credentials) | **Done** | Secure login authenticated via `ADMIN_USERNAME` & `ADMIN_PASSWORD` |
+| **Admin Panel** | Activity Weight & Score Threshold Customization | **Done** | Allows admins to adjust point weights and warning limits |
+| **Persistence DB** | MongoDB Persistence Layer with Fallback | **Done** | Stores settings, cameras, candidates, logs in MongoDB |
+| **Lifecycle Ops** | Single-Command Setup (`npm run setup`) | **Done** | Installs npm, Python requirements, and model weights in 1 step |
+| **Lifecycle Ops** | Single-Command Production Start (`npm run prod`) | **Done** | Bundles Vite, builds backend, and serves production app in 1 step |
+| **Session Reset** | Exam Session Reset (`POST /api/candidates/clear-all`) | **Done** | Resets candidates and tracking state for new exam sessions |

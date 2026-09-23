@@ -1,0 +1,22 @@
+# Render Infrastructure as Code (Blueprint)
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: exam-hall-monitoring
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTO_START_CV
+        value: "false"
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGODB_DB_NAME
+        value: exam_monitoring

@@ -1,157 +1,141 @@
-export type CameraSourceType = 'rtsp' | 'http' | 'mjpeg' | 'gdrive' | 'webcam' | 'mp4';
+/**
+ * src/types.ts - Core TypeScript Interface Definitions
+ * Contains data types for Camera Sources, Tracked Candidates, Detection Overlays,
+ * Activity Logs, System Diagnostics, Score Configurations, and Application Settings.
+ */
 
-export interface CameraConfig {
-  camera_id: string;
+export type WarningLevel = 'normal' | 'warning' | 'high';
+
+export interface Candidate {
+  id: string; // Canonical P-ID: "P-1", "P-2", etc.
+  trackerId: number; // Internal ByteTrack tracker ID
+  cameraId: string;
+  studentName?: string;
+  name?: string; // alias for studentName
+  seatNumber?: string;
+  firstSeen: string; // ISO date
+  lastSeen: string; // ISO date
+  currentScore: number; // 0 - 100
+  score?: number; // alias for currentScore
+  warningLevel: WarningLevel;
+  warningCleared: boolean;
+  isCurrentlyTracked: boolean;
+  activeInFrame?: boolean; // alias for isCurrentlyTracked
+  lastActivity?: string;
+  notes?: string;
+}
+
+export interface ScoreThresholds {
+  normalMax: number;
+  warningMax: number;
+  highMin: number;
+}
+
+export interface DetectionOverlayItem {
+  trackerId: number;
+  pId: string; // Canonical P-ID
+  confidence: number;
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2] normalized 0.0 to 1.0
+  pixelBbox?: [number, number, number, number];
+  center: [number, number]; // [cx, cy] normalized
+  score: number; // 0 - 100
+  warningLevel: WarningLevel;
+  observedMotion: number;
+  detectedActivities: string[];
+  isStationary: boolean;
+  studentName?: string;
+  seatNumber?: string;
+}
+
+export interface ActivityRecord {
+  id: string;
+  pId: string; // P-1, P-2, etc.
+  cameraId: string;
+  cameraName?: string;
+  activityType: string;
+  details: string;
+  scoreChange: number; // e.g. +8
+  scoreAfter: number;
+  warningLevel: WarningLevel;
+  timestamp: string; // ISO
+  timeDisplay: string; // e.g. "10:42:18"
+}
+
+export type CameraSourceType =
+  | 'rtsp'
+  | 'ip_camera'
+  | 'stream_url'
+  | 'cloud_link'
+  | 'file_upload'
+  | 'local_file'
+  | 'webcam'
+  | 'sample'
+  | 'file';
+
+export interface CameraSource {
+  id: string;
   name: string;
-  source_type: CameraSourceType;
-  source_url: string;
-  classroom_id: string;
-  status: 'online' | 'offline' | 'error';
-  is_primary: boolean;
+  sourceType: CameraSourceType;
+  sourceUrl: string;
+  username?: string;
+  password?: string;
+  resolvedUrl?: string;
+  location: string;
   enabled: boolean;
-  resolution: { width: number; height: number };
-  target_fps: number;
-  actual_fps: number;
-  quality_score: number;
-  view_angle_description?: string;
-  monitored_seats?: string[];
+  status: 'active' | 'offline' | 'paused';
+  resolution?: string;
+  description?: string;
 }
 
-export interface Student {
-  id: string;
-  student_id_number: string;
-  name: string;
-  classroom_id?: string;
-  seat_id?: string;
-  status: 'present' | 'absent' | 'moving' | 'warning' | 'cheating_alert' | 'flagged';
-  unified_suspicion_score: number;
-  current_score?: number;
-  cumulative_score?: number;
-  max_score?: number;
-  active_observations: string[];
-  notes?: string;
-  person_id?: string | null;
-  global_person_id?: string | null;
-  warning_cleared_at?: number;
-  avatar_url?: string;
-}
-
-export interface Seat {
-  seat_id: string;
-  classroom_id: string;
-  row: number;
-  column: number;
-  label: string;
-  x?: number;
-  y?: number;
-  assigned_student_id?: string;
-}
-
-export interface Classroom {
+export interface ActivityTypeConfig {
   id: string;
   name: string;
-  building?: string;
-  room_number?: string;
-  total_seats?: number;
-}
-
-export interface ExamSession {
-  id: string;
-  title: string;
-  status: 'scheduled' | 'active' | 'completed' | 'paused';
-  start_time: number;
-  end_time?: number;
-  course_code?: string;
-  proctor_name?: string;
-}
-
-export interface ExamEvent {
-  id: string;
-  session_id: string;
-  event_type: string;
-  student_id?: string;
-  person_id?: string;
-  global_person_id?: string;
-  camera_id?: string;
-  track_id?: string;
-  student_id_number?: string;
-  student_name?: string;
-  timestamp: number;
-  confidence: number;
-  score_contribution: number;
-  severity: 'info' | 'low' | 'medium' | 'high' | 'critical';
   description: string;
-  metadata?: Record<string, any>;
+  scoreWeight: number; // Points added to candidate score
+  severity: 'low' | 'medium' | 'high';
 }
 
-export interface SystemSettings {
-  system_name: string;
-  anomaly_sensitivity: number;
-  warning_threshold: number;
-  critical_threshold: number;
-  thresholds?: {
-    warning?: number;
-    critical?: number;
-    suspicious_movement?: number;
-    high_suspicion_threshold?: number;
-    warning_suspicion_threshold?: number;
-  };
-  default_primary_camera?: string;
-  auto_unlatch_time_sec?: number;
-  dark_mode_default?: boolean;
+export interface ScoreConfig {
+  normalMax: number; // e.g. 35
+  warningMax: number; // e.g. 70
+  highWarningMin: number; // e.g. 71
+  maxScore: number; // strictly 100
 }
 
-export interface ExamCandidate {
-  person_id: string;
-  global_person_id: string;
-  student_id: string | null;
-  student_name?: string;
-  student_id_number?: string;
-  current_camera_id: string;
-  bbox: { x: number; y: number; width: number; height: number };
-  head_point?: { x: number; y: number };
-  suspicion_score: number;
-  warning_active: boolean;
-  status: 'normal' | 'warning' | 'critical';
-  last_seen: number;
-  seat_id?: string;
-  notes?: string;
+export interface AppSettings {
+  appName: string;
+  cvModelPath: string;
+  confidenceThreshold: number;
+  detectionIntervalMs: number;
+  adminId: string;
 }
 
-export interface GlobalPerson extends ExamCandidate {}
-
-export interface CameraTrack {
-  track_id: string;
-  camera_id: string;
-  person_id: string;
-  bbox: { x: number; y: number; width: number; height: number };
-  confidence: number;
-  head_point?: { x: number; y: number };
-  suspicion_score: number;
-  warning_active: boolean;
-  last_updated: number;
-}
-
-export interface TelemetryPayload {
-  timestamp: number;
+export interface SystemDiagnostics {
+  cvWorkerStatus: 'online' | 'offline' | 'error';
+  modelName: string;
+  tracker: string;
+  device: string;
   fps: number;
-  cameras: CameraConfig[];
-  tracks: Record<string, CameraTrack[]>;
-  candidates: ExamCandidate[];
-  students: Student[];
-  recent_events: ExamEvent[];
-  stats: {
-    total_cameras: number;
-    online_cameras: number;
-    detected_persons: number;
-    active_tracks: number;
-    unique_global_persons: number;
-    present_students: number;
-    students_moving: number;
-    warning_count: number;
-    high_suspicion_count: number;
-    active_alerts: number;
-    processing_fps: number;
-    system_health: string;
-  };
+  latencyMs: number;
+  activeTracks: number;
+  totalCandidates: number;
+  activeWarnings: number;
+  processedFrames: number;
+  lastProcessedTime?: string;
+  errorMessage?: string;
+}
+
+export interface ProcessFrameResponse {
+  camera_id: string;
+  timestamp: number;
+  frame_width: number;
+  frame_height: number;
+  detection_count: number;
+  active_track_count: number;
+  latency_ms: number;
+  model_name: string;
+  detections: DetectionOverlayItem[];
+  new_activities: ActivityRecord[];
+  all_candidates: Candidate[];
+  diagnostics: SystemDiagnostics;
 }

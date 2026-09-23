@@ -1,28 +1,18 @@
 <!doctype html>
-<html lang="en" class="h-full">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Smart Classroom Exam Monitoring System</title>
-    <meta name="description" content="Live computer vision and behavioral analysis monitoring platform for exam halls with multi-camera tracking, unified student identity, and real-time behavioral alerts." />
-    <meta property="og:title" content="Smart Classroom Exam Monitoring System" />
-    <meta property="og:description" content="Live computer vision and behavioral analysis monitoring platform for exam halls with multi-camera tracking, unified student identity, and real-time behavioral alerts." />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Exam Hall Monitoring Assistant</title>
+    <meta name="description" content="CCTV-based exam hall monitoring assistant for observing video, tracking candidates, recording observable activities, and computing activity scores." />
+    <meta property="og:title" content="Exam Hall Monitoring Assistant" />
+    <meta property="og:description" content="CCTV-based exam hall monitoring assistant for observing video, tracking candidates, recording observable activities, and computing activity scores." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="theme-color" content="#0071e3" />
-    <script>
-      (function() {
-        var theme = localStorage.getItem('apple_hig_theme');
-        if (theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-          document.documentElement.classList.add('dark');
-        } else {
-          document.documentElement.classList.remove('dark');
-        }
-      })();
-    </script>
   </head>
-  <body class="h-full antialiased font-sans-apple bg-[var(--system-bg)] text-[var(--system-text-primary)]">
-    <div id="root" class="h-full"></div>
+  <body>
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
+
